@@ -49,11 +49,12 @@ own.
 | Windows | WinHTTP | Win32 BCrypt | ✅ |
 | Android | OpenSSL (dynamic, Bionic) | builtin (SHA1DC) | ✅ |
 
-All four arms build in CI on every push (macOS, Linux and Windows also run the
-test suite; Android cross-compiles via the emulator action). The `Package.swift`
-re-expresses libgit2's CMake feature detection as a per-platform `-D` matrix
-(`LIBGIT2_NO_FEATURES_H` + explicit defines), choosing the native
-TLS/hash/NTLM backend for each platform.
+Every declared platform builds in CI on each push: macOS, Linux, and Windows
+also run the test suite; iOS, tvOS, and watchOS are cross-compiled (`xcodebuild`,
+generic device destinations); Android cross-compiles and runs its tests on the
+emulator. The `Package.swift` re-expresses libgit2's CMake feature detection as a
+per-platform `-D` matrix (`LIBGIT2_NO_FEATURES_H` + explicit defines), choosing
+the native TLS/hash/NTLM backend for each platform.
 
 ## Acknowledgements
 
