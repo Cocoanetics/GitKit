@@ -108,8 +108,9 @@ var coreHeaderPaths: [CSetting] = [
     .headerSearchPath("src/util"),
 ]
 // The shims live in Sources/Clibgit2shim and reach back into the pristine
-// submodule to resolve libgit2's own headers.
-let shimHeaderPaths: [CSetting] = [
+// submodule to resolve libgit2's own headers. (The builtin-SHA paths needed on
+// Linux/Android are appended in the host-dispatch block below.)
+var shimHeaderPaths: [CSetting] = [
     .headerSearchPath("../../\(libgit2)/src/libgit2"),
     .headerSearchPath("../../\(libgit2)/src/util"),
     .headerSearchPath("../../\(libgit2)/deps/xdiff"),
@@ -202,6 +203,12 @@ var linkerSettings: [LinkerSetting] = []
     coreHeaderPaths += [
         .headerSearchPath("src/util/hash/sha1dc"),
         .headerSearchPath("src/util/hash/rfc6234"),
+    ]
+    // The shim compiles indexer.c, which pulls in hash.h → the builtin SHA
+    // backend on Linux/Android, so it needs the same hash header paths.
+    shimHeaderPaths += [
+        .headerSearchPath("../../\(libgit2)/src/util/hash/sha1dc"),
+        .headerSearchPath("../../\(libgit2)/src/util/hash/rfc6234"),
     ]
     linkerSettings += [
         .linkedLibrary("z"),

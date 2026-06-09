@@ -7,10 +7,10 @@ on:
 
 jobs:
   macos:
-    name: macOS (Swift)
+    name: macOS
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: recursive
       - run: swift --version
@@ -20,19 +20,53 @@ jobs:
         run: swift test
 
   linux:
-    name: Linux (Swift)
+    name: Linux
     runs-on: ubuntu-latest
-    container: swift:6.0
+    container:
+      image: swift:6.2-jammy
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: recursive
+      - name: Install C dependencies
+        # libgit2 links -lz (zlib); HTTPS uses OpenSSL via dlopen at runtime.
+        run: |
+          apt-get update
+          apt-get install -y zlib1g-dev libssl-dev pkg-config ca-certificates
+      - run: swift --version
       - name: Build
         run: swift build
       - name: Test
         run: swift test
 
-  # Windows + Android arms are present in Package.swift (ported from a
-  # configuration proven downstream in Cocoanetics/SwiftPorts). Windows
-  # additionally needs two public-header shims (ssize_t / <stdint.h>) before its
-  # job can be enabled here; tracked in the README roadmap.
+  windows:
+    name: Windows
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+      - name: Setup Swift
+        uses: SwiftyLab/setup-swift@latest
+        with:
+          swift-version: "6.3.1"
+      - run: swift --version
+      - name: Build
+        run: swift build
+      - name: Test
+        run: swift test
+
+  android:
+    name: Android
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+      - name: Build & test (Android emulator)
+        uses: skiptools/swift-android-action@v2
+        with:
+          swift-version: "6.3.2"
+          free-disk-space: true
