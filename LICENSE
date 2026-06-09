@@ -22,7 +22,9 @@ SOFTWARE.
 
 ---
 
-This license covers GitKit's own code only (Package.swift, the Sources/
-Clibgit2shim shims, and the Swift wrapper). libgit2 is fetched as a git
-submodule from https://github.com/libgit2/libgit2 and is licensed separately
-under GPLv2 with a linking exception; see vendor/libgit2/COPYING.
+This license covers GitKit's own code only (Package.swift, the CGitKit umbrella,
+the Sources/Clibgit2shim shims, and the Swift wrapper). libgit2's source is
+fetched as a git submodule from https://github.com/libgit2/libgit2, and its
+public headers are vendored under Sources/CGitKit/include/git2 as byte copies.
+Both are libgit2's own files, licensed separately under GPLv2 with a linking
+exception; see vendor/libgit2/COPYING.

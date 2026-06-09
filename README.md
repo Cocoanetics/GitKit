@@ -44,24 +44,16 @@ own.
 
 | Platform | HTTPS backend | SHA backend | Status |
 |---|---|---|---|
-| macOS / iOS / tvOS / watchOS | SecureTransport | CommonCrypto | ✅ built & tested |
-| Linux | OpenSSL (dynamic) | builtin (SHA1DC) | 🧪 CI |
-| Windows | WinHTTP | Win32 BCrypt | 🚧 arm present — needs public-header shims |
-| Android | OpenSSL (dynamic, Bionic) | builtin (SHA1DC) | 🚧 arm present — CI pending |
+| macOS / iOS / tvOS / watchOS | SecureTransport | CommonCrypto | ✅ |
+| Linux | OpenSSL (dynamic) | builtin (SHA1DC) | ✅ |
+| Windows | WinHTTP | Win32 BCrypt | ✅ |
+| Android | OpenSSL (dynamic, Bionic) | builtin (SHA1DC) | ✅ |
 
-The `Package.swift` re-expresses libgit2's CMake feature detection as a
-per-platform `-D` matrix (`LIBGIT2_NO_FEATURES_H` + explicit defines), choosing
-the native TLS/hash/NTLM backend for each platform. The Apple arm is built and
-tested here; the Windows and Android arms are ported from a configuration proven
-downstream in [SwiftPorts](https://github.com/Cocoanetics/SwiftPorts).
-
-### Roadmap
-
-- **Windows:** libgit2's public `common.h` / `stdint.h` need two small
-  MSVC-compatibility tweaks (alias `ssize_t`, defer to the system `<stdint.h>`).
-  Since the submodule stays pristine, these will land as force-included shim
-  headers rather than source edits.
-- **Android:** wire the cross-compile job (mirroring SwiftPorts' emulator CI).
+All four arms build in CI on every push (macOS, Linux and Windows also run the
+test suite; Android cross-compiles via the emulator action). The `Package.swift`
+re-expresses libgit2's CMake feature detection as a per-platform `-D` matrix
+(`LIBGIT2_NO_FEATURES_H` + explicit defines), choosing the native
+TLS/hash/NTLM backend for each platform.
 
 ## Acknowledgements
 
@@ -126,6 +118,38 @@ Swift 6.3). Plugin-generated **Swift** is compiled; C/C++/Objective-C is not.
 The `#include` shim sidesteps the limitation entirely — it's an ordinary
 checked-in source file, so SwiftPM compiles it normally.
 
+## The curated module and vendored headers (Windows, and why the submodule stays pristine)
+
+libgit2's public headers assume two things the Windows MSVC/clang-cl toolchain
+doesn't provide: a lowercase `ssize_t` (used by `git2/sys/stream.h`), and that
+its bundled VS2008-era `git2/stdint.h` polyfill won't fight the real
+`<stdint.h>`. Upstream forks fix these by editing the headers — we don't, so the
+submodule stays byte-for-byte pristine.
+
+Two SwiftPM facts shape the solution:
+
+1. To import a C target into Swift, SwiftPM builds a **clang module**. The
+   auto-generated *umbrella-directory* module map pulls in *every* header in the
+   target's `publicHeadersPath` — including the vestigial `git2/stdint.h`, which
+   then collides with the system `<stdint.h>` on Windows.
+2. That module build **only searches the target's `publicHeadersPath`** — never
+   its `cSettings` header paths. So a `-Dssize_t=…` define or a header-search
+   path can't reach it, and the public headers it needs can't be pointed at from
+   elsewhere.
+
+So `GitKit` imports **`CGitKit`**, a curated module whose `publicHeadersPath`
+contains a custom umbrella header plus **byte copies of libgit2's public
+headers** ([`Sources/CGitKit/include`](Sources/CGitKit/include)). The umbrella
+includes `git2.h` (so the `git2/stdint.h` polyfill is never in the module) and
+applies the `ssize_t` / `_MSC_STDINT_H_` shims *before* it — fixing Windows for
+every consumer, not just CI. The copies are re-synced from the pinned submodule
+by [`Scripts/update-libgit2.sh`](Scripts/update-libgit2.sh) on each version bump.
+
+libgit2's **`.c` are still compiled from the pristine submodule** (the `Clibgit2`
+target, whose `publicHeadersPath` is a header-free dir so SwiftPM builds no
+module over libgit2's raw `include/`). Only the public *headers* are vendored, so
+the Swift importer has something to read.
+
 ## Repository layout
 
 ```
@@ -133,13 +157,14 @@ GitKit/
 ├── Package.swift                 # the per-platform build of libgit2
 ├── Sources/
 │   ├── GitKit/                   # public Swift module (re-exports the C API)
-│   └── Clibgit2shim/             # two #include shims (the only "patch")
+│   ├── CGitKit/                  # curated umbrella + vendored libgit2 public headers
+│   └── Clibgit2shim/             # two #include shims (struct entry rename)
 ├── Tests/GitKitTests/
 └── vendor/libgit2/               # submodule → libgit2/libgit2 @ vX.Y.Z (pristine)
 ```
 
-`Clibgit2` (the libgit2 C target) and `Clibgit2shim` are internal; `GitKit` is
-the only product.
+`Clibgit2` (libgit2's compiled `.c`), `CGitKit` (the imported module), and
+`Clibgit2shim` are internal; `GitKit` is the only product.
 
 ## Updating to a new libgit2 release
 
@@ -158,9 +183,11 @@ introduces a new same-named-struct collision).
 
 ## License
 
-GitKit's own code (the manifest, shims, and Swift wrapper) is released under the
-MIT license — see [LICENSE](LICENSE). libgit2 itself is **not** vendored here;
-it is fetched as a submodule from
-[libgit2/libgit2](https://github.com/libgit2/libgit2) under its own license
-(GPLv2 **with a linking exception**). Review libgit2's `COPYING` for the terms
-that apply to the compiled library.
+GitKit's own code (the manifest, the umbrella, the shims, and the Swift wrapper)
+is released under the MIT license — see [LICENSE](LICENSE). libgit2's source is
+fetched as a submodule from
+[libgit2/libgit2](https://github.com/libgit2/libgit2); its public headers are
+also vendored under [`Sources/CGitKit/include/git2`](Sources/CGitKit/include) as
+byte copies. Both are libgit2's own files, licensed under **GPLv2 with a linking
+exception** — see libgit2's `COPYING` for the terms that apply to the library
+and its headers.
