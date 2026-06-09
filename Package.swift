@@ -4,26 +4,31 @@ import PackageDescription
 // =============================================================================
 // GitKit — libgit2, packaged for SwiftPM.
 //
-//   • libgit2 is a git submodule (vendor/libgit2) pinned to an official
-//     upstream release tag. GitKit's own version always matches it (see README).
+//   • libgit2 is a git submodule (vendor/libgit2) pinned to an official upstream
+//     release tag, and is compiled byte-for-byte pristine — no edits, ever.
+//     GitKit's own version always matches the libgit2 release (see README).
 //   • `Clibgit2` compiles libgit2's C directly (no CMake) via
-//     LIBGIT2_NO_FEATURES_H + the per-host `-D` matrix below, which
-//     re-expresses libgit2's CMake feature detection.
-//   • Two files (indexer.c, xdiff/xpatience.c) define a file-local
-//     `struct entry` that collides with POSIX <search.h>'s `struct entry`
-//     under SwiftPM's module-based C build. They are compiled through
-//     translation-unit-scoped `#include` shims (Sources/Clibgit2shim) so the
-//     submodule stays byte-for-byte pristine. See README ("The struct entry
-//     wrangling") for why a build plugin can't do this.
+//     LIBGIT2_NO_FEATURES_H + the per-host `-D` matrix below. Its
+//     publicHeadersPath points at a header-free dir, so SwiftPM builds NO
+//     module over libgit2's raw include/ (whose auto umbrella-directory would
+//     drag in the vestigial git2/stdint.h polyfill and break on Windows).
+//   • `CGitKit` is the curated module consumers import. SwiftPM's C-module
+//     build only searches a target's publicHeadersPath (never cSettings header
+//     paths), so libgit2's public headers are *vendored* next to a custom
+//     umbrella in Sources/CGitKit/include (re-synced per release by
+//     Scripts/update-libgit2.sh — the submodule stays pristine). The umbrella
+//     includes git2.h (not the stdint.h polyfill) and applies the two Windows
+//     (MSVC/clang-cl) shims before it.
+//   • indexer.c / xdiff/xpatience.c define a file-local `struct entry` that
+//     collides with POSIX <search.h> under SwiftPM's module C build; they're
+//     compiled via translation-unit-scoped `#include` shims (Clibgit2shim).
 //   • Consumers only import `GitKit`.
 // =============================================================================
 
 let libgit2 = "vendor/libgit2"
 
-// Preprocessor defines — libgit2's feature matrix. Shared by the core target
-// and the shim target (the shim compiles two libgit2 .c files, so it needs the
-// same feature flags). Header search paths are kept separate (they differ
-// between the two targets) — see coreHeaderPaths / shimHeaderPaths.
+// Preprocessor defines — libgit2's feature matrix. Shared by the libgit2 target
+// and the struct-entry shim target (which compiles two libgit2 .c files).
 var defines: [CSetting] = [
     .define("LIBGIT2_NO_FEATURES_H"),
     .define("GIT_THREADS", to: "1"),
@@ -75,8 +80,7 @@ var defines: [CSetting] = [
     .define("GIT_COMPRESSION_BUILTIN", to: "1"),
 ]
 
-// CMake/build-system files and unused backends, plus the two files we compile
-// through the shims instead.
+// Files NOT to compile, relative to the submodule (Clibgit2's path).
 var excludes: [String] = [
     "deps/llhttp/CMakeLists.txt", "deps/llhttp/LICENSE-MIT",
     "deps/pcre/CMakeLists.txt", "deps/pcre/COPYING", "deps/pcre/LICENCE",
@@ -97,8 +101,10 @@ var excludes: [String] = [
     "deps/xdiff/xpatience.c",
 ]
 
-// Header search paths, relative to each target's own directory.
+// Header search paths for the .c compilation, relative to Clibgit2's path
+// (the submodule). The .c compile against the pristine submodule headers.
 var coreHeaderPaths: [CSetting] = [
+    .headerSearchPath("include"),
     .headerSearchPath("deps/llhttp"),
     .headerSearchPath("deps/pcre"),
     .headerSearchPath("deps/xdiff"),
@@ -107,9 +113,7 @@ var coreHeaderPaths: [CSetting] = [
     .headerSearchPath("src/libgit2"),
     .headerSearchPath("src/util"),
 ]
-// The shims live in Sources/Clibgit2shim and reach back into the pristine
-// submodule to resolve libgit2's own headers. (The builtin-SHA paths needed on
-// Linux/Android are appended in the host-dispatch block below.)
+// The shims live in Sources/Clibgit2shim and reach into the pristine submodule.
 var shimHeaderPaths: [CSetting] = [
     .headerSearchPath("../../\(libgit2)/src/libgit2"),
     .headerSearchPath("../../\(libgit2)/src/util"),
@@ -159,7 +163,6 @@ var linkerSettings: [LinkerSetting] = []
         "src/util/hash/collisiondetect.c", "src/util/hash/collisiondetect.h",
         "src/util/hash/rfc6234", "src/util/hash/sha1dc",
         "src/util/hash/openssl.c", "src/util/hash/openssl.h",
-        "deps/ntlmclient/crypt_openssl.c", "deps/ntlmclient/crypt_openssl.h",
         "deps/winhttp",
     ]
     defines += [
@@ -171,16 +174,13 @@ var linkerSettings: [LinkerSetting] = []
         .define("GIT_NSEC_WIN32", to: "1"),
         .define("WIN32"),
         .define("_WIN32_WINNT", to: "0x0600"),
-        // libgit2's public headers need two MSVC/clang-cl compatibility shims
-        // that upstream applies via header edits. We keep the submodule pristine
-        // and supply them as defines (applied when the Clibgit2 module is built,
-        // so consumers inherit them through the precompiled module):
-        //  • `ssize_t` isn't a Windows type — alias it to ptrdiff_t (same width).
-        //    Used by git2/sys/stream.h callback signatures.
+        // libgit2's public headers assume two things MSVC/clang-cl doesn't
+        // provide. The curated umbrella applies the same shims for the Swift
+        // module; these defines cover libgit2's own .c compilation:
+        //  • `ssize_t` → ptrdiff_t (same width); used by git2/sys/stream.h.
         .define("ssize_t", to: "ptrdiff_t"),
-        //  • Skip libgit2's bundled VS2008-era <stdint.h> polyfill
-        //    (include/git2/stdint.h) by pre-defining its include guard, so the
-        //    real system <stdint.h> is used and int16_t/etc. aren't redefined.
+        //  • skip libgit2's bundled VS2008-era <stdint.h> polyfill so the real
+        //    system <stdint.h> wins (no int16_t/etc. redefinition).
         .define("_MSC_STDINT_H_", to: "1"),
     ]
     linkerSettings += [
@@ -221,8 +221,6 @@ var linkerSettings: [LinkerSetting] = []
         .headerSearchPath("src/util/hash/sha1dc"),
         .headerSearchPath("src/util/hash/rfc6234"),
     ]
-    // The shim compiles indexer.c, which pulls in hash.h → the builtin SHA
-    // backend on Linux/Android, so it needs the same hash header paths.
     shimHeaderPaths += [
         .headerSearchPath("../../\(libgit2)/src/util/hash/sha1dc"),
         .headerSearchPath("../../\(libgit2)/src/util/hash/rfc6234"),
@@ -242,24 +240,21 @@ let package = Package(
     ],
     targets: [
         // Public Swift face — the only module consumers import.
-        // Depends on CGitKit for the curated module to import, and on Clibgit2
-        // for the linked libgit2 symbols.
-        .target(name: "GitKit", dependencies: ["CGitKit", "Clibgit2"]),
+        .target(name: "GitKit", dependencies: ["CGitKit"]),
 
-        // Curated libgit2 module: a custom umbrella header (instead of
-        // SwiftPM's auto umbrella-directory map) that keeps the internal
-        // git2/stdint.h polyfill out of the module and applies the Windows
-        // ssize_t/stdint shims before git2.h — so the submodule stays pristine.
-        // It includes git2.h textually via its own header path (no dependency
-        // on Clibgit2's module), so Clibgit2's auto-module is never imported.
+        // The curated, Windows-safe libgit2 module: a custom umbrella over the
+        // vendored public headers (Sources/CGitKit/include). Links the compiled
+        // libgit2 via its dependency on Clibgit2.
         .target(
             name: "CGitKit",
+            dependencies: ["Clibgit2"],
             path: "Sources/CGitKit",
             publicHeadersPath: "include",
-            cSettings: [.headerSearchPath("../../\(libgit2)/include")] + defines
+            cSettings: defines
         ),
 
-        // libgit2 itself, compiled from the pristine submodule.
+        // libgit2 itself, compiled from the pristine submodule. publicHeadersPath
+        // is a header-free dir so no module is generated over its raw include/.
         .target(
             name: "Clibgit2",
             dependencies: ["Clibgit2shim"],
@@ -269,7 +264,7 @@ let package = Package(
                 "deps/llhttp", "deps/pcre", "deps/xdiff", "deps/zlib",
                 "deps/ntlmclient", "src/libgit2", "src/util",
             ],
-            publicHeadersPath: "include",
+            publicHeadersPath: "ci",
             cSettings: coreHeaderPaths + defines,
             linkerSettings: linkerSettings
         ),

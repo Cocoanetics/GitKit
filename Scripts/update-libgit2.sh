@@ -22,5 +22,15 @@ if ! git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
 fi
 git checkout -q "$tag"
 
-echo "Submodule now at libgit2 $(git describe --tags)."
+# Re-vendor libgit2's public headers into the CGitKit module. SwiftPM's C-module
+# build only searches a target's publicHeadersPath (never cSettings header
+# paths), so the headers the Swift importer needs must physically live there.
+# The submodule stays pristine; these are byte copies of the pinned tag's
+# include/ tree. The .c are still compiled from the submodule itself.
+vendor="$root/Sources/CGitKit/include"
+rm -rf "$vendor/git2" "$vendor/git2.h"
+cp "$root/vendor/libgit2/include/git2.h" "$vendor/git2.h"
+cp -R "$root/vendor/libgit2/include/git2" "$vendor/git2"
+
+echo "Submodule now at libgit2 $(git describe --tags); re-vendored $(find "$vendor/git2" -name '*.h' | wc -l | tr -d ' ')+1 public headers."
 echo "Next: (cd $root && swift test) then commit + tag '${tag#v}'."

@@ -1,3 +1,3 @@
-/* Anchors the CGitKit C target. Including the umbrella here also compiles the
- * Windows shims (and validates them) as part of the normal build. */
+/* Anchors the CGitKit module target and compiles the curated umbrella (which
+ * applies the Windows shims), validating it as part of the normal build. */
 #include "gitkit_libgit2.h"

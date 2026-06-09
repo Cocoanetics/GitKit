@@ -22,6 +22,12 @@ typedef ptrdiff_t ssize_t;       /* used by git2/sys/stream.h callback types */
 #  define _MSC_STDINT_H_         /* skip libgit2's bundled <stdint.h> polyfill */
 #endif
 
+/* git2.h and the git2/ tree are vendored alongside this umbrella (see
+ * Scripts/update-libgit2.sh) so the Swift importer's module build — which only
+ * searches this target's publicHeadersPath, never cSettings header paths — can
+ * resolve git2.h and its "git2/…" cross-includes. The libgit2 *submodule* stays
+ * pristine; these are byte copies re-synced on every version bump. The .c are
+ * still compiled from the submodule itself. */
 #include "git2.h"
 
 #endif /* GITKIT_LIBGIT2_H */
