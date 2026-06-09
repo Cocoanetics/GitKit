@@ -32,5 +32,21 @@ rm -rf "$vendor/git2" "$vendor/git2.h"
 cp "$root/vendor/libgit2/include/git2.h" "$vendor/git2.h"
 cp -R "$root/vendor/libgit2/include/git2" "$vendor/git2"
 
+# Regenerate the curated umbrella's git2/sys/* include list (between the
+# BEGIN/END sys markers) so a new libgit2 release adding a sys header is picked
+# up. git2.h doesn't include these, but consumers use complete types from them.
+python3 - "$vendor" <<'PY'
+import sys, glob, os, re
+vendor = sys.argv[1]
+headers = sorted(os.path.basename(p) for p in glob.glob(os.path.join(vendor, "git2/sys/*.h")))
+block = "\n".join('#include "git2/sys/%s"' % h for h in headers)
+path = os.path.join(vendor, "gitkit_libgit2.h")
+text = open(path).read()
+text = re.sub(r"/\* BEGIN sys \*/.*?/\* END sys \*/",
+              "/* BEGIN sys */\n%s\n/* END sys */" % block, text, flags=re.S)
+open(path, "w").write(text)
+print("Regenerated umbrella with %d git2/sys headers." % len(headers))
+PY
+
 echo "Submodule now at libgit2 $(git describe --tags); re-vendored $(find "$vendor/git2" -name '*.h' | wc -l | tr -d ' ')+1 public headers."
 echo "Next: (cd $root && swift test) then commit + tag '${tag#v}'."
