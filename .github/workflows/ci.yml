@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  macos:
+    name: macOS (Swift)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - run: swift --version
+      - name: Build
+        run: swift build
+      - name: Test
+        run: swift test
+
+  linux:
+    name: Linux (Swift)
+    runs-on: ubuntu-latest
+    container: swift:6.0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Build
+        run: swift build
+      - name: Test
+        run: swift test
+
+  # Windows + Android arms are present in Package.swift (ported from a
+  # configuration proven downstream in Cocoanetics/SwiftPorts). Windows
+  # additionally needs two public-header shims (ssize_t / <stdint.h>) before its
+  # job can be enabled here; tracked in the README roadmap.
