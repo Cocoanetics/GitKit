@@ -171,6 +171,17 @@ var linkerSettings: [LinkerSetting] = []
         .define("GIT_NSEC_WIN32", to: "1"),
         .define("WIN32"),
         .define("_WIN32_WINNT", to: "0x0600"),
+        // libgit2's public headers need two MSVC/clang-cl compatibility shims
+        // that upstream applies via header edits. We keep the submodule pristine
+        // and supply them as defines (applied when the Clibgit2 module is built,
+        // so consumers inherit them through the precompiled module):
+        //  • `ssize_t` isn't a Windows type — alias it to ptrdiff_t (same width).
+        //    Used by git2/sys/stream.h callback signatures.
+        .define("ssize_t", to: "ptrdiff_t"),
+        //  • Skip libgit2's bundled VS2008-era <stdint.h> polyfill
+        //    (include/git2/stdint.h) by pre-defining its include guard, so the
+        //    real system <stdint.h> is used and int16_t/etc. aren't redefined.
+        .define("_MSC_STDINT_H_", to: "1"),
     ]
     linkerSettings += [
         .linkedLibrary("ws2_32"), .linkedLibrary("secur32"),
@@ -188,7 +199,9 @@ var linkerSettings: [LinkerSetting] = []
         .define("_GNU_SOURCE"),
         .define("GIT_QSORT_GNU", .when(platforms: [.linux])),
         .define("GIT_HTTPS_OPENSSL_DYNAMIC", to: "1", .when(platforms: [.linux, .android])),
-        .define("GIT_SHA1_BUILTIN", to: "1"),
+        // libgit2 1.9.4 selects the collision-detecting builtin SHA1 via
+        // GIT_SHA1_COLLISIONDETECT (older releases used GIT_SHA1_BUILTIN).
+        .define("GIT_SHA1_COLLISIONDETECT", to: "1"),
         .define("GIT_SHA256_BUILTIN", to: "1"),
         .define("SHA1DC_NO_STANDARD_INCLUDES", to: "1"),
         .define("SHA1DC_CUSTOM_INCLUDE_SHA1_C", to: "\"git2_util.h\""),

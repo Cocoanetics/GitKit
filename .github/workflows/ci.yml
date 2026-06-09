@@ -68,5 +68,8 @@ jobs:
       - name: Build & test (Android emulator)
         uses: skiptools/swift-android-action@v2
         with:
-          swift-version: "6.3.2"
+          # Latest full-patch version published in the swift-android-toolchain
+          # release feed (no 6.3.x exists there yet); a bare "6.2" would drift
+          # host vs SDK.
+          swift-version: "6.2.3"
           free-disk-space: true
