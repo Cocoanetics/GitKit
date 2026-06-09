@@ -1,0 +1,4 @@
+module CGitKit {
+    umbrella header "gitkit_libgit2.h"
+    export *
+}

@@ -194,6 +194,10 @@ var linkerSettings: [LinkerSetting] = []
         "src/util/hash/win32.c", "src/util/hash/win32.h", "src/util/win32",
         "src/util/hash/common_crypto.c", "src/util/hash/common_crypto.h",
         "deps/ntlmclient/crypt_commoncrypto.c", "deps/ntlmclient/crypt_commoncrypto.h",
+        // We hash via collisiondetect (SHA1) + builtin/rfc6234 (SHA256), not the
+        // OpenSSL hash backend. In 1.9.4 the rfc6234 `SHA1` enum collides with
+        // <openssl/sha.h>'s `SHA1()` if this TU is compiled, so drop it.
+        "src/util/hash/openssl.c", "src/util/hash/openssl.h",
     ]
     defines += [
         .define("_GNU_SOURCE"),
@@ -238,7 +242,22 @@ let package = Package(
     ],
     targets: [
         // Public Swift face — the only module consumers import.
-        .target(name: "GitKit", dependencies: ["Clibgit2"]),
+        // Depends on CGitKit for the curated module to import, and on Clibgit2
+        // for the linked libgit2 symbols.
+        .target(name: "GitKit", dependencies: ["CGitKit", "Clibgit2"]),
+
+        // Curated libgit2 module: a custom umbrella header (instead of
+        // SwiftPM's auto umbrella-directory map) that keeps the internal
+        // git2/stdint.h polyfill out of the module and applies the Windows
+        // ssize_t/stdint shims before git2.h — so the submodule stays pristine.
+        // It includes git2.h textually via its own header path (no dependency
+        // on Clibgit2's module), so Clibgit2's auto-module is never imported.
+        .target(
+            name: "CGitKit",
+            path: "Sources/CGitKit",
+            publicHeadersPath: "include",
+            cSettings: [.headerSearchPath("../../\(libgit2)/include")] + defines
+        ),
 
         // libgit2 itself, compiled from the pristine submodule.
         .target(

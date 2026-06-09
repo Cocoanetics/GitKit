@@ -1,11 +1,11 @@
 // GitKit — the public Swift face over the bundled libgit2.
 //
-// `@_exported import Clibgit2` re-exports the full libgit2 C API, so
+// `@_exported import CGitKit` re-exports the full libgit2 C API, so
 // `import GitKit` gives you everything (`git_repository_open`, `git_clone`, …)
 // plus the small Swift conveniences below. The C target and the libgit2
 // submodule are implementation details consumers never reference directly.
 
-@_exported import Clibgit2
+@_exported import CGitKit
 
 /// Namespace for GitKit-level helpers and metadata.
 public enum GitKit {
