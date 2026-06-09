@@ -240,6 +240,9 @@ let package = Package(
     platforms: [.macOS(.v13), .iOS(.v16)],
     products: [
         .library(name: "GitKit", targets: ["GitKit"]),
+        // The curated libgit2 C module (git2.h API, Windows-safe), for C/Swift
+        // consumers that want the raw API directly — e.g. SwiftPorts' SwiftGit.
+        .library(name: "CGitKit", targets: ["CGitKit"]),
     ],
     targets: [
         // Public Swift face — the only module consumers import.
