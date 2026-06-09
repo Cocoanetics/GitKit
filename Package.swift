@@ -21,7 +21,7 @@ import PackageDescription
 //     (MSVC/clang-cl) shims before it.
 //   • indexer.c / xdiff/xpatience.c define a file-local `struct entry` that
 //     collides with POSIX <search.h> under SwiftPM's module C build; they're
-//     compiled via translation-unit-scoped `#include` shims (Clibgit2shim).
+//     compiled via translation-unit-scoped `#include` shims (Clibgit2Patches).
 //   • Consumers only import `GitKit`.
 // =============================================================================
 
@@ -96,7 +96,7 @@ var excludes: [String] = [
     "deps/ntlmclient/crypt_builtin_md4.c",
     "deps/ntlmclient/unicode_iconv.c", "deps/ntlmclient/unicode_iconv.h",
 
-    // Compiled via Sources/Clibgit2shim/*_patched.c (struct entry rename).
+    // Compiled via Sources/Clibgit2Patches/*_patched.c (struct entry rename).
     "src/libgit2/indexer.c",
     "deps/xdiff/xpatience.c",
 ]
@@ -113,7 +113,7 @@ var coreHeaderPaths: [CSetting] = [
     .headerSearchPath("src/libgit2"),
     .headerSearchPath("src/util"),
 ]
-// The shims live in Sources/Clibgit2shim and reach into the pristine submodule.
+// The shims live in Sources/Clibgit2Patches and reach into the pristine submodule.
 var shimHeaderPaths: [CSetting] = [
     .headerSearchPath("../../\(libgit2)/src/libgit2"),
     .headerSearchPath("../../\(libgit2)/src/util"),
@@ -263,7 +263,7 @@ let package = Package(
         // is a header-free dir so no module is generated over its raw include/.
         .target(
             name: "Clibgit2",
-            dependencies: ["Clibgit2shim"],
+            dependencies: ["Clibgit2Patches"],
             path: libgit2,
             exclude: excludes,
             sources: [
@@ -278,8 +278,8 @@ let package = Package(
         // The two `struct entry` files, compiled through TU-scoped #include
         // shims so the submodule needs no edits.
         .target(
-            name: "Clibgit2shim",
-            path: "Sources/Clibgit2shim",
+            name: "Clibgit2Patches",
+            path: "Sources/Clibgit2Patches",
             publicHeadersPath: ".",
             cSettings: shimHeaderPaths + defines
         ),
