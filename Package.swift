@@ -234,7 +234,10 @@ var linkerSettings: [LinkerSetting] = []
 
 let package = Package(
     name: "GitKit",
-    platforms: [.macOS(.v13), .iOS(.v16), .tvOS(.v16), .watchOS(.v9)],
+    // tvOS/watchOS are intentionally omitted: libgit2's process layer
+    // (src/util/unix/process.c) calls fork/execve, which Apple marks
+    // unavailable there.
+    platforms: [.macOS(.v13), .iOS(.v16)],
     products: [
         .library(name: "GitKit", targets: ["GitKit"]),
     ],

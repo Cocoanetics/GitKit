@@ -44,17 +44,21 @@ own.
 
 | Platform | HTTPS backend | SHA backend | Status |
 |---|---|---|---|
-| macOS / iOS / tvOS / watchOS | SecureTransport | CommonCrypto | ✅ |
+| macOS / iOS | SecureTransport | CommonCrypto | ✅ |
 | Linux | OpenSSL (dynamic) | builtin (SHA1DC) | ✅ |
 | Windows | WinHTTP | Win32 BCrypt | ✅ |
 | Android | OpenSSL (dynamic, Bionic) | builtin (SHA1DC) | ✅ |
 
-Every declared platform builds in CI on each push: macOS, Linux, and Windows
-also run the test suite; iOS, tvOS, and watchOS are cross-compiled (`xcodebuild`,
-generic device destinations); Android cross-compiles and runs its tests on the
-emulator. The `Package.swift` re-expresses libgit2's CMake feature detection as a
-per-platform `-D` matrix (`LIBGIT2_NO_FEATURES_H` + explicit defines), choosing
-the native TLS/hash/NTLM backend for each platform.
+Every supported platform builds in CI on each push: macOS, Linux, and Windows
+also run the test suite; iOS is cross-compiled (`xcodebuild`); Android
+cross-compiles and runs its tests on the emulator. The `Package.swift`
+re-expresses libgit2's CMake feature detection as a per-platform `-D` matrix
+(`LIBGIT2_NO_FEATURES_H` + explicit defines), choosing the native
+TLS/hash/NTLM backend for each platform.
+
+> **tvOS / watchOS** are not supported: libgit2's process layer
+> (`src/util/unix/process.c`) uses `fork`/`execve`, which Apple marks
+> unavailable on those platforms.
 
 ## Acknowledgements
 

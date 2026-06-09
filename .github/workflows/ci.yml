@@ -19,21 +19,17 @@ jobs:
       - name: Test
         run: swift test
 
-  apple-cross:
-    name: ${{ matrix.platform }}
+  ios:
+    name: iOS
     runs-on: macos-15
-    strategy:
-      fail-fast: false
-      matrix:
-        platform: [iOS, tvOS, watchOS]
     steps:
       - uses: actions/checkout@v6
         with:
           submodules: recursive
-      # Cross-compile only — these platforms run on devices/simulators; the API
-      # is identical to macOS, which runs the test suite above.
-      - name: Build (${{ matrix.platform }})
-        run: xcodebuild build -scheme GitKit -destination "generic/platform=${{ matrix.platform }}" -skipMacroValidation
+      # Cross-compile only — iOS runs on devices/simulators; the API is identical
+      # to macOS, which runs the test suite above.
+      - name: Build (iOS)
+        run: xcodebuild build -scheme GitKit -destination 'generic/platform=iOS' -skipMacroValidation
 
   linux:
     name: Linux
