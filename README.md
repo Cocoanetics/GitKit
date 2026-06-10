@@ -1,25 +1,70 @@
 # GitKit
 
-**[libgit2](https://libgit2.org) as a Swift package.** GitKit compiles the
-official libgit2 C sources straight from an upstream git submodule — no CMake,
-no system install — and exposes them to Swift on macOS, iOS, Linux, Windows,
-and Android.
+**[libgit2](https://libgit2.org) as a Swift package — C library and idiomatic
+Swift SDK.** GitKit compiles the official libgit2 C sources straight from an
+upstream git submodule — no CMake, no system install — and layers a full Swift
+API over them, on macOS, iOS, Linux, Windows, and Android.
 
 ```swift
 import GitKit
 
-print(GitKit.libgit2Version)        // "1.9.4"
-GitKit.initialize()
-defer { GitKit.shutdown() }
+let repo = try Repository.open(at: URL(fileURLWithPath: "/path/to/repo"))
 
-var repo: OpaquePointer?
-git_repository_open(&repo, "/path/to/repo")   // full libgit2 C API, re-exported
+let branch = try repo.currentBranch()                     // "main"
+let report = try repo.status()                            // git status
+try repo.add(paths: ["README.md"])                        // git add
+let commit = try repo.commitDetailed(
+    message: "Update README",
+    author: Signature(name: "Jane", email: "jane@example.com"),
+    allowEmpty: false)                                    // git commit
+print(commit.shortSHA)
+
+for entry in try repo.log(LogQuery(maxCount: 10)) {       // git log
+    print(entry.shortSHA, entry.subject)
+}
 ```
+
+## The Swift SDK
+
+`Repository` mirrors libgit2's own `git_repository *` model: open (or
+`initialize` / `clone`) a handle, call operations on it, let ARC free it.
+Operations are synchronous, `throws` (typed ``Libgit2Error``), and return
+`Sendable` value types. The surface covers the everyday git command set:
+
+- **Lifecycle** — `open`, `initialize` (git init), `clone` (with
+  `CredentialProvider` closures for HTTPS/SSH auth and a pluggable progress
+  sink).
+- **Work** — `add`, `commitDetailed`, `status`, `diff`, `checkout`,
+  `checkoutNewBranch`, `checkoutPaths`, `reset`, `move`/`remove` (git mv/rm).
+- **History** — `log` (rich `LogQuery`/`LogEntry` incl. `format(_:)`
+  placeholders), `blame`, `describe`, `reflog`, `grep`.
+- **Branches & refs** — `localBranches`, `branchDelete`/`branchRename`,
+  `tagList`/`tagCreate`/`tagCreateAnnotated`/`tagDelete`, `resolveOID`,
+  `revParse` helpers, `lsTree`, `catFileBlob`/`objectMetadata`.
+- **Integration** — `merge` (fast-forward modes), `rebase`
+  (continue/skip/abort), `cherryPick`, `stash`
+  (save/apply/pop/list/show/branch), `apply` (patches).
+- **Remotes** — `fetch`, `push` (incl. `-u` upstream wiring), `addRemote`,
+  `remoteList`, `remoteURL`, real-git-style progress output.
+
+Commit-identity resolution honours real git's `GIT_AUTHOR_*` /
+`GIT_COMMITTER_*` env-precedence chain (``SignatureResolver``); pass `env:`
+explicitly when you virtualise the environment. The raw C API stays one
+property away — `repo.pointer` is a deliberate escape hatch, and the whole
+libgit2 C surface remains re-exported (`git_repository_open`, `git_clone`, …)
+for anything the SDK doesn't cover yet, with `check(_:)` translating return
+codes into thrown ``Libgit2Error``s.
+
+The SDK performs **no access gating and reads no ambient state** — it's a pure
+library. Hosts that sandbox file access (e.g.
+[SwiftPorts](https://github.com/Cocoanetics/SwiftPorts)' `GitClient`, which
+backs its in-process `git` CLI) authorize paths before opening and wrap calls
+in their own isolation, composing this SDK rather than configuring it.
 
 ## Installation
 
 ```swift
-.package(url: "https://github.com/cocoanetics/GitKit.git", from: "1.9.4"),
+.package(url: "https://github.com/cocoanetics/GitKit.git", from: "2.0.0"),
 ```
 
 ```swift
@@ -29,16 +74,22 @@ git_repository_open(&repo, "/path/to/repo")   // full libgit2 C API, re-exported
 SwiftPM initializes the libgit2 submodule automatically when it resolves the
 package — there is nothing else to install.
 
-## Versioning — GitKit tracks libgit2 exactly
+## Versioning
 
-**GitKit's version number is always identical to the libgit2 release it wraps.**
-GitKit `1.9.4` builds libgit2 `v1.9.4`; GitKit `1.8.5` builds libgit2 `v1.8.5`.
-There is no independent GitKit version line — when libgit2 ships an official
-release tag, GitKit ships the same number with the submodule pinned to that tag.
+GitKit follows **independent semantic versioning**, and every release states
+the libgit2 it vendors:
 
-So `from: "1.9.4"` means *"libgit2 1.9.4, packaged for Swift"*, and a SemVer
-range maps directly onto libgit2 releases. Patch/minor bumps follow libgit2's
-own.
+| GitKit | vendors libgit2 |
+|---|---|
+| 2.x | v1.9.4 |
+| 1.9.4 (legacy) | v1.9.4 |
+
+Up to `1.9.4`, GitKit's version mirrored the libgit2 release 1:1 — the package
+was pure packaging, so the numbers could be identical. With the Swift SDK the
+package has its own evolution (API additions, fixes) between libgit2 releases,
+which a mirrored version number can't express. SDK changes bump GitKit's
+major/minor/patch per SemVer; a libgit2 submodule bump is called out in the
+release notes (and in this table).
 
 ## Supported platforms
 
@@ -204,10 +255,11 @@ The rules that came out of it:
 GitKit/
 ├── Package.swift                 # the per-platform build of libgit2
 ├── Sources/
-│   ├── GitKit/                   # public Swift module (re-exports the C API)
+│   ├── GitKit/                   # the Swift SDK (Repository + operations)
+│   │                             #   + re-export of the full C API
 │   ├── CGitKit/                  # curated umbrella + vendored libgit2 public headers
 │   └── Clibgit2Patches/          # two #include shims (struct entry rename)
-├── Tests/GitKitTests/
+├── Tests/GitKitTests/            # the SDK test suite (exercises real repos)
 └── vendor/libgit2/               # submodule → libgit2/libgit2 @ vX.Y.Z (pristine)
 ```
 
@@ -216,7 +268,8 @@ GitKit/
 
 ## Updating to a new libgit2 release
 
-GitKit releases follow libgit2 releases. To cut GitKit `X.Y.Z`:
+A libgit2 bump ships as a regular GitKit release (minor or major per SemVer,
+noted in the release notes and the versioning table above):
 
 ```sh
 Scripts/update-libgit2.sh vX.Y.Z      # moves the submodule to the tag, re-vendors headers
@@ -224,7 +277,7 @@ Scripts/update-libgit2.sh vX.Y.Z      # moves the submodule to the tag, re-vendo
 #   every define in Package.swift must appear in vendor/libgit2/{src,include,deps}
 swift test                            # verify on this host
 git commit -am "libgit2 X.Y.Z"
-git tag X.Y.Z && git push --tags
+git tag <next GitKit version> && git push --tags
 ```
 
 The script repoints the pristine submodule and re-vendors the public headers.
