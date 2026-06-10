@@ -1,9 +1,11 @@
 // GitKit — the public Swift face over the bundled libgit2.
 //
-// `@_exported import CGitKit` re-exports the full libgit2 C API, so
-// `import GitKit` gives you everything (`git_repository_open`, `git_clone`, …)
-// plus the small Swift conveniences below. The C target and the libgit2
-// submodule are implementation details consumers never reference directly.
+// `import GitKit` gives you the Swift SDK (`Repository` and friends, see
+// Repository.swift and the Repository+*.swift operation files) AND — via
+// `@_exported import CGitKit` — the full libgit2 C API
+// (`git_repository_open`, `git_clone`, …) for anything the SDK doesn't
+// surface yet. The C target and the libgit2 submodule are implementation
+// details consumers never reference directly.
 
 @_exported import CGitKit
 
@@ -11,7 +13,8 @@
 public enum GitKit {
     /// The libgit2 version this package was compiled against, e.g. `"1.9.4"`.
     ///
-    /// GitKit's own release version always matches this — see the README.
+    /// GitKit versions independently of libgit2; each release documents the
+    /// libgit2 it vendors — see the README's versioning table.
     public static var libgit2Version: String {
         var major: Int32 = 0
         var minor: Int32 = 0
