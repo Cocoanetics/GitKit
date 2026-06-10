@@ -253,42 +253,15 @@ let package = Package(
         // consumers that want the raw API directly — e.g. SwiftPorts' SwiftGit.
         .library(name: "CGitKit", targets: ["CGitKit"]),
     ],
-    // Opt-in, build-time feature toggles. Off by default.
-    //   • depending on this package:    .package(url: …, traits: ["Archive"])
-    //   • building this package direct: swift build --traits Archive
-    traits: [
-        .trait(
-            name: "Archive",
-            description: "git archive support (Repository.archive) via libarchive (swift-archive)."),
-    ],
-    dependencies: [
-        // libarchive-backed archive writer, used only by the trait-gated
-        // `Repository.archive` (tar / tar.gz / tar.bz2 / tar.xz / tar.zstd /
-        // zip). With the `Archive` trait off (the default) no target depends
-        // on it, so consumers don't build it. Tracking the `swift` branch
-        // until the platform-narrowed gating ships in a tagged release —
-        // the same pin SwiftPorts uses.
-        .package(
-            url: "https://github.com/marcprux/swift-archive",
-            branch: "swift",
-            traits: [.defaults,
-                     "GzipSupport",
-                     "Bzip2Support",
-                     "LZMASupport",
-                     "ZstdSupport"]),
-    ],
+    // NB: no dependencies, by design — and a constraint to remember: a
+    // *tagged* package may only depend on other tagged packages (SwiftPM's
+    // stable-vs-unstable rule; branch and revision pins are both rejected).
+    // That's why `git archive`'s libarchive writer lives downstream in
+    // SwiftPorts (over the `treeBlobs`/`commitTime` traversal below) until
+    // swift-archive ships a tagged release with its platform gating.
     targets: [
-        // Public Swift face — the only module consumers import. The Archive
-        // product joins the build only when the `Archive` trait is enabled;
-        // Repository+Archive.swift is gated `#if Archive` (the trait doubles
-        // as a compilation condition) so it compiles to nothing otherwise.
-        .target(
-            name: "GitKit",
-            dependencies: [
-                "CGitKit",
-                .product(name: "Archive", package: "swift-archive",
-                         condition: .when(traits: ["Archive"])),
-            ]),
+        // Public Swift face — the only module consumers import.
+        .target(name: "GitKit", dependencies: ["CGitKit"]),
 
         // The curated, Windows-safe libgit2 module: a custom umbrella over the
         // vendored public headers (Sources/CGitKit/include). Links the compiled
@@ -326,15 +299,6 @@ let package = Package(
             cSettings: shimHeaderPaths + defines
         ),
 
-        .testTarget(
-            name: "GitKitTests",
-            dependencies: [
-                "GitKit",
-                // Lets the archive tests link Archive when the trait is on; the
-                // suite itself is gated `#if Archive`, so with the trait off it
-                // compiles to nothing.
-                .product(name: "Archive", package: "swift-archive",
-                         condition: .when(traits: ["Archive"])),
-            ]),
+        .testTarget(name: "GitKitTests", dependencies: ["GitKit"]),
     ]
 )
