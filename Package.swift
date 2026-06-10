@@ -264,13 +264,18 @@ let package = Package(
     dependencies: [
         // libarchive-backed archive writer, used only by the trait-gated
         // `Repository.archive` (tar / tar.gz / tar.bz2 / tar.xz / tar.zstd /
-        // zip). With the `Archive` trait off (the default) no target depends
-        // on it, so consumers don't build it. Tracking the `swift` branch
-        // until the platform-narrowed gating ships in a tagged release —
-        // the same pin SwiftPorts uses.
+        // zip). Pinned to the head of upstream's default (`swift`) branch by
+        // commit — no tagged release carries its platform-narrowed filter
+        // gating yet; move to a `from:` pin when one does.
+        //
+        // SwiftPM rule (verified empirically): a *version*-referenced GitKit
+        // resolves fine with the trait OFF (the dep is pruned), but
+        // consumers who ENABLE the Archive trait must reference GitKit by
+        // branch/revision — a stable-version package may not activate an
+        // unstable-version (branch/revision) dependency.
         .package(
             url: "https://github.com/marcprux/swift-archive",
-            branch: "swift",
+            revision: "60f478d10ae730c4faed643d3fcc746c07a7e7e5",
             traits: [.defaults,
                      "GzipSupport",
                      "Bzip2Support",
