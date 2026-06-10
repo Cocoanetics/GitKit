@@ -265,12 +265,19 @@ let package = Package(
         // libarchive-backed archive writer, used only by the trait-gated
         // `Repository.archive` (tar / tar.gz / tar.bz2 / tar.xz / tar.zstd /
         // zip). With the `Archive` trait off (the default) no target depends
-        // on it, so consumers don't build it. Tracking the `swift` branch
-        // until the platform-narrowed gating ships in a tagged release —
-        // the same pin SwiftPorts uses.
+        // on it, so consumers don't build it.
+        //
+        // Pinned to the Cocoanetics fork's `3.8.8` tag: a tagged GitKit
+        // release may not carry branch pins (SwiftPM's stable-vs-unstable
+        // rule), and upstream marcprux/swift-archive hasn't tagged the
+        // platform-narrowed filter gating (its PR #2) yet — our tag points
+        // at exactly that `swift`-branch commit. Move back to upstream when
+        // it ships a release containing it. Consumers combining GitKit with
+        // their own swift-archive use must pin the SAME fork (two packages
+        // can't both vend the `Archive` module in one graph).
         .package(
-            url: "https://github.com/marcprux/swift-archive",
-            branch: "swift",
+            url: "https://github.com/Cocoanetics/swift-archive",
+            from: "3.8.8",
             traits: [.defaults,
                      "GzipSupport",
                      "Bzip2Support",
