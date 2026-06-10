@@ -30,10 +30,17 @@ let libgit2 = "vendor/libgit2"
 // Preprocessor defines — libgit2's feature matrix. Shared by the libgit2 target
 // and the struct-entry shim target (which compiles two libgit2 .c files).
 var defines: [CSetting] = [
+    // NB: define names must match what the PINNED RELEASE's source reads.
+    // libgit2 main renamed much of the feature matrix post-1.9.x (upstream
+    // PR #6994: GIT_USE_NSEC→GIT_NSEC, GIT_USE_ICONV→GIT_I18N_ICONV,
+    // GIT_NTLM→GIT_AUTH_NTLM, GIT_SECURE_TRANSPORT→GIT_HTTPS_SECURETRANSPORT,
+    // GIT_WINHTTP→GIT_HTTPS_WINHTTP, …). Using the new names against a 1.9.x
+    // tag silently compiles those features OUT (e.g. nsec timestamps off ⇒
+    // git_stash_apply misdetects same-second changes; TLS backend unselected).
+    // This matrix uses the 1.9.4 spellings — re-audit on every libgit2 bump:
+    //   for each -D: grep it in vendor/libgit2/{src,include,deps} (*.c,*.h).
     .define("LIBGIT2_NO_FEATURES_H"),
     .define("GIT_THREADS", to: "1"),
-    .define("GIT_THREADS_PTHREADS", to: "1",
-            .when(platforms: [.macOS, .iOS, .tvOS, .watchOS, .linux, .android])),
     .define("GIT_ARCH_64", to: "1"),
 
     // PCRE (builtin regex)
@@ -64,14 +71,18 @@ var defines: [CSetting] = [
     .define("GIT_IO_POLL", to: "1",
             .when(platforms: [.macOS, .iOS, .tvOS, .watchOS, .linux, .android])),
     .define("GIT_IO_WSAPOLL", to: "1", .when(platforms: [.windows])),
-    .define("GIT_NSEC", to: "1"),
-    .define("GIT_FUTIMENS", to: "1",
+    // Nanosecond stat granularity. Without it, files changed within the same
+    // second as the index write are invisible to stat-based comparison — the
+    // exact window git's racy-index protection (and stash apply) depends on.
+    .define("GIT_USE_NSEC", to: "1"),
+    .define("GIT_USE_FUTIMENS", to: "1",
             .when(platforms: [.macOS, .iOS, .tvOS, .watchOS, .linux, .android])),
 
-    .define("GIT_AUTH_NTLM", to: "1"),
-    .define("GIT_AUTH_NTLM_BUILTIN", to: "1",
+    // NTLM via the bundled ntlmclient on POSIX. Windows gets NTLM through
+    // SSPI automatically (auth_ntlm.h keys on GIT_WIN32); ntlmclient is
+    // excluded from the Windows build, so GIT_NTLM must not be set there.
+    .define("GIT_NTLM", to: "1",
             .when(platforms: [.macOS, .iOS, .tvOS, .watchOS, .linux, .android])),
-    .define("GIT_AUTH_NTLM_SSPI", to: "1", .when(platforms: [.windows])),
     .define("NTLM_STATIC", to: "1",
             .when(platforms: [.macOS, .iOS, .tvOS, .watchOS, .linux, .android])),
     .define("UNICODE_BUILTIN", to: "1",
@@ -143,14 +154,12 @@ var linkerSettings: [LinkerSetting] = []
     ]
     defines += [
         .define("GIT_QSORT_BSD"),
-        .define("GIT_HTTPS_SECURETRANSPORT", to: "1"),
+        .define("GIT_SECURE_TRANSPORT", to: "1"),
         .define("GIT_SHA1_COMMON_CRYPTO", to: "1"),
         .define("GIT_SHA256_COMMON_CRYPTO", to: "1"),
         .define("CRYPT_COMMONCRYPTO"),
-        .define("GIT_NSEC_MTIMESPEC", to: "1"),
-        .define("GIT_I18N", to: "1"),
-        .define("GIT_I18N_ICONV", to: "1"),
-        .define("GIT_NO_PROCESS_SPAWN", .when(platforms: [.tvOS, .watchOS])),
+        .define("GIT_USE_STAT_MTIMESPEC", to: "1"),
+        .define("GIT_USE_ICONV", to: "1"),
     ]
     linkerSettings += [.linkedLibrary("iconv")]
 
@@ -167,11 +176,9 @@ var linkerSettings: [LinkerSetting] = []
     ]
     defines += [
         .define("GIT_QSORT_MSC"),
-        .define("GIT_HTTPS_WINHTTP", to: "1"),
+        .define("GIT_WINHTTP", to: "1"),
         .define("GIT_SHA1_WIN32", to: "1"),
         .define("GIT_SHA256_WIN32", to: "1"),
-        .define("CRYPT_BUILTIN"),
-        .define("GIT_NSEC_WIN32", to: "1"),
         .define("WIN32"),
         .define("_WIN32_WINNT", to: "0x0600"),
         // libgit2's public headers assume two things MSVC/clang-cl doesn't
@@ -202,7 +209,8 @@ var linkerSettings: [LinkerSetting] = []
     defines += [
         .define("_GNU_SOURCE"),
         .define("GIT_QSORT_GNU", .when(platforms: [.linux])),
-        .define("GIT_HTTPS_OPENSSL_DYNAMIC", to: "1", .when(platforms: [.linux, .android])),
+        .define("GIT_OPENSSL", to: "1", .when(platforms: [.linux, .android])),
+        .define("GIT_OPENSSL_DYNAMIC", to: "1", .when(platforms: [.linux, .android])),
         // libgit2 1.9.4 selects the collision-detecting builtin SHA1 via
         // GIT_SHA1_COLLISIONDETECT (older releases used GIT_SHA1_BUILTIN).
         .define("GIT_SHA1_COLLISIONDETECT", to: "1"),
@@ -213,7 +221,7 @@ var linkerSettings: [LinkerSetting] = []
         .define("CRYPT_OPENSSL", .when(platforms: [.linux, .android])),
         .define("CRYPT_OPENSSL_DYNAMIC", .when(platforms: [.linux, .android])),
         .define("OPENSSL_API_COMPAT", to: "0x10100000L", .when(platforms: [.linux, .android])),
-        .define("GIT_NSEC_MTIM", to: "1"),
+        .define("GIT_USE_STAT_MTIM", to: "1"),
         .define("GIT_RAND_GETENTROPY", to: "1", .when(platforms: [.linux, .android])),
         .define("GIT_RAND_GETLOADAVG", to: "1", .when(platforms: [.linux])),
     ]
