@@ -2,8 +2,8 @@
 
 **[libgit2](https://libgit2.org) as a Swift package.** GitKit compiles the
 official libgit2 C sources straight from an upstream git submodule — no CMake,
-no system install — and exposes them to Swift on macOS, iOS, tvOS, watchOS,
-Linux, Windows, and Android.
+no system install — and exposes them to Swift on macOS, iOS, Linux, Windows,
+and Android.
 
 ```swift
 import GitKit
@@ -92,7 +92,7 @@ error: type 'struct entry' has incompatible definitions in different translation
 
 The fix is a tiny rename of the two file-local tags. But we refuse to modify the
 submodule, so each is compiled through a **translation-unit-scoped `#include`
-shim** in [`Sources/Clibgit2shim`](Sources/Clibgit2shim):
+shim** in [`Sources/Clibgit2Patches`](Sources/Clibgit2Patches):
 
 ```c
 #define entry git_indexer_entry   // scoped to THIS file only
@@ -155,6 +155,49 @@ target, whose `publicHeadersPath` is a header-free dir so SwiftPM builds no
 module over libgit2's raw `include/`). Only the public *headers* are vendored, so
 the Swift importer has something to read.
 
+## The feature-define dialect (a silent-failure trap)
+
+With no CMake there is no feature *detection*: `LIBGIT2_NO_FEATURES_H` plus an
+explicit per-platform `-D` matrix replaces it. The trap is that **the define
+names are not stable across libgit2 versions** — and a `-D` the source never
+reads doesn't warn, it just leaves the feature compiled out.
+
+libgit2 renamed much of its feature matrix on `main` after the 1.9 series
+([libgit2/libgit2#6994](https://github.com/libgit2/libgit2/pull/6994)):
+
+| 1.9.x reads | main (post-#6994) reads |
+|---|---|
+| `GIT_USE_NSEC` / `GIT_USE_STAT_MTIMESPEC` / `GIT_USE_STAT_MTIM` | `GIT_NSEC` / `GIT_NSEC_MTIMESPEC` / `GIT_NSEC_MTIM` |
+| `GIT_USE_FUTIMENS` | `GIT_FUTIMENS` |
+| `GIT_USE_ICONV` | `GIT_I18N_ICONV` |
+| `GIT_NTLM` | `GIT_AUTH_NTLM` |
+| `GIT_SECURE_TRANSPORT` / `GIT_OPENSSL` / `GIT_WINHTTP` | `GIT_HTTPS_SECURETRANSPORT` / `GIT_HTTPS_OPENSSL_DYNAMIC` / `GIT_HTTPS_WINHTTP` |
+
+GitKit's original matrix was inherited from the ibrahimcetin fork — which, it
+turned out, builds a libgit2 *main* snapshot rather than the release its branch
+name suggests. So the matrix spoke main's post-rename dialect while GitKit
+pinned the `v1.9.4` release, and every renamed define silently no-op'd. The
+first GitKit `1.9.4` build shipped with **nanosecond timestamps off** — which
+broke `git_stash_apply`/`pop`/`branch` (a working-tree change made in the same
+second as the index write is invisible to stat-based comparison, so apply
+"succeeded" without writing anything) — and, equally silently, with **no TLS
+backend selected** (`GIT_HTTPS` was on with nothing behind it), NTLM off, and
+iconv off. Nothing failed at compile time; a downstream stash test caught it
+([#1](https://github.com/Cocoanetics/GitKit/issues/1), fixed in
+[#2](https://github.com/Cocoanetics/GitKit/pull/2), the `1.9.4` tag re-pointed
+to the fixed build).
+
+The rules that came out of it:
+
+- The matrix must speak the **pinned release's** dialect — it is
+  version-dependent, not copy-paste-portable between libgit2 lines.
+- On every submodule bump, **audit every `-D`** against the pinned source:
+  each name must actually appear in `vendor/libgit2/{src,include,deps}`
+  (`*.c`/`*.h`). Zero hits = silent no-op. (Exceptions: macros consumed by
+  *system* headers — `_GNU_SOURCE`, `OPENSSL_API_COMPAT`, `_WIN32_WINNT`.)
+- A bump past the rename (a future 1.10/2.x) must translate the matrix
+  *forward* again.
+
 ## Repository layout
 
 ```
@@ -163,28 +206,32 @@ GitKit/
 ├── Sources/
 │   ├── GitKit/                   # public Swift module (re-exports the C API)
 │   ├── CGitKit/                  # curated umbrella + vendored libgit2 public headers
-│   └── Clibgit2shim/             # two #include shims (struct entry rename)
+│   └── Clibgit2Patches/          # two #include shims (struct entry rename)
 ├── Tests/GitKitTests/
 └── vendor/libgit2/               # submodule → libgit2/libgit2 @ vX.Y.Z (pristine)
 ```
 
 `Clibgit2` (libgit2's compiled `.c`), `CGitKit` (the imported module), and
-`Clibgit2shim` are internal; `GitKit` is the only product.
+`Clibgit2Patches` are internal; `GitKit` and `CGitKit` are the products.
 
 ## Updating to a new libgit2 release
 
 GitKit releases follow libgit2 releases. To cut GitKit `X.Y.Z`:
 
 ```sh
-Scripts/update-libgit2.sh vX.Y.Z      # moves the submodule to the tag
+Scripts/update-libgit2.sh vX.Y.Z      # moves the submodule to the tag, re-vendors headers
+# audit the -D matrix against the new tag (see "The feature-define dialect"):
+#   every define in Package.swift must appear in vendor/libgit2/{src,include,deps}
 swift test                            # verify on this host
 git commit -am "libgit2 X.Y.Z"
 git tag X.Y.Z && git push --tags
 ```
 
-The script only repoints the pristine submodule; the shims and manifest are
-version-independent (revisit them only if libgit2 changes its source layout or
-introduces a new same-named-struct collision).
+The script repoints the pristine submodule and re-vendors the public headers.
+The `struct entry` shims are layout-dependent only (revisit if libgit2 moves
+files or adds a new same-named-struct collision) — but the **define matrix is
+version-dependent**: libgit2 renames feature defines between lines, and a stale
+name fails silently (see above). Audit it on every bump.
 
 ## License
 
