@@ -46,14 +46,20 @@ Operations are synchronous, `throws` (typed ``Libgit2Error``), and return
   (save/apply/pop/list/show/branch), `apply` (patches).
 - **Remotes** — `fetch`, `push` (incl. `-u` upstream wiring), `addRemote`,
   `remoteList`, `remoteURL`, real-git-style progress output.
+- **Bulk traversal** — `treeBlobs` walks a tree in one pass with content
+  loaded (`git ls-tree -r` order); `commitTime` gives the reproducible
+  timestamp `git archive` stamps entries with.
+- **`git archive`** — `Repository.archive(treeish:format:to:prefix:)`
+  produces tar / tar.gz / tar.bz2 / tar.xz / tar.zst / zip, **behind the
+  opt-in `Archive` trait** (see below).
 
 Commit-identity resolution honours real git's `GIT_AUTHOR_*` /
-`GIT_COMMITTER_*` env-precedence chain (``SignatureResolver``); pass `env:`
-explicitly when you virtualise the environment. The raw C API stays one
-property away — `repo.pointer` is a deliberate escape hatch, and the whole
-libgit2 C surface remains re-exported (`git_repository_open`, `git_clone`, …)
-for anything the SDK doesn't cover yet, with `check(_:)` translating return
-codes into thrown ``Libgit2Error``s.
+`GIT_COMMITTER_*` env-precedence chain (``SignatureResolver``, returning a
+typed ``ResolvedSignature``); pass `env:` explicitly when you virtualise the
+environment. `Repository`'s internal libgit2 handle is **not** exposed — the
+typed surface is the API. The libgit2 C API itself remains re-exported
+(`git_repository_open`, `git_clone`, …) for code that wants to drive libgit2
+directly with its own handles.
 
 The SDK performs **no access gating and reads no ambient state** — it's a pure
 library. Hosts that sandbox file access (e.g.
@@ -73,6 +79,25 @@ in their own isolation, composing this SDK rather than configuring it.
 
 SwiftPM initializes the libgit2 submodule automatically when it resolves the
 package — there is nothing else to install.
+
+### The `Archive` trait — `git archive` support
+
+`Repository.archive` needs an archive *writer*, which GitKit gets from
+libarchive via [swift-archive](https://github.com/marcprux/swift-archive).
+That dependency is gated behind the **`Archive` trait, off by default** —
+mirroring SQLiteKit's `FTS5`/`SQLiteVec` pattern — so plain consumers build
+zero extra code:
+
+```swift
+.package(url: "https://github.com/cocoanetics/GitKit.git", from: "2.0.0",
+         traits: ["Archive"]),
+```
+
+(or `swift build --traits Archive` when building GitKit directly). With the
+trait off, `Repository.archive` and `GitArchiveFormat` simply don't exist;
+the underlying tree-walk (`treeBlobs` / `commitTime`) is always available.
+The bz2 / xz / zstd filters work where libarchive ships them — macOS /
+Linux / Windows; iOS / Android throw libarchive's "filter not enabled".
 
 ## Versioning
 

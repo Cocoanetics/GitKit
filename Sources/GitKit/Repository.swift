@@ -14,9 +14,11 @@ import CGitKit
 /// one task/thread at a time.
 public final class Repository {
 
-    /// The raw `git_repository *`. Public as a deliberate escape hatch so
-    /// embedders can reach libgit2 API this wrapper doesn't surface yet.
-    public let pointer: OpaquePointer
+    /// The raw `git_repository *`. Internal: the SDK's typed surface is the
+    /// API; code that genuinely needs raw libgit2 opens its own
+    /// `git_repository` through the re-exported C API rather than borrowing
+    /// this handle.
+    let pointer: OpaquePointer
 
     /// Internal alias letting operation bodies keep the conventional
     /// libgit2 parameter name (`repo`) after their move from closure-based

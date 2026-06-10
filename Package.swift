@@ -1,4 +1,4 @@
-// swift-tools-version: 6.0
+// swift-tools-version: 6.1
 import PackageDescription
 
 // =============================================================================
@@ -6,7 +6,8 @@ import PackageDescription
 //
 //   • libgit2 is a git submodule (vendor/libgit2) pinned to an official upstream
 //     release tag, and is compiled byte-for-byte pristine — no edits, ever.
-//     GitKit's own version always matches the libgit2 release (see README).
+//     GitKit versions independently; each release documents the libgit2 it
+//     vendors (see the README's versioning table).
 //   • `Clibgit2` compiles libgit2's C directly (no CMake) via
 //     LIBGIT2_NO_FEATURES_H + the per-host `-D` matrix below. Its
 //     publicHeadersPath points at a header-free dir, so SwiftPM builds NO
@@ -252,9 +253,42 @@ let package = Package(
         // consumers that want the raw API directly — e.g. SwiftPorts' SwiftGit.
         .library(name: "CGitKit", targets: ["CGitKit"]),
     ],
+    // Opt-in, build-time feature toggles. Off by default.
+    //   • depending on this package:    .package(url: …, traits: ["Archive"])
+    //   • building this package direct: swift build --traits Archive
+    traits: [
+        .trait(
+            name: "Archive",
+            description: "git archive support (Repository.archive) via libarchive (swift-archive)."),
+    ],
+    dependencies: [
+        // libarchive-backed archive writer, used only by the trait-gated
+        // `Repository.archive` (tar / tar.gz / tar.bz2 / tar.xz / tar.zstd /
+        // zip). With the `Archive` trait off (the default) no target depends
+        // on it, so consumers don't build it. Tracking the `swift` branch
+        // until the platform-narrowed gating ships in a tagged release —
+        // the same pin SwiftPorts uses.
+        .package(
+            url: "https://github.com/marcprux/swift-archive",
+            branch: "swift",
+            traits: [.defaults,
+                     "GzipSupport",
+                     "Bzip2Support",
+                     "LZMASupport",
+                     "ZstdSupport"]),
+    ],
     targets: [
-        // Public Swift face — the only module consumers import.
-        .target(name: "GitKit", dependencies: ["CGitKit"]),
+        // Public Swift face — the only module consumers import. The Archive
+        // product joins the build only when the `Archive` trait is enabled;
+        // Repository+Archive.swift is gated `#if Archive` (the trait doubles
+        // as a compilation condition) so it compiles to nothing otherwise.
+        .target(
+            name: "GitKit",
+            dependencies: [
+                "CGitKit",
+                .product(name: "Archive", package: "swift-archive",
+                         condition: .when(traits: ["Archive"])),
+            ]),
 
         // The curated, Windows-safe libgit2 module: a custom umbrella over the
         // vendored public headers (Sources/CGitKit/include). Links the compiled
@@ -292,6 +326,15 @@ let package = Package(
             cSettings: shimHeaderPaths + defines
         ),
 
-        .testTarget(name: "GitKitTests", dependencies: ["GitKit"]),
+        .testTarget(
+            name: "GitKitTests",
+            dependencies: [
+                "GitKit",
+                // Lets the archive tests link Archive when the trait is on; the
+                // suite itself is gated `#if Archive`, so with the trait off it
+                // compiles to nothing.
+                .product(name: "Archive", package: "swift-archive",
+                         condition: .when(traits: ["Archive"])),
+            ]),
     ]
 )

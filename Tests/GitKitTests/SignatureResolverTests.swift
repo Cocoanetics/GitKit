@@ -48,14 +48,11 @@ struct SignatureResolverTests {
         // Manually invoke the resolver (no shell-out for env scope).
         let repo = try Repository.open(at: dir)
         let sig = try SignatureResolver.resolve(
-            role: .author, repo: repo.pointer,
+            role: .author, repository: repo,
             env: ["GIT_AUTHOR_NAME": "Override Person",
                   "GIT_AUTHOR_EMAIL": "over@example.com"])
-        defer { _ = sig.flatMap { $0 } }
-        let name = sig.flatMap { $0.pointee.name.map { String(cString: $0) } }
-        let email = sig.flatMap { $0.pointee.email.map { String(cString: $0) } }
-        #expect(name == "Override Person")
-        #expect(email == "over@example.com")
+        #expect(sig.name == "Override Person")
+        #expect(sig.email == "over@example.com")
     }
 
     @Test("partial env override fills missing field from config")
@@ -66,12 +63,10 @@ struct SignatureResolverTests {
 
         // Only email overridden; name should still come from config.
         let sig = try SignatureResolver.resolve(
-            role: .author, repo: repo.pointer,
+            role: .author, repository: repo,
             env: ["GIT_AUTHOR_EMAIL": "just-email@example.com"])
-        let name = sig.flatMap { $0.pointee.name.map { String(cString: $0) } }
-        let email = sig.flatMap { $0.pointee.email.map { String(cString: $0) } }
-        #expect(name == "Default User")
-        #expect(email == "just-email@example.com")
+        #expect(sig.name == "Default User")
+        #expect(sig.email == "just-email@example.com")
     }
 
     @Test("EMAIL env var fills email when neither GIT_AUTHOR_EMAIL nor config has one")
@@ -94,11 +89,10 @@ struct SignatureResolverTests {
         // repository's config snapshot.
         let repo = try Repository.open(at: dir)
         let sig = try SignatureResolver.resolve(
-            role: .author, repo: repo.pointer,
+            role: .author, repository: repo,
             env: ["GIT_AUTHOR_NAME": "Some Name",
                   "EMAIL": "envvar@example.com"])
-        let email = sig.flatMap { $0.pointee.email.map { String(cString: $0) } }
-        #expect(email == "envvar@example.com")
+        #expect(sig.email == "envvar@example.com")
     }
 
     @Test("GIT_COMMITTER_DATE in unix-secs form uses that timestamp")
@@ -108,12 +102,10 @@ struct SignatureResolverTests {
         let repo = try Repository.open(at: dir)
 
         let sig = try SignatureResolver.resolve(
-            role: .committer, repo: repo.pointer,
+            role: .committer, repository: repo,
             env: ["GIT_COMMITTER_DATE": "1700000000 +0100"])
-        let when = sig?.pointee.when.time ?? 0
-        let off = sig?.pointee.when.offset ?? 0
-        #expect(when == 1700000000)
-        #expect(off == 60)
+        #expect(sig.time == 1700000000)
+        #expect(sig.offsetMinutes == 60)
     }
 
     @Test("GIT_COMMITTER_DATE in ISO 8601 form parses correctly")
@@ -124,10 +116,10 @@ struct SignatureResolverTests {
 
         // 2024-01-15 10:30:00 UTC → 1705314600.
         let sig = try SignatureResolver.resolve(
-            role: .committer, repo: repo.pointer,
+            role: .committer, repository: repo,
             env: ["GIT_COMMITTER_DATE": "2024-01-15T10:30:00Z"])
-        #expect(sig?.pointee.when.time == 1705314600)
-        #expect(sig?.pointee.when.offset == 0)
+        #expect(sig.time == 1705314600)
+        #expect(sig.offsetMinutes == 0)
     }
 
     @Test("commit honours GIT_AUTHOR_* and GIT_COMMITTER_* end-to-end")
