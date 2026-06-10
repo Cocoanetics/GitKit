@@ -1,6 +1,20 @@
 import Foundation
 import CGitKit
 
+/// A fully resolved commit identity — what libgit2 will actually record
+/// after ``SignatureResolver``'s env-var precedence chain has been applied.
+public struct ResolvedSignature: Sendable, Equatable {
+    /// The resolved name.
+    public let name: String
+    /// The resolved email.
+    public let email: String
+    /// Commit time in seconds since the Unix epoch (from `GIT_*_DATE`
+    /// when set, otherwise "now").
+    public let time: Int64
+    /// Timezone offset in minutes east of UTC.
+    public let offsetMinutes: Int32
+}
+
 /// Real-git-compatible identity resolution for commit author + committer.
 ///
 /// Precedence (matches `man git-commit-tree` for each role):
@@ -21,15 +35,40 @@ public enum SignatureResolver {
     /// ones — same split as real git.
     public enum Role { case author, committer }
 
+    /// Resolve the identity for `role` against `repository`'s config,
+    /// honoring real git's env-var precedence chain — the typed face of the
+    /// resolver, for hosts and tests.
+    ///
+    /// `override` pins name+email (e.g. `git commit --author`); a
+    /// `GIT_*_DATE` in `env` still applies. `env` defaults to the process
+    /// environment; an embedder that virtualises its environment (e.g. a
+    /// shell host) passes its own view instead.
+    public static func resolve(
+        role: Role,
+        override: Signature? = nil,
+        repository: Repository,
+        env: [String: String] = ProcessInfo.processInfo.environment
+    ) throws -> ResolvedSignature {
+        let raw = try resolve(role: role, override: override,
+                              repo: repository.pointer, env: env)
+        defer { git_signature_free(raw) }
+        guard let sig = raw?.pointee else {
+            throw Libgit2Error(code: -1, klass: 0,
+                message: "signature resolution produced no signature")
+        }
+        return ResolvedSignature(
+            name: sig.name.map { String(cString: $0) } ?? "",
+            email: sig.email.map { String(cString: $0) } ?? "",
+            time: Int64(sig.when.time),
+            offsetMinutes: Int32(sig.when.offset))
+    }
+
     /// Build a `git_signature` honoring env-var overrides. The returned
     /// pointer is owned by the caller and must be freed with
-    /// `git_signature_free`.
-    ///
-    /// `override` lets the caller pin a name+email (e.g. `git commit
-    /// --author`); env DATE still applies if set. `env` defaults to the
-    /// process environment; an embedder that virtualises its environment
-    /// (e.g. a shell host) passes its own view instead.
-    public static func resolve(
+    /// `git_signature_free`. Internal: the operation methods consume the
+    /// raw form directly; everyone else uses the typed
+    /// ``resolve(role:override:repository:env:)``.
+    static func resolve(
         role: Role,
         override: Signature? = nil,
         repo: OpaquePointer?,

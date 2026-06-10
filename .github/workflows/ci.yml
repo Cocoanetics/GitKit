@@ -18,6 +18,8 @@ jobs:
         run: swift build
       - name: Test
         run: swift test
+      - name: Test (Archive trait)
+        run: swift test --traits Archive
 
   ios:
     name: iOS
@@ -42,14 +44,18 @@ jobs:
           submodules: recursive
       - name: Install C dependencies
         # libgit2 links -lz (zlib); HTTPS uses OpenSSL via dlopen at runtime.
+        # bz2/lzma/zstd back swift-archive's filters for the Archive-trait run.
         run: |
           apt-get update
-          apt-get install -y zlib1g-dev libssl-dev pkg-config ca-certificates
+          apt-get install -y zlib1g-dev libssl-dev pkg-config ca-certificates \
+            libbz2-dev liblzma-dev libzstd-dev
       - run: swift --version
       - name: Build
         run: swift build
       - name: Test
         run: swift test
+      - name: Test (Archive trait)
+        run: swift test --traits Archive
 
   windows:
     name: Windows
