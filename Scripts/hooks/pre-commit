@@ -10,6 +10,19 @@ if ! command -v swiftlint >/dev/null 2>&1; then
   exit 1
 fi
 
+# Warn (don't block) when the local binary differs from the version CI pins
+# in .swiftlint-version. Rules can drift between releases, so a mismatch may
+# lint differently here than in CI — but CI is the authoritative gate, so it
+# shouldn't stop a local commit.
+repo_root="$(git rev-parse --show-toplevel)"
+if [ -f "$repo_root/.swiftlint-version" ]; then
+  want="$(cat "$repo_root/.swiftlint-version")"
+  have="$(swiftlint --version 2>/dev/null || true)"
+  if [ -n "$want" ] && [ "$have" != "$want" ]; then
+    echo "pre-commit: local swiftlint $have differs from pinned $want (.swiftlint-version) — CI lints with $want" >&2
+  fi
+fi
+
 staged=()
 while IFS= read -r -d '' file; do
   case "$file" in

@@ -5,6 +5,7 @@ on:
     paths:
       - '.github/workflows/swiftlint.yml'
       - '.swiftlint.yml'
+      - '.swiftlint-version'
       - '**/*.swift'
   push:
     branches:
@@ -15,9 +16,11 @@ env:
 
 jobs:
   lint:
-    # macOS + Homebrew SwiftLint keeps CI aligned with the local
-    # pre-commit hook (Scripts/hooks/pre-commit) — same binary, same
-    # rule set, no version drift between dev and CI.
+    # Pin SwiftLint to the version in .swiftlint-version — the same file the
+    # local pre-commit hook (Scripts/hooks/pre-commit) reads — so the lint
+    # gate is reproducible: a new Homebrew release can't silently change a
+    # rule and fail a PR that passed locally. The release ships a universal
+    # (x86_64 + arm64) binary, so it runs natively on the arm64 macOS runner.
     runs-on: macos-latest
     timeout-minutes: 15
     steps:
@@ -25,7 +28,13 @@ jobs:
       # the lint job never builds.
       - uses: actions/checkout@v6
       - name: Install SwiftLint
-        run: brew install swiftlint
+        run: |
+          version="$(cat .swiftlint-version)"
+          curl -fsSL -o swiftlint.zip \
+            "https://github.com/realm/SwiftLint/releases/download/${version}/portable_swiftlint.zip"
+          mkdir -p "$RUNNER_TEMP/swiftlint"
+          unzip -oq swiftlint.zip -d "$RUNNER_TEMP/swiftlint"
+          echo "$RUNNER_TEMP/swiftlint" >> "$GITHUB_PATH"
       - name: SwiftLint version
         run: swiftlint --version
       - name: Lint
