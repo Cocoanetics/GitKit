@@ -179,7 +179,7 @@ public enum SignatureResolver {
             "yyyy-MM-dd'T'HH:mm:ssXXXXX",
             "yyyy-MM-dd HH:mm:ss Z",
             "yyyy-MM-dd HH:mm:ssZ",
-            "yyyy-MM-dd HH:mm:ssXXXXX",
+            "yyyy-MM-dd HH:mm:ssXXXXX"
         ]
         return formats.map { fmt in
             let f = DateFormatter()

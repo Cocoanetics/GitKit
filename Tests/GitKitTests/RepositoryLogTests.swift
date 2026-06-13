@@ -150,8 +150,10 @@ struct RepositoryLogTests {
         let ours = entries.map { $0.onelineFormat() }.joined(separator: "\n") + "\n"
         let theirs = try runGit(["log", "--oneline"], in: dir)
         // Different runs → SHAs differ; just compare subjects.
-        let oursSubjects = ours.split(separator: "\n").map { $0.split(separator: " ", maxSplits: 1).last.map(String.init) ?? "" }
-        let theirsSubjects = theirs.split(separator: "\n").map { $0.split(separator: " ", maxSplits: 1).last.map(String.init) ?? "" }
+        let oursSubjects = ours.split(separator: "\n")
+            .map { $0.split(separator: " ", maxSplits: 1).last.map(String.init) ?? "" }
+        let theirsSubjects = theirs.split(separator: "\n")
+            .map { $0.split(separator: " ", maxSplits: 1).last.map(String.init) ?? "" }
         #expect(oursSubjects == theirsSubjects)
     }
 

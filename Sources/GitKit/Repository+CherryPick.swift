@@ -236,7 +236,7 @@ extension Repository {
         let sha = formatOID(&commitOID)
         let subject = message.split(separator: "\n").first.map(String.init) ?? ""
 
-        var branchName: String? = nil
+        var branchName: String?
         var head2: OpaquePointer?
         if git_repository_head(&head2, repo) == 0 {
             defer { git_reference_free(head2) }

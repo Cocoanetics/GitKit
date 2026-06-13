@@ -25,7 +25,7 @@ struct SignatureResolverTests {
         // Local config gives us a stable default identity to compare against.
         for args in [
             ["git", "config", "user.email", "default@example.com"],
-            ["git", "config", "user.name", "Default User"],
+            ["git", "config", "user.name", "Default User"]
         ] {
             let q = Process()
             q.executableURL = URL(fileURLWithPath: "/usr/bin/env")

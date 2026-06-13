@@ -544,7 +544,7 @@ public final class Repository {
         }
 
         // Resolve current branch shorthand for the [branch sha] line.
-        var branchName: String? = nil
+        var branchName: String?
         var head2: OpaquePointer?
         if git_repository_head(&head2, repo) == 0 {
             defer { git_reference_free(head2) }
