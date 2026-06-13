@@ -135,7 +135,7 @@ struct RepositoryArchiveTests {
         try run(["git", "commit", "--amend", "--no-edit",
                  "--date", when], in: dir, env: [
                      "GIT_COMMITTER_DATE": when,
-                     "GIT_AUTHOR_DATE": when,
+                     "GIT_AUTHOR_DATE": when
                  ])
 
         let repo = try Repository.open(at: dir)

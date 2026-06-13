@@ -92,16 +92,18 @@ public struct StatusReport: Sendable {
 
     /// Entries with index-side changes (conflicts excluded) — real
     /// git's "Changes to be committed" section.
-    public var stagedEntries:  [StatusEntry] { entries.filter { $0.indexState != .unchanged && !$0.isConflicted } }
+    public var stagedEntries: [StatusEntry] { entries.filter { $0.indexState != .unchanged && !$0.isConflicted } }
     /// Tracked files with unstaged workdir changes — real git's
     /// "Changes not staged for commit" section.
-    public var unstagedEntries:[StatusEntry] { entries.filter { $0.workdirState != .unchanged && !$0.isUntracked && !$0.isConflicted } }
+    public var unstagedEntries: [StatusEntry] {
+        entries.filter { $0.workdirState != .unchanged && !$0.isUntracked && !$0.isConflicted }
+    }
     /// Files not yet under version control — real git's "Untracked
     /// files" section.
-    public var untrackedEntries:[StatusEntry] { entries.filter { $0.isUntracked } }
+    public var untrackedEntries: [StatusEntry] { entries.filter { $0.isUntracked } }
     /// Unmerged paths from a conflicted merge — real git's
     /// "Unmerged paths" section.
-    public var conflictedEntries:[StatusEntry] { entries.filter { $0.isConflicted } }
+    public var conflictedEntries: [StatusEntry] { entries.filter { $0.isConflicted } }
     /// True when there are no entries at all — real git's "nothing
     /// to commit, working tree clean" case.
     public var isClean: Bool { entries.isEmpty }
@@ -141,7 +143,7 @@ extension Repository {
         // Branch + unborn-ness — match `git status`'s header logic.
         var head: OpaquePointer?
         let headRC = git_repository_head(&head, repo)
-        var branchName: String? = nil
+        var branchName: String?
         var isUnborn = false
         if headRC == 0 {
             defer { git_reference_free(head) }
@@ -169,9 +171,9 @@ extension Repository {
 
         // Upstream tracking + ahead/behind counts. Best-effort —
         // missing upstream just leaves the fields nil.
-        var upstreamRef: String? = nil
-        var ahead: Int? = nil
-        var behind: Int? = nil
+        var upstreamRef: String?
+        var ahead: Int?
+        var behind: Int?
         if let branch = branchName, !isUnborn {
             upstreamRef = (try? upstreamShorthand(repo: repo, branch: branch))
             if upstreamRef != nil {
@@ -338,10 +340,12 @@ extension StatusReport {
                 out += "Your branch is ahead of '\(upstream)' by \(a) commit\(a == 1 ? "" : "s").\n"
                 out += "  (use \"git push\" to publish your local commits)\n\n"
             case (0, let b) where b > 0:
-                out += "Your branch is behind '\(upstream)' by \(b) commit\(b == 1 ? "" : "s"), and can be fast-forwarded.\n"
+                out += "Your branch is behind '\(upstream)' by \(b) commit\(b == 1 ? "" : "s"), "
+                out += "and can be fast-forwarded.\n"
                 out += "  (use \"git pull\" to update your local branch)\n\n"
             case (let a, let b) where a > 0 && b > 0:
-                out += "Your branch and '\(upstream)' have diverged,\nand have \(a) and \(b) different commits each, respectively.\n"
+                out += "Your branch and '\(upstream)' have diverged,\n"
+                out += "and have \(a) and \(b) different commits each, respectively.\n"
                 out += "  (use \"git pull\" if you want to integrate the remote branch with yours)\n\n"
             default:
                 break

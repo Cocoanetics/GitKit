@@ -79,11 +79,11 @@ struct RepositoryStashTests {
 
         // Confirm working tree was reverted by libgit2.
         let restored1 = try Data(contentsOf: dir.appendingPathComponent("file.txt"))
-        #expect(String(decoding:restored1, as: UTF8.self) == "v1\n")
+        #expect(String(decoding: restored1, as: UTF8.self) == "v1\n")
 
         try repo.stashApply(index: 0)
         let restored2 = try Data(contentsOf: dir.appendingPathComponent("file.txt"))
-        #expect(String(decoding:restored2, as: UTF8.self) == "v2\n")
+        #expect(String(decoding: restored2, as: UTF8.self) == "v2\n")
 
         // Apply does NOT drop — entry should still be there.
         let entries = try repo.stashList()
@@ -103,7 +103,7 @@ struct RepositoryStashTests {
         let entries = try repo.stashList()
         #expect(entries.isEmpty)
         let restored = try Data(contentsOf: dir.appendingPathComponent("file.txt"))
-        #expect(String(decoding:restored, as: UTF8.self) == "v2\n")
+        #expect(String(decoding: restored, as: UTF8.self) == "v2\n")
     }
 
     @Test("drop removes one entry without applying it")
@@ -120,7 +120,7 @@ struct RepositoryStashTests {
         #expect(entries.isEmpty)
         // Working tree should remain at v1 — drop does NOT apply.
         let after = try Data(contentsOf: dir.appendingPathComponent("file.txt"))
-        #expect(String(decoding:after, as: UTF8.self) == "v1\n")
+        #expect(String(decoding: after, as: UTF8.self) == "v1\n")
     }
 
     @Test("clear removes every entry, newest-to-oldest")
@@ -169,7 +169,7 @@ struct RepositoryStashTests {
         let current = try repo.currentBranch()
         #expect(current == "wip-branch")
         let after = try Data(contentsOf: dir.appendingPathComponent("file.txt"))
-        #expect(String(decoding:after, as: UTF8.self) == "v2\n")
+        #expect(String(decoding: after, as: UTF8.self) == "v2\n")
         // Applied + dropped — list should be empty.
         let entries = try repo.stashList()
         #expect(entries.isEmpty)
