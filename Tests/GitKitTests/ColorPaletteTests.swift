@@ -90,4 +90,74 @@ struct ColorPaletteTests {
         #expect(!out.contains("\(GREEN)+++ b/foo\(RESET)"))
         #expect(!out.contains("\(RED)--- a/foo\(RESET)"))
     }
+
+    // MARK: - diffstat colorizer
+
+    @Test func colorizeDiffStatColorsTheHistogramBars() {
+        // Real-git `--stat` shape: leading `+` run green, trailing `-`
+        // run red; the path / count / `|` and the summary stay plain.
+        let p = ColorPalette(enabled: true)
+        let input = """
+         addonly.txt |  1 +
+         delonly.txt |  1 -
+         mixed.txt   |  5 ++-
+         3 files changed, 6 insertions(+), 1 deletion(-)
+        """
+        let out = p.colorizeDiffStat(input)
+        // mixed: green `++` immediately followed by red `-`.
+        #expect(out.contains("\(GREEN)++\(RESET)\(RED)-\(RESET)"))
+        // add-only: a lone green `+`, no red wrapper trailing it.
+        #expect(out.contains("\(GREEN)+\(RESET)"))
+        // delete-only: a lone red `-`.
+        #expect(out.contains("\(RED)-\(RESET)"))
+        // Paths stay uncolored.
+        #expect(out.contains(" mixed.txt   |"))
+        #expect(!out.contains("\(GREEN) mixed.txt"))
+        // The summary line has no `|`, so its `(+)` / `(-)` stay plain.
+        #expect(out.contains("3 files changed, 6 insertions(+), 1 deletion(-)"))
+        #expect(!out.contains("\(GREEN)+\(RESET))"))   // no colored `(+)`
+    }
+
+    @Test func colorizeDiffStatColorsScaledBars() {
+        // A wide change scales the bar but keeps additions-before-
+        // deletions ordering: the whole `+` run is green, the whole
+        // `-` run red.
+        let p = ColorPalette(enabled: true)
+        let plus = String(repeating: "+", count: 42)
+        let minus = String(repeating: "-", count: 18)
+        let input = " big.txt | 170 \(plus)\(minus)\n"
+        let out = p.colorizeDiffStat(input)
+        #expect(out.contains("\(GREEN)\(plus)\(RESET)\(RED)\(minus)\(RESET)"))
+        #expect(out.hasPrefix(" big.txt | 170 "))
+    }
+
+    @Test func colorizeDiffStatColorsBinarySizes() {
+        // Binary delta: old size red, new size green — matching real
+        // git — while the `Bin` / `->` / `bytes` scaffolding and the
+        // path stay plain.
+        let p = ColorPalette(enabled: true)
+        let binary = " bin.dat | Bin 12 -> 14 bytes"
+        let out = p.colorizeDiffStat(binary)
+        #expect(out == " bin.dat | Bin \(RED)12\(RESET) -> \(GREEN)14\(RESET) bytes")
+    }
+
+    @Test func colorizeDiffStatLeavesSummaryPlain() {
+        // The `N files changed …` summary has no `|`, so its `(+)` /
+        // `(-)` pass through byte-for-byte.
+        let p = ColorPalette(enabled: true)
+        let summary = " 1 file changed, 0 insertions(+), 0 deletions(-)"
+        #expect(p.colorizeDiffStat(summary) == summary)
+    }
+
+    @Test func colorizeDiffStatIsPassthroughWhenDisabled() {
+        let p = ColorPalette.disabled
+        let input = " mixed.txt | 5 ++-\n 1 file changed\n"
+        #expect(p.colorizeDiffStat(input) == input)
+    }
+
+    @Test func colorizeDiffStatPreservesTrailingNewline() {
+        let p = ColorPalette(enabled: true)
+        #expect(p.colorizeDiffStat(" f | 1 +\n").hasSuffix("\n"))
+        #expect(!p.colorizeDiffStat(" f | 1 +").hasSuffix("\n"))
+    }
 }
