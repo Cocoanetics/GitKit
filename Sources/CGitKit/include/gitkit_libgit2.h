@@ -4,21 +4,26 @@
 /*
  * GitKit's curated entry point into libgit2's public headers.
  *
- * Using a custom umbrella header (rather than SwiftPM's auto-generated
- * umbrella-*directory* module map) keeps libgit2's internal MSVC polyfill
- * `git2/stdint.h` out of the module — it is not part of the real public API
- * and only exists for VS2008-era builds, where it collides with the toolchain's
- * own <stdint.h>.
+ * A custom umbrella header (rather than SwiftPM's auto-generated
+ * umbrella-*directory* module map) lets us apply the two Windows (MSVC /
+ * clang-cl) compatibility shims that libgit2's public headers assume but the
+ * toolchain doesn't provide — here, before git2.h, so the libgit2 submodule
+ * stays byte-for-byte pristine and consumers inherit the fix through this
+ * module. (A cSetting `-D` doesn't reach the Swift importer's module build, so
+ * it must live in a header.)
  *
- * It also lets us apply the two Windows (MSVC / clang-cl) compatibility shims
- * that libgit2's public headers assume but the toolchain doesn't provide —
- * here, before git2.h, so the libgit2 submodule stays byte-for-byte pristine
- * and consumers inherit the fix through this module. (A cSetting `-D` doesn't
- * reach the Swift importer's module build, so it must live in a header.)
+ * The trade-off of a custom umbrella is that it only exposes headers it
+ * explicitly #includes, so the public headers git2.h doesn't pull in are
+ * listed by hand below: git2/cred_helpers.h and the git2/sys backend tree.
+ * Without the explicit cred_helpers.h include Clang would flag it as an
+ * uncovered umbrella header (-Wincomplete-umbrella).
  *
  * git2.h and the git2/ tree are vendored alongside this umbrella (see
  * Scripts/update-libgit2.sh); SwiftPM's C-module build only searches this
- * target's publicHeadersPath, never cSettings header paths.
+ * target's publicHeadersPath, never cSettings header paths. That script also
+ * drops libgit2's git2/stdint.h from the vendored tree — an MSVC <stdint.h>
+ * polyfill for VS2008-era builds, not real public API — so it isn't left
+ * behind as an uncovered umbrella header either.
  */
 #if defined(_WIN32)
 #  include <stddef.h>
@@ -29,11 +34,18 @@ typedef ptrdiff_t ssize_t;       /* used by git2/sys/stream.h callback types */
 #include "git2.h"
 
 /*
+ * git2/cred_helpers.h is a deprecated top-level forwarding header — its
+ * git_credential_userpass helper now lives in git2/credential_helpers.h (which
+ * git2.h already reaches via git2/deprecated.h). git2.h doesn't include the
+ * shim itself, so pull it in here to keep it under the umbrella.
+ */
+#include "git2/cred_helpers.h"
+
+/*
  * The "sys" (backend / plugin) API. git2.h does NOT include these, but
- * consumers use complete types from them (e.g. git_config_iterator). The
- * auto umbrella-directory map would pull them in for free — but it would also
- * pull git2/stdint.h, hence this explicit list. Regenerated from the vendored
- * git2/sys/*.h by Scripts/update-libgit2.sh.
+ * consumers use complete types from them (e.g. git_config_iterator); a custom
+ * umbrella won't expose them unless they're listed. Regenerated from the
+ * vendored git2/sys headers by Scripts/update-libgit2.sh.
  */
 /* BEGIN sys */
 #include "git2/sys/alloc.h"

@@ -32,6 +32,12 @@ rm -rf "$vendor/git2" "$vendor/git2.h"
 cp "$root/vendor/libgit2/include/git2.h" "$vendor/git2.h"
 cp -R "$root/vendor/libgit2/include/git2" "$vendor/git2"
 
+# git2/stdint.h is libgit2's MSVC <stdint.h> polyfill for VS2008-era builds, not
+# part of the real public API and deliberately kept out of the curated umbrella.
+# Drop it from the vendored tree so Clang doesn't flag it as an uncovered
+# umbrella header (-Wincomplete-umbrella) on every consumer build.
+rm -f "$vendor/git2/stdint.h"
+
 # Regenerate the curated umbrella's git2/sys/* include list (between the
 # BEGIN/END sys markers) so a new libgit2 release adding a sys header is picked
 # up. git2.h doesn't include these, but consumers use complete types from them.
