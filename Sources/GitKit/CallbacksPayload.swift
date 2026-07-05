@@ -60,6 +60,109 @@ func withCallbacksPayload<T>(
                     packCB, pushTransferCB, raw)
 }
 
+// MARK: Single-branch clone
+
+/// Heap-allocated payload for the `remote_cb` a single-branch clone
+/// installs. It carries the branch to restrict the clone to (or `nil`
+/// to mean the remote's default branch, resolved on the fly) plus the
+/// credentials the pre-flight connection needs when the default branch
+/// has to be discovered from a private remote.
+final class SingleBranchBox {
+    /// The branch shorthand (e.g. `"main"`) to restrict the fetch
+    /// refspec to, or `nil` to use the remote's advertised default.
+    let branch: String?
+    let credentialsProvider: CredentialProvider?
+
+    init(branch: String?, credentials: CredentialProvider?) {
+        self.branch = branch
+        self.credentialsProvider = credentials
+    }
+}
+
+/// `remote_cb` for `git_clone`: create the `origin` remote with a fetch
+/// refspec restricted to a single branch, so only that branch's refs are
+/// negotiated and transferred (real git's `--single-branch`). Without
+/// this, `git_clone` writes the catch-all `+refs/heads/*:…` refspec and
+/// pulls every branch even when `checkout_branch` is set.
+let singleBranchRemoteTrampoline: git_remote_create_cb = {
+    out, repo, name, url, payload in
+    guard let out, let repo, let name, let url, let payload else { return -1 }
+    let box = Unmanaged<SingleBranchBox>.fromOpaque(payload).takeUnretainedValue()
+
+    // Resolve the concrete branch the refspec should name. An explicit
+    // branch wins; otherwise ask the remote for its default.
+    let branchShort: String
+    if let requested = box.branch {
+        branchShort = requested
+    } else if let resolved = resolveDefaultBranch(url: url, box: box) {
+        branchShort = resolved
+    } else {
+        return -1
+    }
+
+    let remoteName = String(cString: name)
+    let refspec = "+refs/heads/\(branchShort):refs/remotes/\(remoteName)/\(branchShort)"
+    return refspec.withCString { rs in
+        git_remote_create_with_fetchspec(out, repo, name, url, rs)
+    }
+}
+
+/// Peek a remote's default branch (its `HEAD` target) without a full
+/// clone: spin up a detached remote, connect, ask, tear down. Returns the
+/// branch shorthand (`"main"`), or `nil` on any failure.
+private func resolveDefaultBranch(
+    url: UnsafePointer<CChar>, box: SingleBranchBox
+) -> String? {
+    var tmp: OpaquePointer?
+    guard git_remote_create_detached(&tmp, url) == 0 else { return nil }
+    defer { git_remote_free(tmp) }
+
+    var cbs = git_remote_callbacks()
+    guard git_remote_init_callbacks(
+        &cbs, UInt32(GIT_REMOTE_CALLBACKS_VERSION)) == 0 else { return nil }
+    if box.credentialsProvider != nil {
+        cbs.credentials = singleBranchCredentialsTrampoline
+        cbs.payload = Unmanaged.passUnretained(box).toOpaque()
+    }
+    guard git_remote_connect(
+        tmp, GIT_DIRECTION_FETCH, &cbs, nil, nil) == 0 else { return nil }
+    defer { git_remote_disconnect(tmp) }
+
+    var buf = git_buf()
+    defer { git_buf_dispose(&buf) }
+    guard git_remote_default_branch(&buf, tmp) == 0, let ptr = buf.ptr else {
+        return nil
+    }
+    let full = String(cString: ptr)   // e.g. "refs/heads/main"
+    let prefix = "refs/heads/"
+    return full.hasPrefix(prefix) ? String(full.dropFirst(prefix.count)) : full
+}
+
+/// Credentials trampoline for the default-branch pre-flight connection.
+/// Mirrors ``combinedCredentialsTrampoline`` but reads a
+/// ``SingleBranchBox`` payload (the connection is separate from the clone
+/// fetch and so carries its own payload).
+private let singleBranchCredentialsTrampoline: git_credential_acquire_cb = {
+    outPtr, urlCStr, userCStr, allowedTypes, payload in
+    guard let payload, let outPtr else { return -1 }
+    let box = Unmanaged<SingleBranchBox>.fromOpaque(payload).takeUnretainedValue()
+    guard let provider = box.credentialsProvider else { return -30 }
+
+    let url: URL = {
+        if let urlCStr, let parsed = URL(string: String(cString: urlCStr)) {
+            return parsed
+        }
+        return URL(string: "about:blank")!
+    }()
+    let usernameFromURL: String? = userCStr.map { String(cString: $0) }
+    let allowed = CredentialKind(rawValue: allowedTypes)
+
+    guard let creds = provider(url, usernameFromURL, allowed) else {
+        return -30  // GIT_PASSTHROUGH
+    }
+    return buildCredentialPayload(into: outPtr, from: creds)
+}
+
 // MARK: Trampolines
 
 private let combinedCredentialsTrampoline: git_credential_acquire_cb = {

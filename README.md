@@ -32,8 +32,9 @@ Operations are synchronous, `throws` (typed ``Libgit2Error``), and return
 `Sendable` value types. The surface covers the everyday git command set:
 
 - **Lifecycle** — `open`, `initialize` (git init), `clone` (with
-  `CredentialProvider` closures for HTTPS/SSH auth and a pluggable progress
-  sink).
+  `CredentialProvider` closures for HTTPS/SSH auth, a pluggable progress
+  sink, and `depth`/`singleBranch`/`branch` for shallow, single-branch
+  clones).
 - **Work** — `add`, `commitDetailed`, `status`, `diff`, `checkout`,
   `checkoutNewBranch`, `checkoutPaths`, `reset`, `move`/`remove` (git mv/rm).
 - **History** — `log` (rich `LogQuery`/`LogEntry` incl. `format(_:)`
@@ -44,8 +45,9 @@ Operations are synchronous, `throws` (typed ``Libgit2Error``), and return
 - **Integration** — `merge` (fast-forward modes), `rebase`
   (continue/skip/abort), `cherryPick`, `stash`
   (save/apply/pop/list/show/branch), `apply` (patches).
-- **Remotes** — `fetch`, `push` (incl. `-u` upstream wiring), `addRemote`,
-  `remoteList`, `remoteURL`, real-git-style progress output.
+- **Remotes** — `fetch` (with shallow `depth`), `unshallow`, `push` (incl.
+  `-u` upstream wiring), `addRemote`, `remoteList`, `remoteURL`,
+  real-git-style progress output.
 - **Bulk traversal** — `treeBlobs` walks a tree in one pass with content
   loaded (`git ls-tree -r` order); `commitTime` gives the reproducible
   timestamp `git archive` stamps entries with.
