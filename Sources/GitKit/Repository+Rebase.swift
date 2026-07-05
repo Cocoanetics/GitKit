@@ -46,7 +46,7 @@ extension Repository {
             &upstreamAC, repo, upstreamSpec))
         defer { git_annotated_commit_free(upstreamAC) }
 
-        var ontoAC: OpaquePointer? = nil
+        var ontoAC: OpaquePointer?
         if let ontoSpec {
             try check(git_annotated_commit_from_revspec(
                 &ontoAC, repo, ontoSpec))
