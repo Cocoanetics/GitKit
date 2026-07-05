@@ -2,7 +2,8 @@ import Foundation
 import CGitKit
 
 /// Progress-output plumbing for the network operations
-/// (``Repository/clone(from:to:credentials:progress:)``, fetch, push).
+/// (``Repository/clone(from:to:depth:singleBranch:branch:credentials:progress:)``,
+/// fetch, push).
 public enum GitProgress {
     /// The default progress sink: the process's real standard error.
     /// Embedders that virtualise IO (e.g. shell hosts) pass their own
