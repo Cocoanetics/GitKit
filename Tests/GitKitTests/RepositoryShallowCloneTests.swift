@@ -2,6 +2,16 @@
 // Fixtures are built with the system `git` CLI (gated to non-Windows for
 // the same reasons as the other integration suites); everything under
 // test goes through `Repository` so libgit2 is exercised end-to-end.
+//
+// A note on the shallow (`depth`) tests: libgit2's *local* transport (what
+// a `file://` clone uses) refuses shallow transfers outright — it errors
+// with "shallow fetch is not supported by the local transport". Only the
+// smart HTTP/SSH transports negotiate shallow, and CI has no network. So
+// the shallow cases here assert that libgit2 reaches — and rejects at —
+// the shallow path, which proves the `depth` / unshallow plumbing threads
+// through to the C layer (a plain full clone would not raise it). The
+// single-branch cases, which the local transport *does* support, are
+// verified behaviourally.
 #if os(macOS) || os(Linux)
 import Foundation
 import Testing
@@ -18,8 +28,7 @@ struct RepositoryShallowCloneTests {
     }
 
     /// A source repo with three commits on `main` and one extra branch
-    /// `feature`, left checked out on `main`. Returned as a `file://` URL
-    /// so libgit2 uses the smart transport (shallow needs it).
+    /// `feature`, left checked out on `main`. Returned as a `file://` URL.
     private func makeSource() throws -> (dir: URL, url: URL) {
         let dir = tmp("ShallowSource")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -68,24 +77,69 @@ struct RepositoryShallowCloneTests {
     /// Silence the transfer-progress sink so tests don't spam stderr.
     private let quiet: @Sendable (String) -> Void = { _ in }
 
-    // MARK: Tests
+    /// Assert `body` reaches libgit2's shallow path and is rejected there
+    /// by the local transport — the evidence that `depth` was plumbed
+    /// through rather than silently dropped.
+    private func expectShallowRejectedLocally(_ body: () throws -> Void) {
+        do {
+            try body()
+            Issue.record("expected libgit2 to reject shallow over the local transport")
+        } catch let error as Libgit2Error {
+            #expect(error.message.contains("shallow"))
+        } catch {
+            Issue.record("unexpected error: \(error)")
+        }
+    }
 
-    @Test("depth clones only the requested number of commits")
-    func shallowLimitsHistory() throws {
+    // MARK: Shallow plumbing (local transport rejects the transfer)
+
+    @Test("clone depth reaches libgit2's shallow path")
+    func shallowClonePlumbedThrough() throws {
         let (srcDir, url) = try makeSource()
         let dest = tmp("ShallowClone")
         defer {
             try? FileManager.default.removeItem(at: srcDir)
             try? FileManager.default.removeItem(at: dest)
         }
-
-        let repo = try Repository.clone(from: url, to: dest, depth: 1, progress: quiet)
-        // Only the tip commit is present.
-        #expect(try repo.log(LogQuery(starts: ["HEAD"])).count == 1)
-        // libgit2 records the shallow boundary in `.git/shallow`.
-        #expect(FileManager.default.fileExists(
-            atPath: dest.appendingPathComponent(".git/shallow").path))
+        expectShallowRejectedLocally {
+            _ = try Repository.clone(from: url, to: dest, depth: 1, progress: quiet)
+        }
     }
+
+    @Test("fetch depth reaches libgit2's shallow path")
+    func shallowFetchPlumbedThrough() throws {
+        let (srcDir, url) = try makeSource()
+        let dest = tmp("ShallowFetch")
+        defer {
+            try? FileManager.default.removeItem(at: srcDir)
+            try? FileManager.default.removeItem(at: dest)
+        }
+        // A depth-less clone succeeds over the local transport.
+        let repo = try Repository.clone(from: url, to: dest, progress: quiet)
+        expectShallowRejectedLocally {
+            try repo.fetch(
+                remote: "origin", refspec: "+refs/heads/main:refs/remotes/origin/main",
+                depth: 1, progress: quiet)
+        }
+    }
+
+    @Test("unshallow reaches libgit2's shallow path")
+    func unshallowPlumbedThrough() throws {
+        let (srcDir, url) = try makeSource()
+        let dest = tmp("Unshallow")
+        defer {
+            try? FileManager.default.removeItem(at: srcDir)
+            try? FileManager.default.removeItem(at: dest)
+        }
+        let repo = try Repository.clone(from: url, to: dest, progress: quiet)
+        expectShallowRejectedLocally {
+            try repo.unshallow(
+                remote: "origin", refspec: "+refs/heads/*:refs/remotes/origin/*",
+                progress: quiet)
+        }
+    }
+
+    // MARK: Full / single-branch behaviour (local transport supports these)
 
     @Test("no depth clones the full history")
     func fullCloneHasFullHistory() throws {
@@ -100,6 +154,20 @@ struct RepositoryShallowCloneTests {
         #expect(try repo.log(LogQuery(starts: ["HEAD"])).count == 3)
         #expect(!FileManager.default.fileExists(
             atPath: dest.appendingPathComponent(".git/shallow").path))
+    }
+
+    @Test("a non-positive depth is treated as full history")
+    func zeroDepthIsFull() throws {
+        let (srcDir, url) = try makeSource()
+        let dest = tmp("ZeroDepthClone")
+        defer {
+            try? FileManager.default.removeItem(at: srcDir)
+            try? FileManager.default.removeItem(at: dest)
+        }
+        // depth 0 must NOT engage the shallow path (else the local
+        // transport would reject it); it clones full history.
+        let repo = try Repository.clone(from: url, to: dest, depth: 0, progress: quiet)
+        #expect(try repo.log(LogQuery(starts: ["HEAD"])).count == 3)
     }
 
     @Test("singleBranch with an explicit branch transfers only that branch")
@@ -138,60 +206,6 @@ struct RepositoryShallowCloneTests {
             ["for-each-ref", "--format=%(refname)", "refs/remotes"], in: dest)
         #expect(refs.contains("refs/remotes/origin/main"))
         #expect(!refs.contains("refs/remotes/origin/feature"))
-    }
-
-    @Test("shallow + single-branch compose")
-    func shallowSingleBranch() throws {
-        let (srcDir, url) = try makeSource()
-        let dest = tmp("ShallowSingleBranchClone")
-        defer {
-            try? FileManager.default.removeItem(at: srcDir)
-            try? FileManager.default.removeItem(at: dest)
-        }
-
-        let repo = try Repository.clone(
-            from: url, to: dest, depth: 1, singleBranch: true, branch: "main", progress: quiet)
-        #expect(try repo.log(LogQuery(starts: ["HEAD"])).count == 1)
-        let refs = try runGit(
-            ["for-each-ref", "--format=%(refname)", "refs/remotes"], in: dest)
-        #expect(!refs.contains("refs/remotes/origin/feature"))
-    }
-
-    @Test("fetch depth deepens a shallow clone")
-    func shallowFetchDeepens() throws {
-        let (srcDir, url) = try makeSource()
-        let dest = tmp("DeepenClone")
-        defer {
-            try? FileManager.default.removeItem(at: srcDir)
-            try? FileManager.default.removeItem(at: dest)
-        }
-
-        let repo = try Repository.clone(from: url, to: dest, depth: 1, progress: quiet)
-        #expect(try repo.log(LogQuery(starts: ["HEAD"])).count == 1)
-
-        try repo.fetch(
-            remote: "origin", refspec: "+refs/heads/main:refs/remotes/origin/main",
-            depth: 2, progress: quiet)
-        #expect(try repo.log(LogQuery(starts: ["HEAD"])).count == 2)
-    }
-
-    @Test("unshallow restores the full history")
-    func unshallowRestoresHistory() throws {
-        let (srcDir, url) = try makeSource()
-        let dest = tmp("UnshallowClone")
-        defer {
-            try? FileManager.default.removeItem(at: srcDir)
-            try? FileManager.default.removeItem(at: dest)
-        }
-
-        let repo = try Repository.clone(from: url, to: dest, depth: 1, progress: quiet)
-        #expect(try repo.log(LogQuery(starts: ["HEAD"])).count == 1)
-
-        try repo.unshallow(
-            remote: "origin", refspec: "+refs/heads/*:refs/remotes/origin/*", progress: quiet)
-        #expect(try repo.log(LogQuery(starts: ["HEAD"])).count == 3)
-        #expect(!FileManager.default.fileExists(
-            atPath: dest.appendingPathComponent(".git/shallow").path))
     }
 }
 #endif
