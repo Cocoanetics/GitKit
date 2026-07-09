@@ -5,6 +5,8 @@ import Darwin
 import Glibc
 #elseif canImport(Musl)
 import Musl
+#elseif canImport(Android)
+import Android
 #endif
 import CGitKit
 
@@ -19,7 +21,7 @@ import CGitKit
 /// while another thread is mid-operation is unsafe.
 public enum Libgit2 {
     private static let sigpipeIgnored: Bool = {
-#if canImport(Darwin) || canImport(Glibc) || canImport(Musl)
+#if canImport(Darwin) || canImport(Glibc) || canImport(Musl) || canImport(Android)
         _ = signal(SIGPIPE, SIG_IGN)
 #endif
         return true

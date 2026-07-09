@@ -5,6 +5,8 @@ import Darwin
 import Glibc
 #elseif canImport(Musl)
 import Musl
+#elseif canImport(Android)
+import Android
 #endif
 @testable import GitKit
 
@@ -19,7 +21,7 @@ final class GitKitTests: XCTestCase {
 
     func testRuntimeInitShutdown() {
         XCTAssertEqual(GitKit.initialize(), 1)   // first init → refcount 1
-#if canImport(Darwin) || canImport(Glibc) || canImport(Musl)
+#if canImport(Darwin) || canImport(Glibc) || canImport(Musl) || canImport(Android)
         let previousSIGPIPEHandler = signal(SIGPIPE, SIG_IGN)
         XCTAssertEqual(
             unsafeBitCast(previousSIGPIPEHandler, to: Int.self),
