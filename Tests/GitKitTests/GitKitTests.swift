@@ -7,11 +7,13 @@ import Glibc
 import Musl
 #elseif canImport(Android)
 import Android
+#elseif canImport(Bionic)
+import Bionic
 #endif
 @testable import GitKit
 
 final class GitKitTests: XCTestCase {
-    /// Proves the Swift layer links against — and calls into — the libgit2
+    /// Proves the Swift layer links against - and calls into - the libgit2
     /// compiled from the pinned submodule, and that GitKit's version tracks it.
     func testLinksAgainstPinnedLibgit2() {
         let expected = String(Bundle.libgit2VersionFromPackage)
@@ -20,8 +22,8 @@ final class GitKitTests: XCTestCase {
     }
 
     func testRuntimeInitShutdown() {
-        XCTAssertEqual(GitKit.initialize(), 1)   // first init → refcount 1
-#if canImport(Darwin) || canImport(Glibc) || canImport(Musl) || canImport(Android)
+        XCTAssertEqual(GitKit.initialize(), 1)   // first init -> refcount 1
+#if canImport(Darwin) || canImport(Glibc) || canImport(Musl) || canImport(Android) || canImport(Bionic)
         let previousSIGPIPEHandler = signal(SIGPIPE, SIG_IGN)
         XCTAssertEqual(
             unsafeBitCast(previousSIGPIPEHandler, to: Int.self),

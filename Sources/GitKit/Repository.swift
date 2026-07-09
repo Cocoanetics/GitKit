@@ -307,7 +307,7 @@ public final class Repository {
             // ended up staging everything below the worktree
             // root. `add_bypath` stages exactly the named blob.
             for path in paths {
-                try path.withCString { cstr in
+                _ = try path.withCString { cstr in
                     try check(git_index_add_bypath(index, cstr))
                 }
             }

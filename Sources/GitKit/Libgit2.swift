@@ -7,6 +7,8 @@ import Glibc
 import Musl
 #elseif canImport(Android)
 import Android
+#elseif canImport(Bionic)
+import Bionic
 #endif
 import CGitKit
 
@@ -16,12 +18,12 @@ import CGitKit
 /// have to make sure it's been called once before any other git_* call.
 /// On POSIX hosts, we also ignore `SIGPIPE` once so libgit2's socket
 /// transport reports `EPIPE` instead of terminating the process.
-/// We intentionally never call `git_libgit2_shutdown()` — the library is
+/// We intentionally never call `git_libgit2_shutdown()` - the library is
 /// meant to live for the duration of the process, and shutting down
 /// while another thread is mid-operation is unsafe.
 public enum Libgit2 {
     private static let sigpipeIgnored: Bool = {
-#if canImport(Darwin) || canImport(Glibc) || canImport(Musl) || canImport(Android)
+#if canImport(Darwin) || canImport(Glibc) || canImport(Musl) || canImport(Android) || canImport(Bionic)
         _ = signal(SIGPIPE, SIG_IGN)
 #endif
         return true
