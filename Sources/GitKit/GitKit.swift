@@ -25,9 +25,13 @@ public enum GitKit {
 
     /// Initializes the libgit2 runtime. Safe to call repeatedly; returns the
     /// new initialization refcount. Pair each call with ``shutdown()``.
+    ///
+    /// On POSIX hosts, this also ignores `SIGPIPE` once so libgit2 socket
+    /// writes fail as errors instead of terminating the process.
     @discardableResult
     public static func initialize() -> Int32 {
-        git_libgit2_init()
+        Libgit2.ignoreSIGPIPE()
+        return git_libgit2_init()
     }
 
     /// Decrements the libgit2 initialization refcount; returns the remaining
