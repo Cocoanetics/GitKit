@@ -86,7 +86,15 @@ struct RepositoryWorktreeTests {
         #expect(try Repository.open(at: worktree).currentBranch() == "feature/worktree")
         #expect(try repo.localBranches().contains("feature/worktree"))
 
-        let info = try #require(repo.worktreeList().first)
+        let allWorktrees = try repo.worktreeList()
+        #expect(allWorktrees.count == 2)
+        #expect(canonicalPath(allWorktrees[0].path) == canonicalPath(dir))
+        #expect(allWorktrees[0].name == dir.lastPathComponent)
+        #expect(allWorktrees[0].head == head)
+        #expect(allWorktrees[0].isLocked == false)
+        #expect(allWorktrees[0].isPrunable == false)
+
+        let info = try #require(repo.linkedWorktreeList().first)
         #expect(info.name == worktree.lastPathComponent)
         #expect(canonicalPath(info.path) == canonicalPath(worktree))
         #expect(info.head == head)
@@ -95,7 +103,39 @@ struct RepositoryWorktreeTests {
 
         try repo.worktreeRemove(name: info.name)
         #expect(!FileManager.default.fileExists(atPath: worktree.path))
-        #expect(try repo.worktreeList().isEmpty)
+        #expect(try repo.linkedWorktreeList().isEmpty)
+        #expect(try repo.worktreeList().count == 1)
+    }
+
+    @Test("list reports primary first when opened from linked worktree")
+    func listFromLinkedWorktreeReportsPrimaryFirst() throws {
+        let dir = try makeRepo()
+        let worktree = siblingWorktree(of: dir)
+        defer { try? FileManager.default.removeItem(at: worktree) }
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let repo = try Repository.open(at: dir)
+        try repo.worktreeAdd(path: worktree, branch: "linked-list")
+        try Data("linked\n".utf8).write(to: worktree.appendingPathComponent("linked.txt"))
+        try runGit(["add", "."], in: worktree)
+        try runGit(["commit", "-m", "linked commit"], in: worktree)
+
+        let mainHead = try runGit(["rev-parse", "HEAD"], in: dir)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let linkedHead = try runGit(["rev-parse", "HEAD"], in: worktree)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let linkedRepo = try Repository.open(at: worktree)
+        let infos = try linkedRepo.worktreeList()
+        #expect(infos.count == 2)
+        #expect(canonicalPath(infos[0].path) == canonicalPath(dir))
+        #expect(infos[0].head == mainHead)
+
+        let linkedInfo = try #require(infos.first {
+            canonicalPath($0.path) == canonicalPath(worktree)
+        })
+        #expect(linkedInfo.head == linkedHead)
+        #expect(Set(infos.map { canonicalPath($0.path) }).count == infos.count)
     }
 
     @Test("add can check out an existing branch")
@@ -110,7 +150,7 @@ struct RepositoryWorktreeTests {
         try repo.worktreeAdd(path: worktree, branch: "existing")
 
         #expect(try Repository.open(at: worktree).currentBranch() == "existing")
-        let info = try #require(repo.worktreeList().first)
+        let info = try #require(repo.linkedWorktreeList().first)
         try repo.worktreeRemove(name: info.name)
     }
 
@@ -123,7 +163,7 @@ struct RepositoryWorktreeTests {
 
         let repo = try Repository.open(at: dir)
         try repo.worktreeAdd(path: worktree, branch: "dirty-worktree")
-        let info = try #require(repo.worktreeList().first)
+        let info = try #require(repo.linkedWorktreeList().first)
 
         try Data("local\n".utf8).write(to: worktree.appendingPathComponent("local.txt"))
         #expect(throws: Libgit2Error.self) {
@@ -133,7 +173,8 @@ struct RepositoryWorktreeTests {
 
         try repo.worktreeRemove(name: info.name, force: true)
         #expect(!FileManager.default.fileExists(atPath: worktree.path))
-        #expect(try repo.worktreeList().isEmpty)
+        #expect(try repo.linkedWorktreeList().isEmpty)
+        #expect(try repo.worktreeList().count == 1)
     }
 
     @Test("add chooses unique names for duplicate path basenames")
@@ -154,7 +195,7 @@ struct RepositoryWorktreeTests {
         try repo.worktreeAdd(path: first, branch: "duplicate-one")
         try repo.worktreeAdd(path: second, branch: "duplicate-two")
 
-        let infos = try repo.worktreeList()
+        let infos = try repo.linkedWorktreeList()
         let firstInfo = try #require(infos.first { canonicalPath($0.path) == canonicalPath(first) })
         let secondInfo = try #require(infos.first { canonicalPath($0.path) == canonicalPath(second) })
         #expect(firstInfo.name == "wt")
@@ -186,7 +227,7 @@ struct RepositoryWorktreeTests {
             "submodule", "update", "--init"
         ], in: worktree)
 
-        let info = try #require(repo.worktreeList().first)
+        let info = try #require(repo.linkedWorktreeList().first)
         #expect(try Repository.open(at: worktree).status().isClean)
         #expect(throws: Libgit2Error.self) {
             try repo.worktreeRemove(name: info.name)
