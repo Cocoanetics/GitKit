@@ -1,12 +1,13 @@
 import Foundation
 import CGitKit
 
-/// One linked worktree known to a repository.
+/// One worktree known to a repository.
 public struct WorktreeInfo: Sendable, Equatable {
-    /// The worktree's administrative name, usually the target directory's
-    /// last path component.
+    /// The worktree's name. For linked worktrees, this is the administrative
+    /// name; for the primary worktree, this is the directory's last path
+    /// component.
     public let name: String
-    /// Filesystem location of the linked working tree.
+    /// Filesystem location of the working tree.
     public let path: URL
     /// Full 40-character SHA pointed at by the worktree's HEAD, or nil
     /// for an unborn/missing HEAD.
@@ -74,21 +75,28 @@ extension Repository {
         git_worktree_free(worktree)
     }
 
+    /// List worktrees with `git worktree list` semantics.
+    ///
+    /// The primary worktree is returned first, followed by linked worktrees.
+    /// When called from a linked worktree, the primary worktree is still
+    /// returned first rather than treating the current linked worktree as
+    /// primary.
+    public func worktreeList() throws -> [WorktreeInfo] {
+        var result = [try primaryWorktreeInfo()]
+        result.append(contentsOf: try linkedWorktreeList())
+        return result
+    }
+
     /// List linked worktrees registered for this repository.
     ///
-    /// This wraps libgit2's linked-worktree list, so the main worktree is
+    /// This wraps libgit2's linked-worktree list, so the primary worktree is
     /// not included.
-    public func worktreeList() throws -> [WorktreeInfo] {
-        var names = git_strarray()
-        try check(git_worktree_list(&names, repo))
-        defer { git_strarray_dispose(&names) }
-
+    public func linkedWorktreeList() throws -> [WorktreeInfo] {
+        let names = try linkedWorktreeNames()
         var result: [WorktreeInfo] = []
         result.reserveCapacity(names.count)
-        for i in 0..<names.count {
+        for name in names {
             try Task.checkCancellation()
-            guard let nameC = names.strings?[i] else { continue }
-            let name = String(cString: nameC)
 
             var worktree: OpaquePointer?
             try check(git_worktree_lookup(&worktree, repo, name))
@@ -167,6 +175,56 @@ extension Repository {
         return result
     }
 
+    private func primaryWorktreeInfo() throws -> WorktreeInfo {
+        let path = try primaryWorktreeURL()
+        return WorktreeInfo(
+            name: path.lastPathComponent,
+            path: path,
+            head: try primaryWorktreeHeadOID(),
+            isLocked: false,
+            isPrunable: false)
+    }
+
+    private func primaryWorktreeURL() throws -> URL {
+        if git_repository_is_worktree(repo) != 0 {
+            let commonDir = try repositoryCommonDir()
+            if commonDir.lastPathComponent == ".git" {
+                return commonDir.deletingLastPathComponent()
+            }
+            return commonDir
+        }
+
+        if let workdirC = git_repository_workdir(repo) {
+            return URL(fileURLWithPath: String(cString: workdirC), isDirectory: true)
+        }
+
+        guard let pathC = git_repository_path(repo) else {
+            throw Libgit2Error(code: -1, klass: 0,
+                message: "repository has no path")
+        }
+        return URL(fileURLWithPath: String(cString: pathC), isDirectory: true)
+    }
+
+    private func primaryWorktreeHeadOID() throws -> String? {
+        guard git_repository_is_worktree(repo) != 0 else {
+            return try repositoryHeadOID(in: repo)
+        }
+
+        let commonDir = try repositoryCommonDir()
+        var primaryRepo: OpaquePointer?
+        try check(git_repository_open_bare(&primaryRepo, commonDir.path))
+        defer { git_repository_free(primaryRepo) }
+        return try repositoryHeadOID(in: primaryRepo)
+    }
+
+    private func repositoryCommonDir() throws -> URL {
+        guard let commonDirC = git_repository_commondir(repo) else {
+            throw Libgit2Error(code: -1, klass: 0,
+                message: "repository has no common directory")
+        }
+        return URL(fileURLWithPath: String(cString: commonDirC), isDirectory: true)
+    }
+
     private func worktreeInfo(
         name: String,
         worktree: OpaquePointer?
@@ -196,6 +254,19 @@ extension Repository {
     private func worktreeHeadOID(name: String) throws -> String? {
         var head: OpaquePointer?
         let rc = git_repository_head_for_worktree(&head, repo, name)
+        if rc == GIT_EUNBORNBRANCH.rawValue || rc == GIT_ENOTFOUND.rawValue {
+            return nil
+        }
+        try check(rc)
+        defer { git_reference_free(head) }
+
+        guard let oid = git_reference_target(head) else { return nil }
+        return formatOID(oid)
+    }
+
+    private func repositoryHeadOID(in repository: OpaquePointer?) throws -> String? {
+        var head: OpaquePointer?
+        let rc = git_repository_head(&head, repository)
         if rc == GIT_EUNBORNBRANCH.rawValue || rc == GIT_ENOTFOUND.rawValue {
             return nil
         }
