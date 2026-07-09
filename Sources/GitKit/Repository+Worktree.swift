@@ -24,17 +24,19 @@ extension Repository {
     ///
     /// If `branch` does not exist, it is created at `HEAD` first. If it
     /// already exists, that branch is used as-is. The worktree name follows
-    /// real git's default: the target directory's last path component.
+    /// real git's default: the target directory's last path component, with
+    /// a numeric suffix added when that administrative name is taken.
     public func worktreeAdd(
         path: URL,
         branch: String,
         force: Bool = false
     ) throws {
-        let name = path.lastPathComponent
-        guard !name.isEmpty, name != "/" else {
+        let preferredName = path.lastPathComponent
+        guard !preferredName.isEmpty, preferredName != "/" else {
             throw Libgit2Error(code: -1, klass: 0,
                 message: "worktree path must have a final path component")
         }
+        let name = try uniqueWorktreeName(preferred: preferredName)
 
         var branchRef: OpaquePointer?
         var createdBranch = false
@@ -57,9 +59,9 @@ extension Repository {
 
         var worktree: OpaquePointer?
         do {
-            try name.withCString { nameC -> Void in
-                try path.path.withCString { pathC -> Void in
-                    try check(git_worktree_add(
+            try name.withCString { nameC in
+                try path.path.withCString { pathC in
+                    _ = try check(git_worktree_add(
                         &worktree, repo, nameC, pathC, &opts))
                 }
             }
@@ -139,6 +141,32 @@ extension Repository {
         return branchRef
     }
 
+    private func uniqueWorktreeName(preferred: String) throws -> String {
+        let names = Set(try linkedWorktreeNames())
+        guard names.contains(preferred) else { return preferred }
+
+        var suffix = 1
+        while names.contains("\(preferred)\(suffix)") {
+            suffix += 1
+        }
+        return "\(preferred)\(suffix)"
+    }
+
+    private func linkedWorktreeNames() throws -> [String] {
+        var names = git_strarray()
+        try check(git_worktree_list(&names, repo))
+        defer { git_strarray_dispose(&names) }
+
+        var result: [String] = []
+        result.reserveCapacity(names.count)
+        for i in 0..<names.count {
+            if let nameC = names.strings?[i] {
+                result.append(String(cString: nameC))
+            }
+        }
+        return result
+    }
+
     private func worktreeInfo(
         name: String,
         worktree: OpaquePointer?
@@ -205,9 +233,37 @@ extension Repository {
         guard FileManager.default.fileExists(atPath: path) else { return }
 
         let linkedRepo = try Repository.open(at: URL(fileURLWithPath: path, isDirectory: true))
+        if let submodule = try checkedOutSubmodule(in: linkedRepo) {
+            throw Libgit2Error(code: -1, klass: 0,
+                message: "worktree '\(name)' contains submodule '\(submodule)'; use force to remove it")
+        }
         if try !linkedRepo.status().isClean {
             throw Libgit2Error(code: -1, klass: 0,
                 message: "worktree '\(name)' contains local changes; use force to remove it")
         }
     }
+
+    private func checkedOutSubmodule(in repository: Repository) throws -> String? {
+        let payload = WorktreeSubmoduleScanPayload()
+        let rc = git_submodule_foreach(
+            repository.repo,
+            { submodule, nameC, rawPayload in
+                guard let submodule, let rawPayload else { return -1 }
+                guard git_submodule_wd_id(submodule) != nil else { return 0 }
+
+                let payload = Unmanaged<WorktreeSubmoduleScanPayload>
+                    .fromOpaque(rawPayload)
+                    .takeUnretainedValue()
+                payload.name = nameC.map { String(cString: $0) } ?? "<unknown>"
+                return 1
+            },
+            Unmanaged.passUnretained(payload).toOpaque())
+
+        if rc < 0 { try check(rc) }
+        return payload.name
+    }
+}
+
+private final class WorktreeSubmoduleScanPayload {
+    var name: String?
 }

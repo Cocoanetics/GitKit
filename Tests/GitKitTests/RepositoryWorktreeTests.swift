@@ -49,6 +49,19 @@ struct RepositoryWorktreeTests {
         return dir
     }
 
+    private func makeSubmoduleSource() throws -> URL {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("WorktreeSubmodule-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try runGit(["init", "-b", "main"], in: dir)
+        try runGit(["config", "user.email", "t@e.com"], in: dir)
+        try runGit(["config", "user.name", "T"], in: dir)
+        try Data("sub\n".utf8).write(to: dir.appendingPathComponent("sub.txt"))
+        try runGit(["add", "."], in: dir)
+        try runGit(["commit", "-m", "submodule init"], in: dir)
+        return dir
+    }
+
     private func siblingWorktree(of repo: URL) -> URL {
         repo.deletingLastPathComponent()
             .appendingPathComponent("linked-\(UUID().uuidString)")
@@ -121,6 +134,67 @@ struct RepositoryWorktreeTests {
         try repo.worktreeRemove(name: info.name, force: true)
         #expect(!FileManager.default.fileExists(atPath: worktree.path))
         #expect(try repo.worktreeList().isEmpty)
+    }
+
+    @Test("add chooses unique names for duplicate path basenames")
+    func addDuplicateBasenames() throws {
+        let dir = try makeRepo()
+        let parent = FileManager.default.temporaryDirectory
+            .appendingPathComponent("WorktreeParents-\(UUID().uuidString)")
+        let first = parent.appendingPathComponent("one/wt")
+        let second = parent.appendingPathComponent("two/wt")
+        try FileManager.default.createDirectory(
+            at: first.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: second.deletingLastPathComponent(), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: parent) }
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let repo = try Repository.open(at: dir)
+        try repo.worktreeAdd(path: first, branch: "duplicate-one")
+        try repo.worktreeAdd(path: second, branch: "duplicate-two")
+
+        let infos = try repo.worktreeList()
+        let firstInfo = try #require(infos.first { canonicalPath($0.path) == canonicalPath(first) })
+        let secondInfo = try #require(infos.first { canonicalPath($0.path) == canonicalPath(second) })
+        #expect(firstInfo.name == "wt")
+        #expect(secondInfo.name == "wt1")
+
+        try repo.worktreeRemove(name: firstInfo.name)
+        try repo.worktreeRemove(name: secondInfo.name)
+    }
+
+    @Test("remove refuses checked-out submodules unless forced")
+    func removeSubmoduleRequiresForce() throws {
+        let submoduleSource = try makeSubmoduleSource()
+        let dir = try makeRepo()
+        let worktree = siblingWorktree(of: dir)
+        defer { try? FileManager.default.removeItem(at: worktree) }
+        defer { try? FileManager.default.removeItem(at: dir) }
+        defer { try? FileManager.default.removeItem(at: submoduleSource) }
+
+        try runGit([
+            "-c", "protocol.file.allow=always",
+            "submodule", "add", submoduleSource.path, "deps/sub"
+        ], in: dir)
+        try runGit(["commit", "-m", "add submodule"], in: dir)
+
+        let repo = try Repository.open(at: dir)
+        try repo.worktreeAdd(path: worktree, branch: "submodule-worktree")
+        try runGit([
+            "-c", "protocol.file.allow=always",
+            "submodule", "update", "--init"
+        ], in: worktree)
+
+        let info = try #require(repo.worktreeList().first)
+        #expect(try Repository.open(at: worktree).status().isClean)
+        #expect(throws: Libgit2Error.self) {
+            try repo.worktreeRemove(name: info.name)
+        }
+        #expect(FileManager.default.fileExists(atPath: worktree.path))
+
+        try repo.worktreeRemove(name: info.name, force: true)
+        #expect(!FileManager.default.fileExists(atPath: worktree.path))
     }
 }
 #endif
