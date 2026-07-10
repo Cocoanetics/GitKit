@@ -236,7 +236,9 @@ public final class Repository {
         reporter.suppressTransferProgress =
             ProgressReporter.isLocalURL(remoteURL)
 
-        try refspec.withCString { cstr in
+        let pushRefspec = try qualifiedPushRefspec(refspec)
+
+        try pushRefspec.withCString { cstr in
             var copy: UnsafeMutablePointer<CChar>? = strdup(cstr)
             defer { free(copy) }
             try withUnsafeMutablePointer(to: &copy) { copyPtr in
@@ -469,6 +471,41 @@ public final class Repository {
     }
 
     // MARK: Internals
+
+    /// libgit2's push parser expects fully-qualified refs where the CLI
+    /// accepts local branch shorthands like `main` or `topic:other`.
+    private func qualifiedPushRefspec(_ refspec: String) throws -> String {
+        let force = refspec.hasPrefix("+")
+        let body = force ? String(refspec.dropFirst()) : refspec
+        let prefix = force ? "+" : ""
+
+        let colon = body.firstIndex(of: ":")
+        let src = colon.map { String(body[..<$0]) } ?? body
+        guard !src.isEmpty, !src.hasPrefix("refs/") else { return refspec }
+
+        var branch: OpaquePointer?
+        let lookupRC = git_branch_lookup(&branch, repo, src, GIT_BRANCH_LOCAL)
+        if lookupRC == GIT_ENOTFOUND.rawValue {
+            throw Libgit2Error(
+                code: GIT_ERROR.rawValue,
+                klass: Int32(GIT_ERROR_REFERENCE.rawValue),
+                message: "src refspec \(src) does not match any")
+        }
+        try check(lookupRC)
+        git_reference_free(branch)
+
+        let qualifiedSrc = "refs/heads/\(src)"
+        guard let colon else {
+            return "\(prefix)\(qualifiedSrc):\(qualifiedSrc)"
+        }
+
+        let dstStart = body.index(after: colon)
+        let dst = String(body[dstStart...])
+        let qualifiedDst = dst.isEmpty || dst.hasPrefix("refs/")
+            ? dst
+            : "refs/heads/\(dst)"
+        return "\(prefix)\(qualifiedSrc):\(qualifiedDst)"
+    }
 
     /// `<src>:<dst>` form has both sides; bare ref like `main` means
     /// `refs/heads/main:refs/heads/main`. We only need the local side

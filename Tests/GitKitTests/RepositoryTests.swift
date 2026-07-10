@@ -32,6 +32,14 @@ struct RepositoryTests {
         return dir
     }
 
+    private func makeBareOrigin() throws -> URL {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RepositoryTests-origin-\(UUID().uuidString).git")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try runGit(["init", "--bare"], in: dir)
+        return dir
+    }
+
     @discardableResult
     private func runGit(_ args: [String], in dir: URL) throws -> String {
         let p = Process()
@@ -89,6 +97,71 @@ struct RepositoryTests {
 
         let read = try repo.remoteURL(named: "origin")
         #expect(read?.absoluteString == url.absoluteString)
+    }
+
+    @Test("push accepts a short main branch refspec")
+    func pushShortMainBranch() throws {
+        let dir = try makeFixtureRepo()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let origin = try makeBareOrigin()
+        defer { try? FileManager.default.removeItem(at: origin) }
+
+        let repo = try Repository.open(at: dir)
+        try repo.addRemote(name: "origin", url: origin)
+        try repo.push(remote: "origin", refspec: "main", setUpstream: false, progress: { _ in })
+
+        let localSHA = try runGit(["rev-parse", "refs/heads/main"], in: dir)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let remoteSHA = try runGit(["rev-parse", "refs/heads/main"], in: origin)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        #expect(remoteSHA == localSHA)
+    }
+
+    @Test("push accepts a short nested branch refspec")
+    func pushShortNestedBranch() throws {
+        let dir = try makeFixtureRepo()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let origin = try makeBareOrigin()
+        defer { try? FileManager.default.removeItem(at: origin) }
+
+        try runGit(["checkout", "-b", "agent/issue-1"], in: dir)
+        let repo = try Repository.open(at: dir)
+        try repo.addRemote(name: "origin", url: origin)
+        try repo.push(
+            remote: "origin", refspec: "agent/issue-1",
+            setUpstream: false, progress: { _ in })
+
+        let localSHA = try runGit(["rev-parse", "refs/heads/agent/issue-1"], in: dir)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let remoteSHA = try runGit(["rev-parse", "refs/heads/agent/issue-1"], in: origin)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        #expect(remoteSHA == localSHA)
+    }
+
+    @Test("push accepts a short nested branch refspec from a linked worktree")
+    func pushShortNestedBranchFromWorktree() throws {
+        let dir = try makeFixtureRepo()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let origin = try makeBareOrigin()
+        defer { try? FileManager.default.removeItem(at: origin) }
+        let worktree = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RepositoryTests-worktree-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: worktree) }
+
+        let repo = try Repository.open(at: dir)
+        try repo.addRemote(name: "origin", url: origin)
+        try repo.worktreeAdd(path: worktree, branch: "agent/issue-2")
+
+        let linkedRepo = try Repository.open(at: worktree)
+        try linkedRepo.push(
+            remote: "origin", refspec: "agent/issue-2",
+            setUpstream: false, progress: { _ in })
+
+        let localSHA = try runGit(["rev-parse", "refs/heads/agent/issue-2"], in: dir)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let remoteSHA = try runGit(["rev-parse", "refs/heads/agent/issue-2"], in: origin)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        #expect(remoteSHA == localSHA)
     }
 
     @Test("remoteURL returns nil for a missing remote")
