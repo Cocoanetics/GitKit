@@ -236,7 +236,9 @@ public final class Repository {
         reporter.suppressTransferProgress =
             ProgressReporter.isLocalURL(remoteURL)
 
-        try refspec.withCString { cstr in
+        let pushRefspec = try qualifiedPushRefspec(refspec)
+
+        try pushRefspec.withCString { cstr in
             var copy: UnsafeMutablePointer<CChar>? = strdup(cstr)
             defer { free(copy) }
             try withUnsafeMutablePointer(to: &copy) { copyPtr in
@@ -264,7 +266,7 @@ public final class Repository {
         // push, write the upstream config ourselves to mirror the CLI's
         // `--set-upstream` semantics.
         if setUpstream {
-            try setUpstreamForRefspec(remote: remote, refspec: refspec)
+            try setUpstreamForRefspec(remote: remote, refspec: pushRefspec)
         }
     }
 
@@ -470,27 +472,101 @@ public final class Repository {
 
     // MARK: Internals
 
-    /// `<src>:<dst>` form has both sides; bare ref like `main` means
-    /// `refs/heads/main:refs/heads/main`. We only need the local side
-    /// (the `src`) to set its upstream.
-    private func setUpstreamForRefspec(remote: String, refspec: String) throws {
-        let src: String
-        if let colon = refspec.firstIndex(of: ":") {
-            src = String(refspec[..<colon])
-        } else {
-            src = refspec
+    /// libgit2's push parser expects fully-qualified refs where the CLI
+    /// accepts local branch shorthands like `main` or `topic:other`.
+    private func qualifiedPushRefspec(_ refspec: String) throws -> String {
+        let force = refspec.hasPrefix("+")
+        let body = force ? String(refspec.dropFirst()) : refspec
+        let prefix = force ? "+" : ""
+
+        let colon = body.firstIndex(of: ":")
+        let src = colon.map { String(body[..<$0]) } ?? body
+        guard !src.isEmpty, !src.hasPrefix("refs/") else { return refspec }
+
+        let (qualifiedSrc, dstPrefix) = try qualifiedPushSource(src)
+        guard let colon else {
+            return "\(prefix)\(qualifiedSrc):\(qualifiedSrc)"
         }
-        let stripped = src.hasPrefix("refs/heads/")
-            ? String(src.dropFirst("refs/heads/".count))
-            : src
-        guard !stripped.isEmpty else { return }
+
+        let dstStart = body.index(after: colon)
+        let dst = String(body[dstStart...])
+        let qualifiedDst = dst.isEmpty || dst.hasPrefix("refs/")
+            ? dst
+            : "\(dstPrefix)\(dst)"
+        return "\(prefix)\(qualifiedSrc):\(qualifiedDst)"
+    }
+
+    private func qualifiedPushSource(_ src: String) throws -> (String, String) {
+        let branch = "refs/heads/\(src)"
+        let tag = "refs/tags/\(src)"
+        let hasBranch = try referenceExists(branch)
+        let hasTag = try referenceExists(tag)
+
+        if hasBranch && hasTag {
+            throw Libgit2Error(
+                code: GIT_ERROR.rawValue,
+                klass: Int32(GIT_ERROR_REFERENCE.rawValue),
+                message: "src refspec \(src) matches more than one")
+        }
+        if hasBranch { return (branch, "refs/heads/") }
+        if hasTag { return (tag, "refs/tags/") }
+
+        throw Libgit2Error(
+            code: GIT_ERROR.rawValue,
+            klass: Int32(GIT_ERROR_REFERENCE.rawValue),
+            message: "src refspec \(src) does not match any")
+    }
+
+    private func referenceExists(_ name: String) throws -> Bool {
+        var ref: OpaquePointer?
+        let rc = git_reference_lookup(&ref, repo, name)
+        if rc == 0 {
+            git_reference_free(ref)
+            return true
+        }
+        if rc == GIT_ENOTFOUND.rawValue { return false }
+        try check(rc)
+        return false
+    }
+
+    /// `<src>:<dst>` form has both sides; bare ref like `main` means
+    /// `refs/heads/main:refs/heads/main`. Use the local side as the branch
+    /// being configured, and the destination side as its upstream merge ref.
+    private func setUpstreamForRefspec(remote: String, refspec: String) throws {
+        let body = refspec.hasPrefix("+")
+            ? String(refspec.dropFirst())
+            : refspec
+
+        let src: String
+        let dst: String
+        if let colon = body.firstIndex(of: ":") {
+            src = String(body[..<colon])
+            let dstStart = body.index(after: colon)
+            dst = String(body[dstStart...])
+        } else {
+            src = body
+            dst = body
+        }
+
+        guard let localBranch = localBranchName(from: src),
+              let upstreamBranch = localBranchName(from: dst)
+        else { return }
 
         var branch: OpaquePointer?
-        let lookupRC = git_branch_lookup(&branch, repo, stripped, GIT_BRANCH_LOCAL)
+        let lookupRC = git_branch_lookup(&branch, repo, localBranch, GIT_BRANCH_LOCAL)
         guard lookupRC == 0 else { return }
         defer { git_reference_free(branch) }
 
-        try check(git_branch_set_upstream(branch, "\(remote)/\(stripped)"))
+        try check(git_branch_set_upstream(branch, "\(remote)/\(upstreamBranch)"))
+    }
+
+    private func localBranchName(from ref: String) -> String? {
+        let prefix = "refs/heads/"
+        if ref.hasPrefix(prefix) {
+            let name = String(ref.dropFirst(prefix.count))
+            return name.isEmpty ? nil : name
+        }
+        return ref.isEmpty || ref.hasPrefix("refs/") ? nil : ref
     }
 
     /// Run `body` with an array of heap-allocated C strings (one per
