@@ -164,6 +164,69 @@ struct RepositoryTests {
         #expect(remoteSHA == localSHA)
     }
 
+    @Test("push accepts a short tag refspec")
+    func pushShortTag() throws {
+        let dir = try makeFixtureRepo()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let origin = try makeBareOrigin()
+        defer { try? FileManager.default.removeItem(at: origin) }
+
+        try runGit(["tag", "release"], in: dir)
+        let repo = try Repository.open(at: dir)
+        try repo.addRemote(name: "origin", url: origin)
+        try repo.push(remote: "origin", refspec: "release", setUpstream: false, progress: { _ in })
+
+        let localSHA = try runGit(["rev-parse", "refs/tags/release"], in: dir)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let remoteSHA = try runGit(["rev-parse", "refs/tags/release"], in: origin)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        #expect(remoteSHA == localSHA)
+    }
+
+    @Test("push rejects ambiguous branch and tag shorthand")
+    func pushRejectsAmbiguousBranchAndTag() throws {
+        let dir = try makeFixtureRepo()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let origin = try makeBareOrigin()
+        defer { try? FileManager.default.removeItem(at: origin) }
+
+        try runGit(["branch", "release"], in: dir)
+        try runGit(["tag", "release"], in: dir)
+        let repo = try Repository.open(at: dir)
+        try repo.addRemote(name: "origin", url: origin)
+
+        do {
+            try repo.push(remote: "origin", refspec: "release", setUpstream: false, progress: { _ in })
+            Issue.record("expected ambiguous refspec error")
+        } catch let error as Libgit2Error {
+            #expect(error.message == "src refspec release matches more than one")
+        } catch {
+            Issue.record("expected Libgit2Error, got \(error)")
+        }
+    }
+
+    @Test("push setUpstream tracks destination branch for renamed refspec")
+    func pushSetUpstreamTracksDestinationBranch() throws {
+        let dir = try makeFixtureRepo()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let origin = try makeBareOrigin()
+        defer { try? FileManager.default.removeItem(at: origin) }
+
+        try runGit(["checkout", "-b", "local"], in: dir)
+        let repo = try Repository.open(at: dir)
+        try repo.addRemote(name: "origin", url: origin)
+        try repo.push(
+            remote: "origin", refspec: "local:remote",
+            setUpstream: true, progress: { _ in })
+
+        let upstreamRemote = try runGit(["config", "branch.local.remote"], in: dir)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let upstreamMerge = try runGit(["config", "branch.local.merge"], in: dir)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        #expect(upstreamRemote == "origin")
+        #expect(upstreamMerge == "refs/heads/remote")
+    }
+
     @Test("remoteURL returns nil for a missing remote")
     func remoteURLMissing() throws {
         let dir = try makeFixtureRepo()
