@@ -1,6 +1,17 @@
 import Foundation
 import CGitKit
 
+/// The lease expectation used by force-with-lease pushes.
+public enum PushLease: Sendable, Equatable {
+    /// Mirror `git push --force-with-lease`: expect the destination branch
+    /// to match `refs/remotes/<remote>/<branch>`. If that tracking ref is
+    /// absent, the remote branch must also be absent.
+    case tracking
+    /// Expect the destination ref to still point at this full 40-character
+    /// object ID.
+    case expecting(String)
+}
+
 /// An open libgit2 repository — the handle every operation in this module
 /// is a method on, mirroring libgit2's own `git_repository *` model.
 ///
@@ -226,6 +237,49 @@ public final class Repository {
         credentials: CredentialProvider? = nil,
         progress: @escaping @Sendable (String) -> Void = GitProgress.standardError
     ) throws {
+        try pushImpl(
+            remote: remote, refspec: refspec, setUpstream: setUpstream,
+            forceWithLease: nil, credentials: credentials, progress: progress)
+    }
+
+    /// Push `refspec` to `remote` with `--force-with-lease` semantics.
+    ///
+    /// The refspec is force-pushed, but only after the remote advertises
+    /// the expected destination ref value on the same push connection.
+    /// This preserves the race protection of `git push --force-with-lease`.
+    ///
+    /// - Parameters:
+    ///   - remote: The remote name to push to (e.g. `"origin"`).
+    ///   - refspec: The refspec to push (e.g. `"main"` or
+    ///     `"refs/heads/main:refs/heads/main"`).
+    ///   - setUpstream: When `true`, configure the pushed branch's upstream
+    ///     after a successful push.
+    ///   - forceWithLease: The lease expectation to verify before sending
+    ///     the forced update.
+    ///   - credentials: Invoked by the transport on auth challenges.
+    ///   - progress: Sink for real-git-style progress lines (defaults to
+    ///     the process's stderr).
+    public func push(
+        remote: String,
+        refspec: String,
+        setUpstream: Bool,
+        forceWithLease lease: PushLease,
+        credentials: CredentialProvider? = nil,
+        progress: @escaping @Sendable (String) -> Void = GitProgress.standardError
+    ) throws {
+        try pushImpl(
+            remote: remote, refspec: refspec, setUpstream: setUpstream,
+            forceWithLease: lease, credentials: credentials, progress: progress)
+    }
+
+    private func pushImpl(
+        remote: String,
+        refspec: String,
+        setUpstream: Bool,
+        forceWithLease lease: PushLease?,
+        credentials: CredentialProvider?,
+        progress: @escaping @Sendable (String) -> Void
+    ) throws {
         var remoteHandle: OpaquePointer?
         try check(git_remote_lookup(&remoteHandle, repo, remote))
         defer { git_remote_free(remoteHandle) }
@@ -236,7 +290,13 @@ public final class Repository {
         reporter.suppressTransferProgress =
             ProgressReporter.isLocalURL(remoteURL)
 
-        let pushRefspec = try qualifiedPushRefspec(refspec)
+        let qualifiedRefspec = try qualifiedPushRefspec(refspec)
+        let pushRefspec = lease == nil
+            ? qualifiedRefspec
+            : forcePushRefspec(qualifiedRefspec)
+        let pushLease = try lease.map {
+            try pushLeaseCheck($0, remote: remote, refspec: pushRefspec)
+        }
 
         try pushRefspec.withCString { cstr in
             var copy: UnsafeMutablePointer<CChar>? = strdup(cstr)
@@ -247,14 +307,20 @@ public final class Repository {
                 try check(git_push_options_init(&opts, UInt32(GIT_PUSH_OPTIONS_VERSION)))
                 try withCallbacksPayload(
                     credentials: credentials, reporter: reporter,
-                    { credCB, sidebandCB, _, _, pushRefCB, packCB, pushTransferCB, payload in
+                    pushLease: pushLease,
+                    { credCB, sidebandCB, _, _, pushRefCB, packCB, pushTransferCB, pushNegotiationCB, payload in
                         opts.callbacks.credentials = credCB
                         opts.callbacks.sideband_progress = sidebandCB
                         opts.callbacks.push_update_reference = pushRefCB
                         opts.callbacks.pack_progress = packCB
                         opts.callbacks.push_transfer_progress = pushTransferCB
+                        opts.callbacks.push_negotiation = pushNegotiationCB
                         opts.callbacks.payload = payload
-                        try check(git_remote_push(remoteHandle, &arr, &opts))
+                        let rc = git_remote_push(remoteHandle, &arr, &opts)
+                        if rc < 0, let failure = pushLease?.failure {
+                            throw failure
+                        }
+                        try check(rc)
                     },
                     outReporter: { reporter = $0 })
             }
@@ -496,6 +562,56 @@ public final class Repository {
         return "\(prefix)\(qualifiedSrc):\(qualifiedDst)"
     }
 
+    private func forcePushRefspec(_ refspec: String) -> String {
+        refspec.hasPrefix("+") ? refspec : "+\(refspec)"
+    }
+
+    private func pushLeaseCheck(
+        _ lease: PushLease,
+        remote: String,
+        refspec: String
+    ) throws -> PushLeaseCheck {
+        guard let destination = destinationRefName(fromPushRefspec: refspec) else {
+            throw Libgit2Error(
+                code: GIT_EINVALIDSPEC.rawValue,
+                klass: Int32(GIT_ERROR_INVALID.rawValue),
+                message: "force-with-lease requires a destination ref")
+        }
+
+        let expectedOID: git_oid?
+        switch lease {
+        case .tracking:
+            guard let branch = localBranchName(from: destination) else {
+                throw Libgit2Error(
+                    code: GIT_EINVALIDSPEC.rawValue,
+                    klass: Int32(GIT_ERROR_INVALID.rawValue),
+                    message: "force-with-lease tracking requires a branch destination")
+            }
+            expectedOID = try oidForReference("refs/remotes/\(remote)/\(branch)")
+        case .expecting(let sha):
+            expectedOID = try parseFullOID(sha, label: "force-with-lease expected oid")
+        }
+
+        return PushLeaseCheck(remoteRef: destination, expectedOID: expectedOID)
+    }
+
+    private func destinationRefName(fromPushRefspec refspec: String) -> String? {
+        let body = refspec.hasPrefix("+")
+            ? String(refspec.dropFirst())
+            : refspec
+
+        guard let colon = body.firstIndex(of: ":") else {
+            return body.isEmpty ? nil : body
+        }
+
+        let dstStart = body.index(after: colon)
+        let dst = String(body[dstStart...])
+        if !dst.isEmpty { return dst }
+
+        let src = String(body[..<colon])
+        return src.isEmpty ? nil : src
+    }
+
     private func qualifiedPushSource(_ src: String) throws -> (String, String) {
         let branch = "refs/heads/\(src)"
         let tag = "refs/tags/\(src)"
@@ -527,6 +643,33 @@ public final class Repository {
         if rc == GIT_ENOTFOUND.rawValue { return false }
         try check(rc)
         return false
+    }
+
+    private func oidForReference(_ name: String) throws -> git_oid? {
+        var ref: OpaquePointer?
+        let rc = git_reference_lookup(&ref, repo, name)
+        if rc == GIT_ENOTFOUND.rawValue { return nil }
+        try check(rc)
+        defer { git_reference_free(ref) }
+
+        var resolved: OpaquePointer?
+        try check(git_reference_resolve(&resolved, ref))
+        defer { git_reference_free(resolved) }
+
+        guard let target = git_reference_target(resolved) else { return nil }
+        return target.pointee
+    }
+
+    private func parseFullOID(_ sha: String, label: String) throws -> git_oid {
+        var oid = git_oid()
+        let rc = sha.withCString { git_oid_fromstrp(&oid, $0) }
+        if rc < 0 {
+            throw Libgit2Error(
+                code: GIT_EINVALID.rawValue,
+                klass: Int32(GIT_ERROR_INVALID.rawValue),
+                message: "invalid \(label): \(sha)")
+        }
+        return oid
     }
 
     /// `<src>:<dst>` form has both sides; bare ref like `main` means

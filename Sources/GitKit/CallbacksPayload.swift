@@ -9,11 +9,84 @@ import CGitKit
 final class CallbackBox {
     let credentialsProvider: CredentialProvider?
     var reporter: ProgressReporter?
+    let pushLease: PushLeaseCheck?
 
-    init(credentials: CredentialProvider?, reporter: ProgressReporter?) {
+    init(
+        credentials: CredentialProvider?,
+        reporter: ProgressReporter?,
+        pushLease: PushLeaseCheck? = nil
+    ) {
         self.credentialsProvider = credentials
         self.reporter = reporter
+        self.pushLease = pushLease
     }
+}
+
+final class PushLeaseCheck {
+    let remoteRef: String
+    let expectedOID: git_oid?
+    var failure: Libgit2Error?
+
+    init(remoteRef: String, expectedOID: git_oid?) {
+        self.remoteRef = remoteRef
+        self.expectedOID = expectedOID
+    }
+
+    func verify(
+        updates: UnsafeMutablePointer<UnsafePointer<git_push_update>?>?,
+        count: Int
+    ) -> Int32 {
+        guard let updates else {
+            failure = leaseError(message: "force-with-lease rejected \(remoteRef): push did not negotiate updates")
+            return GIT_EMODIFIED.rawValue
+        }
+
+        for i in 0..<count {
+            guard let update = updates[i],
+                  let dstRefname = update.pointee.dst_refname
+            else { continue }
+
+            let candidate = String(cString: dstRefname)
+            guard candidate == remoteRef else { continue }
+
+            var actual = update.pointee.src
+            if let expectedOID {
+                var expected = expectedOID
+                if git_oid_cmp(&actual, &expected) == 0 { return 0 }
+            } else if git_oid_is_zero(&actual) != 0 {
+                return 0
+            }
+
+            failure = leaseError(
+                message: "force-with-lease rejected \(remoteRef): expected "
+                    + "\(expectedDescription), found \(oidDescription(&actual))")
+            return GIT_EMODIFIED.rawValue
+        }
+
+        failure = leaseError(message: "force-with-lease rejected \(remoteRef): push did not update that ref")
+        return GIT_EMODIFIED.rawValue
+    }
+
+    private var expectedDescription: String {
+        guard var expected = expectedOID else { return "missing" }
+        return oidDescription(&expected)
+    }
+
+    private func leaseError(message: String) -> Libgit2Error {
+        Libgit2Error(
+            code: GIT_EMODIFIED.rawValue,
+            klass: Int32(GIT_ERROR_REFERENCE.rawValue),
+            message: message)
+    }
+}
+
+private func oidDescription(_ oid: inout git_oid) -> String {
+    if git_oid_is_zero(&oid) != 0 { return "missing" }
+    let buf = UnsafeMutablePointer<CChar>.allocate(capacity: 41)
+    defer { buf.deallocate() }
+    buf.initialize(repeating: 0, count: 41)
+    _ = git_oid_tostr(buf, 41, &oid)
+    return String(cString: buf)
 }
 
 /// Run `body` with a shared raw payload pointer plus the C trampolines
@@ -25,6 +98,7 @@ final class CallbackBox {
 func withCallbacksPayload<T>(
     credentials: CredentialProvider?,
     reporter: ProgressReporter?,
+    pushLease: PushLeaseCheck? = nil,
     _ body: (
         _ credentialsCB: git_credential_acquire_cb?,
         _ sidebandCB: git_transport_message_cb?,
@@ -35,14 +109,16 @@ func withCallbacksPayload<T>(
         _ pushRefCB: git_push_update_reference_cb?,
         _ packCB: git_packbuilder_progress?,
         _ pushTransferCB: git_push_transfer_progress_cb?,
+        _ pushNegotiationCB: git_push_negotiation?,
         _ payload: UnsafeMutableRawPointer?
     ) throws -> T,
     outReporter: (inout ProgressReporter) -> Void = { _ in }
 ) rethrows -> T {
-    if credentials == nil && reporter == nil {
-        return try body(nil, nil, nil, nil, nil, nil, nil, nil)
+    if credentials == nil && reporter == nil && pushLease == nil {
+        return try body(nil, nil, nil, nil, nil, nil, nil, nil, nil)
     }
-    let box = CallbackBox(credentials: credentials, reporter: reporter)
+    let box = CallbackBox(
+        credentials: credentials, reporter: reporter, pushLease: pushLease)
     let raw = Unmanaged.passRetained(box).toOpaque()
     defer {
         if var r = box.reporter { outReporter(&r); box.reporter = r }
@@ -56,8 +132,9 @@ func withCallbacksPayload<T>(
     let pushRefCB = reporter != nil ? combinedPushRefTrampoline : nil
     let packCB = reporter != nil ? combinedPackProgressTrampoline : nil
     let pushTransferCB = reporter != nil ? combinedPushTransferTrampoline : nil
+    let pushNegotiationCB = pushLease != nil ? combinedPushNegotiationTrampoline : nil
     return try body(credCB, sidebandCB, transferCB, updateCB, pushRefCB,
-                    packCB, pushTransferCB, raw)
+                    packCB, pushTransferCB, pushNegotiationCB, raw)
 }
 
 // MARK: Single-branch clone
@@ -374,6 +451,14 @@ private let combinedPushTransferTrampoline: git_push_transfer_progress_cb = {
         box.reporter!.write(line + "\r")
     }
     return 0
+}
+
+private let combinedPushNegotiationTrampoline: git_push_negotiation = {
+    updates, len, payload in
+    guard let payload else { return 0 }
+    let box = Unmanaged<CallbackBox>.fromOpaque(payload).takeUnretainedValue()
+    guard let pushLease = box.pushLease else { return 0 }
+    return pushLease.verify(updates: updates, count: Int(len))
 }
 
 private func humanBytes(_ bytes: Int) -> String {

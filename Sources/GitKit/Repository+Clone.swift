@@ -69,7 +69,7 @@ extension Repository {
         func runClone() throws {
             try withCallbacksPayload(
                 credentials: credentials, reporter: reporter,
-                { credCB, sidebandCB, transferCB, _, _, _, _, payload in
+                { credCB, sidebandCB, transferCB, _, _, _, _, _, payload in
                     opts.fetch_opts.callbacks.credentials = credCB
                     opts.fetch_opts.callbacks.sideband_progress = sidebandCB
                     opts.fetch_opts.callbacks.transfer_progress = transferCB
@@ -176,7 +176,7 @@ extension Repository {
                 opts.depth = rawDepth
                 try withCallbacksPayload(
                     credentials: credentials, reporter: reporter,
-                    { credCB, sidebandCB, transferCB, updateCB, _, _, _, payload in
+                    { credCB, sidebandCB, transferCB, updateCB, _, _, _, _, payload in
                         opts.callbacks.credentials = credCB
                         opts.callbacks.sideband_progress = sidebandCB
                         opts.callbacks.transfer_progress = transferCB
