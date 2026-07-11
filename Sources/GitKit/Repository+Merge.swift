@@ -34,6 +34,14 @@ private final class MergeHeadCollector {
     var oids: [git_oid] = []
 }
 
+private struct MergeContinueStats {
+    let filesChanged: Int
+    let insertions: Int
+    let deletions: Int
+    let added: [Libgit2CommitDetails.FileChange]
+    let deleted: [Libgit2CommitDetails.FileChange]
+}
+
 extension Repository {
 
     /// Run a real-git-style merge of `theirRef` into HEAD.
@@ -502,11 +510,7 @@ extension Repository {
     private func collectMergeContinueStats(
         oldTree: OpaquePointer?,
         newTree: OpaquePointer?
-    ) throws -> (
-        filesChanged: Int, insertions: Int, deletions: Int,
-        added: [Libgit2CommitDetails.FileChange],
-        deleted: [Libgit2CommitDetails.FileChange]
-    ) {
+    ) throws -> MergeContinueStats {
         var diff: OpaquePointer?
         try check(git_diff_tree_to_tree(&diff, repo, oldTree, newTree, nil))
         defer { git_diff_free(diff) }
@@ -532,7 +536,7 @@ extension Repository {
             }
         }
 
-        return (
+        return MergeContinueStats(
             filesChanged: Int(git_diff_stats_files_changed(stats)),
             insertions: Int(git_diff_stats_insertions(stats)),
             deletions: Int(git_diff_stats_deletions(stats)),
