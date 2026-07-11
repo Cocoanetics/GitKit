@@ -30,6 +30,10 @@ public enum FastForwardMode: Sendable {
     case onlyFastForward
 }
 
+private final class MergeHeadCollector {
+    var oids: [git_oid] = []
+}
+
 extension Repository {
 
     /// Run a real-git-style merge of `theirRef` into HEAD.
@@ -114,6 +118,105 @@ extension Repository {
                 theirOID: &theirOID, oldTree: oldTree,
                 message: message, author: author)
         }
+    }
+
+    /// Resume a paused merge after the user resolved conflicts and staged
+    /// the result. Equivalent to `git merge --continue` / `git commit`
+    /// while `MERGE_HEAD` is present: the new commit records `HEAD` plus
+    /// every `MERGE_HEAD` entry as parents, then clears merge state.
+    ///
+    /// When `message` is nil, the prepared `.git/MERGE_MSG` text is used.
+    /// `env` feeds the real-git identity precedence chain
+    /// (`GIT_AUTHOR_*` / `GIT_COMMITTER_*`); see ``SignatureResolver``.
+    @discardableResult
+    public func mergeContinue(
+        message: String? = nil,
+        author: Signature? = nil,
+        env: [String: String] = ProcessInfo.processInfo.environment
+    ) throws -> Libgit2CommitDetails {
+        let mergeHeadOIDs = try currentMergeHeadOIDs()
+
+        var index: OpaquePointer?
+        try check(git_repository_index(&index, repo))
+        defer { git_index_free(index) }
+        if git_index_has_conflicts(index) != 0 {
+            throw Libgit2Error(code: -1, klass: 0,
+                message: "merge still has conflicts")
+        }
+
+        var parentRef: OpaquePointer?
+        try check(git_repository_head(&parentRef, repo))
+        defer { git_reference_free(parentRef) }
+        guard let parentTarget = git_reference_target(parentRef) else {
+            throw Libgit2Error(code: -1, klass: 0,
+                message: "merge commit: HEAD has no oid")
+        }
+
+        var parentOID = parentTarget.pointee
+        var parentCommits: [OpaquePointer?] = []
+        var parentCommit: OpaquePointer?
+        try check(git_commit_lookup(&parentCommit, repo, &parentOID))
+        parentCommits.append(parentCommit)
+        defer { for commit in parentCommits { git_commit_free(commit) } }
+
+        var parentTree: OpaquePointer?
+        if let id = git_commit_tree_id(parentCommit) {
+            var tid = id.pointee
+            try check(git_tree_lookup(&parentTree, repo, &tid))
+        }
+        defer { if parentTree != nil { git_tree_free(parentTree) } }
+
+        for mergeHeadOID in mergeHeadOIDs {
+            var oid = mergeHeadOID
+            var commit: OpaquePointer?
+            try check(git_commit_lookup(&commit, repo, &oid))
+            parentCommits.append(commit)
+        }
+
+        var treeOID = git_oid()
+        try check(git_index_write_tree(&treeOID, index))
+        var newTree: OpaquePointer?
+        try check(git_tree_lookup(&newTree, repo, &treeOID))
+        defer { git_tree_free(newTree) }
+
+        let stats = try collectMergeContinueStats(oldTree: parentTree, newTree: newTree)
+
+        let authorSig = try SignatureResolver.resolve(
+            role: .author, override: author, repo: repo, env: env)
+        defer { git_signature_free(authorSig) }
+        let committerSig = try SignatureResolver.resolve(
+            role: .committer, repo: repo, env: env)
+        defer { git_signature_free(committerSig) }
+
+        let resolvedMessage: String
+        if let message {
+            resolvedMessage = message
+        } else {
+            resolvedMessage = try preparedMergeMessage()
+        }
+
+        var commitOID = git_oid()
+        _ = try parentCommits.withUnsafeMutableBufferPointer { pbuf in
+            try resolvedMessage.withCString { msg in
+                try check(git_commit_create(
+                    &commitOID, repo, "HEAD", authorSig, committerSig, nil,
+                    msg, newTree, pbuf.count, pbuf.baseAddress))
+            }
+        }
+
+        try check(git_repository_state_cleanup(repo))
+
+        let sha = formatOID(&commitOID)
+        return Libgit2CommitDetails(
+            sha: sha,
+            shortSHA: String(sha.prefix(7)),
+            branchName: currentBranchShorthand(),
+            isRoot: false,
+            filesChanged: stats.filesChanged,
+            insertions: stats.insertions,
+            deletions: stats.deletions,
+            addedFiles: stats.added,
+            deletedFiles: stats.deleted)
     }
 
     // MARK: Fast-forward
@@ -345,6 +448,96 @@ extension Repository {
         var oid = git_oid()
         let rc = sha.withCString { git_oid_fromstr(&oid, $0) }
         return rc == 0 ? oid : nil
+    }
+
+    private func currentMergeHeadOIDs() throws -> [git_oid] {
+        let collector = MergeHeadCollector()
+        let raw = Unmanaged.passUnretained(collector).toOpaque()
+        let cb: git_repository_mergehead_foreach_cb = { oidPtr, payload in
+            guard let payload, let oidPtr else { return 0 }
+            let collector = Unmanaged<MergeHeadCollector>
+                .fromOpaque(payload)
+                .takeUnretainedValue()
+            collector.oids.append(oidPtr.pointee)
+            return 0
+        }
+
+        let rc = git_repository_mergehead_foreach(repo, cb, raw)
+        if rc == GIT_ENOTFOUND.rawValue {
+            throw Libgit2Error(code: -1, klass: 0,
+                message: "no merge in progress")
+        }
+        try check(rc)
+        guard !collector.oids.isEmpty else {
+            throw Libgit2Error(code: -1, klass: 0,
+                message: "no merge in progress")
+        }
+        return collector.oids
+    }
+
+    private func preparedMergeMessage() throws -> String {
+        var buf = git_buf()
+        let rc = git_repository_message(&buf, repo)
+        if rc == GIT_ENOTFOUND.rawValue {
+            throw Libgit2Error(code: -1, klass: 0,
+                message: "no merge message available")
+        }
+        try check(rc)
+        defer { git_buf_dispose(&buf) }
+        return buf.ptr.map { String(cString: $0) } ?? ""
+    }
+
+    private func currentBranchShorthand() -> String? {
+        var head: OpaquePointer?
+        if git_repository_head(&head, repo) == 0 {
+            defer { git_reference_free(head) }
+            if let cstr = git_reference_shorthand(head) {
+                let branch = String(cString: cstr)
+                if branch != "HEAD" { return branch }
+            }
+        }
+        return nil
+    }
+
+    private func collectMergeContinueStats(
+        oldTree: OpaquePointer?,
+        newTree: OpaquePointer?
+    ) throws -> (
+        filesChanged: Int, insertions: Int, deletions: Int,
+        added: [Libgit2CommitDetails.FileChange],
+        deleted: [Libgit2CommitDetails.FileChange]
+    ) {
+        var diff: OpaquePointer?
+        try check(git_diff_tree_to_tree(&diff, repo, oldTree, newTree, nil))
+        defer { git_diff_free(diff) }
+
+        var stats: OpaquePointer?
+        try check(git_diff_get_stats(&stats, diff))
+        defer { git_diff_stats_free(stats) }
+
+        var added: [Libgit2CommitDetails.FileChange] = []
+        var deleted: [Libgit2CommitDetails.FileChange] = []
+        let numDeltas = Int(git_diff_num_deltas(diff))
+        for i in 0..<numDeltas {
+            guard let delta = git_diff_get_delta(diff, i) else { continue }
+            let status = delta.pointee.status
+            if status == GIT_DELTA_ADDED {
+                let path = String(cString: delta.pointee.new_file.path)
+                added.append(.init(
+                    path: path, mode: UInt32(delta.pointee.new_file.mode)))
+            } else if status == GIT_DELTA_DELETED {
+                let path = String(cString: delta.pointee.old_file.path)
+                deleted.append(.init(
+                    path: path, mode: UInt32(delta.pointee.old_file.mode)))
+            }
+        }
+
+        return (
+            filesChanged: Int(git_diff_stats_files_changed(stats)),
+            insertions: Int(git_diff_stats_insertions(stats)),
+            deletions: Int(git_diff_stats_deletions(stats)),
+            added: added,
+            deleted: deleted)
     }
 
     private func defaultMergeMessage(refName: String) -> String {

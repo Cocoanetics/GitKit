@@ -55,6 +55,26 @@ struct RepositoryMergeTests {
         return dir
     }
 
+    /// Conflict scenario: both branches modify the same line in `a.txt`.
+    private func makeConflictingRepo() throws -> URL {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MergeTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try runGit(["init", "-b", "main"], in: dir)
+        try runGit(["config", "user.email", "t@e.com"], in: dir)
+        try runGit(["config", "user.name", "T"], in: dir)
+        try Data("1\n2\n3\n".utf8).write(to: dir.appendingPathComponent("a.txt"))
+        try runGit(["add", "."], in: dir)
+        try runGit(["commit", "-m", "init"], in: dir)
+        try runGit(["checkout", "-b", "feature"], in: dir)
+        try Data("1\n2\nFEAT\n".utf8).write(to: dir.appendingPathComponent("a.txt"))
+        try runGit(["commit", "-am", "feat"], in: dir)
+        try runGit(["checkout", "main"], in: dir)
+        try Data("1\n2\nMAIN\n".utf8).write(to: dir.appendingPathComponent("a.txt"))
+        try runGit(["commit", "-am", "main"], in: dir)
+        return dir
+    }
+
     @discardableResult
     private func runGit(_ args: [String], in dir: URL) throws -> String {
         let p = Process()
@@ -147,22 +167,7 @@ struct RepositoryMergeTests {
 
     @Test("conflict surfaces conflicted paths and leaves index conflicted")
     func conflictPath() throws {
-        // Build a conflict scenario: both branches modify the same line.
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("MergeTests-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        try runGit(["init", "-b", "main"], in: dir)
-        try runGit(["config", "user.email", "t@e.com"], in: dir)
-        try runGit(["config", "user.name", "T"], in: dir)
-        try Data("1\n2\n3\n".utf8).write(to: dir.appendingPathComponent("a.txt"))
-        try runGit(["add", "."], in: dir)
-        try runGit(["commit", "-m", "init"], in: dir)
-        try runGit(["checkout", "-b", "feature"], in: dir)
-        try Data("1\n2\nFEAT\n".utf8).write(to: dir.appendingPathComponent("a.txt"))
-        try runGit(["commit", "-am", "feat"], in: dir)
-        try runGit(["checkout", "main"], in: dir)
-        try Data("1\n2\nMAIN\n".utf8).write(to: dir.appendingPathComponent("a.txt"))
-        try runGit(["commit", "-am", "main"], in: dir)
+        let dir = try makeConflictingRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
 
         let outcome = try Repository.open(at: dir)
@@ -178,6 +183,71 @@ struct RepositoryMergeTests {
                               encoding: .utf8)
         #expect(body.contains("<<<<<<< HEAD"))
         #expect(body.contains(">>>>>>> "))
+    }
+
+    @Test("mergeContinue commits resolved MERGE_HEAD and clears state")
+    func mergeContinueAfterConflict() throws {
+        let dir = try makeConflictingRepo()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let repo = try Repository.open(at: dir)
+        let outcome = try repo.merge(ref: "feature",
+            author: Signature(name: "T", email: "t@e.com"))
+        guard case .conflicts = outcome else {
+            Issue.record("expected conflicts, got \(outcome)"); return
+        }
+        let preparedMessage = try String(
+            contentsOf: dir.appendingPathComponent(".git/MERGE_MSG"),
+            encoding: .utf8)
+
+        try Data("1\n2\nresolved\n".utf8)
+            .write(to: dir.appendingPathComponent("a.txt"))
+        try repo.add(paths: [])
+        let details = try repo.mergeContinue(
+            author: Signature(name: "T", email: "t@e.com"))
+
+        #expect(details.sha.count == 40)
+        #expect(details.shortSHA == String(details.sha.prefix(7)))
+        #expect(details.branchName == "main")
+        #expect(details.filesChanged == 1)
+
+        let parents = try runGit(["rev-list", "--parents", "-n", "1", details.sha], in: dir)
+            .split(separator: " ")
+        #expect(parents.count == 3) // commit + HEAD + MERGE_HEAD
+
+        let message = try runGit(["log", "-1", "--format=%B"], in: dir)
+        #expect(message.trimmingCharacters(in: .whitespacesAndNewlines)
+            == preparedMessage.trimmingCharacters(in: .whitespacesAndNewlines))
+        #expect(!FileManager.default.fileExists(
+            atPath: dir.appendingPathComponent(".git/MERGE_HEAD").path))
+        #expect(!FileManager.default.fileExists(
+            atPath: dir.appendingPathComponent(".git/MERGE_MSG").path))
+        #expect(try runGit(["status", "--porcelain"], in: dir).isEmpty)
+    }
+
+    @Test("mergeContinue allows resolved tree identical to HEAD")
+    func mergeContinueAllowsEmptyTreeChange() throws {
+        let dir = try makeConflictingRepo()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let repo = try Repository.open(at: dir)
+        let outcome = try repo.merge(ref: "feature",
+            author: Signature(name: "T", email: "t@e.com"))
+        guard case .conflicts = outcome else {
+            Issue.record("expected conflicts, got \(outcome)"); return
+        }
+
+        try Data("1\n2\nMAIN\n".utf8)
+            .write(to: dir.appendingPathComponent("a.txt"))
+        try repo.add(paths: [])
+        let details = try repo.mergeContinue(
+            author: Signature(name: "T", email: "t@e.com"))
+
+        let parents = try runGit(["rev-list", "--parents", "-n", "1", details.sha], in: dir)
+            .split(separator: " ")
+        #expect(parents.count == 3)
+        #expect(details.filesChanged == 0)
+        #expect(try runGit(["diff", "--stat", "HEAD^", "HEAD"], in: dir).isEmpty)
     }
 
     @Test("unknown ref throws Libgit2Error")
