@@ -50,6 +50,9 @@ final class PushLeaseCheck {
             guard candidate == remoteRef else { continue }
 
             var actual = update.pointee.src
+            var desired = update.pointee.dst
+            if git_oid_cmp(&actual, &desired) == 0 { return 0 }
+
             if let expectedOID {
                 var expected = expectedOID
                 if git_oid_cmp(&actual, &expected) == 0 { return 0 }

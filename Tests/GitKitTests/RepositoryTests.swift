@@ -285,6 +285,17 @@ struct RepositoryTests {
         let finalRemoteSHA = try runGit(["rev-parse", "refs/heads/main"], in: origin)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         #expect(finalRemoteSHA == localSHA)
+
+        try staleRepo.push(
+            remote: "origin", refspec: "main", setUpstream: false,
+            forceWithLease: .expecting(advancedSHA), progress: { _ in })
+        try staleRepo.push(
+            remote: "origin", refspec: "main", setUpstream: false,
+            forceWithLease: .tracking, progress: { _ in })
+
+        let noOpRemoteSHA = try runGit(["rev-parse", "refs/heads/main"], in: origin)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        #expect(noOpRemoteSHA == localSHA)
     }
 
     @Test("remoteURL returns nil for a missing remote")
