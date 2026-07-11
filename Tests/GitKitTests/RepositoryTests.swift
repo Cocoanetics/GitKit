@@ -227,6 +227,77 @@ struct RepositoryTests {
         #expect(upstreamMerge == "refs/heads/remote")
     }
 
+    @Test("push forceWithLease rejects stale leases and accepts matching leases")
+    func pushForceWithLease() throws {
+        let dir = try makeFixtureRepo()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let origin = try makeBareOrigin()
+        defer { try? FileManager.default.removeItem(at: origin) }
+        let other = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RepositoryTests-other-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: other) }
+
+        let repo = try Repository.open(at: dir)
+        try repo.addRemote(name: "origin", url: origin)
+        try repo.push(remote: "origin", refspec: "main", setUpstream: false, progress: { _ in })
+        try runGit(["fetch", "origin", "main"], in: dir)
+
+        let leaseSHA = try runGit(["rev-parse", "refs/remotes/origin/main"], in: dir)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        try Data("local\n".utf8).write(to: dir.appendingPathComponent("README.md"))
+        try runGit(["commit", "-am", "local"], in: dir)
+        let localSHA = try runGit(["rev-parse", "refs/heads/main"], in: dir)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        try runGit(["clone", "-b", "main", origin.path, other.path],
+                   in: FileManager.default.temporaryDirectory)
+        try runGit(["config", "user.email", "test@example.com"], in: other)
+        try runGit(["config", "user.name", "Test"], in: other)
+        try Data("remote\n".utf8).write(to: other.appendingPathComponent("README.md"))
+        try runGit(["commit", "-am", "remote"], in: other)
+        try runGit(["push", "origin", "main"], in: other)
+        let advancedSHA = try runGit(["rev-parse", "refs/heads/main"], in: origin)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        #expect(advancedSHA != leaseSHA)
+
+        let staleRepo = try Repository.open(at: dir)
+        do {
+            try staleRepo.push(
+                remote: "origin", refspec: "main", setUpstream: false,
+                forceWithLease: .tracking, progress: { _ in })
+            Issue.record("expected stale force-with-lease push to fail")
+        } catch let error as Libgit2Error {
+            #expect(error.code == GIT_EMODIFIED.rawValue)
+            #expect(error.message.contains("force-with-lease rejected refs/heads/main"))
+        } catch {
+            Issue.record("expected Libgit2Error, got \(error)")
+        }
+
+        let stillAdvancedSHA = try runGit(["rev-parse", "refs/heads/main"], in: origin)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        #expect(stillAdvancedSHA == advancedSHA)
+
+        try staleRepo.push(
+            remote: "origin", refspec: "main", setUpstream: false,
+            forceWithLease: .expecting(advancedSHA), progress: { _ in })
+
+        let finalRemoteSHA = try runGit(["rev-parse", "refs/heads/main"], in: origin)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        #expect(finalRemoteSHA == localSHA)
+
+        try staleRepo.push(
+            remote: "origin", refspec: "main", setUpstream: false,
+            forceWithLease: .expecting(advancedSHA), progress: { _ in })
+        try staleRepo.push(
+            remote: "origin", refspec: "main", setUpstream: false,
+            forceWithLease: .tracking, progress: { _ in })
+
+        let noOpRemoteSHA = try runGit(["rev-parse", "refs/heads/main"], in: origin)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        #expect(noOpRemoteSHA == localSHA)
+    }
+
     @Test("remoteURL returns nil for a missing remote")
     func remoteURLMissing() throws {
         let dir = try makeFixtureRepo()
