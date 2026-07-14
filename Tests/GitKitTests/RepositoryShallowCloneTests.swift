@@ -151,6 +151,7 @@ struct RepositoryShallowCloneTests {
         let refspec = "+refs/heads/*:refs/remotes/origin/*"
 
         try runGit(["branch", "-D", "feature"], in: srcDir)
+        try runGit(["config", "remote.origin.prune", "true"], in: dest)
         try repo.fetch(remote: "origin", refspec: refspec, progress: quiet)
 
         var refs = try runGit(

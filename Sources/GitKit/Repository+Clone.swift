@@ -178,9 +178,7 @@ extension Repository {
                 var opts = git_fetch_options()
                 try check(git_fetch_options_init(&opts, UInt32(GIT_FETCH_OPTIONS_VERSION)))
                 opts.depth = rawDepth
-                if prune {
-                    opts.prune = GIT_FETCH_PRUNE
-                }
+                opts.prune = prune ? GIT_FETCH_PRUNE : GIT_FETCH_NO_PRUNE
                 try withCallbacksPayload(
                     credentials: credentials, reporter: reporter,
                     { credCB, sidebandCB, transferCB, updateCB, _, _, _, _, payload in
