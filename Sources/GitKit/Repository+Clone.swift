@@ -108,6 +108,8 @@ extension Repository {
     ///   - depth: Limit the fetch to the last `depth` commits per tip — a
     ///     shallow fetch (`git fetch --depth N`). `nil` (the default) or a
     ///     non-positive value fetches full history.
+    ///   - prune: Remove remote-tracking refs that no longer exist on the
+    ///     remote (`git fetch --prune`). Defaults to `false`.
     ///   - credentials: Invoked by the transport on auth challenges.
     ///   - progress: Sink for real-git-style progress lines (defaults to
     ///     the process's stderr).
@@ -115,13 +117,14 @@ extension Repository {
         remote: String,
         refspec: String,
         depth: Int? = nil,
+        prune: Bool = false,
         credentials: CredentialProvider? = nil,
         progress: @escaping @Sendable (String) -> Void = GitProgress.standardError
     ) throws {
         try fetch(
             remote: remote, refspec: refspec,
             rawDepth: Repository.normalizedDepth(depth) ?? Int32(GIT_FETCH_DEPTH_FULL.rawValue),
-            credentials: credentials, progress: progress)
+            prune: prune, credentials: credentials, progress: progress)
     }
 
     /// Deepen a shallow clone back to full history — the libgit2 equivalent
@@ -145,13 +148,14 @@ extension Repository {
         try fetch(
             remote: remote, refspec: refspec,
             rawDepth: Int32(GIT_FETCH_DEPTH_UNSHALLOW.rawValue),
-            credentials: credentials, progress: progress)
+            prune: false, credentials: credentials, progress: progress)
     }
 
     private func fetch(
         remote: String,
         refspec: String,
         rawDepth: Int32,
+        prune: Bool,
         credentials: CredentialProvider?,
         progress: @escaping @Sendable (String) -> Void
     ) throws {
@@ -174,6 +178,7 @@ extension Repository {
                 var opts = git_fetch_options()
                 try check(git_fetch_options_init(&opts, UInt32(GIT_FETCH_OPTIONS_VERSION)))
                 opts.depth = rawDepth
+                opts.prune = prune ? GIT_FETCH_PRUNE : GIT_FETCH_NO_PRUNE
                 try withCallbacksPayload(
                     credentials: credentials, reporter: reporter,
                     { credCB, sidebandCB, transferCB, updateCB, _, _, _, _, payload in

@@ -139,6 +139,33 @@ struct RepositoryShallowCloneTests {
         }
     }
 
+    @Test("fetch prunes deleted remote-tracking branches only when requested")
+    func fetchPrune() throws {
+        let (srcDir, url) = try makeSource()
+        let dest = tmp("FetchPrune")
+        defer {
+            try? FileManager.default.removeItem(at: srcDir)
+            try? FileManager.default.removeItem(at: dest)
+        }
+        let repo = try Repository.clone(from: url, to: dest, progress: quiet)
+        let refspec = "+refs/heads/*:refs/remotes/origin/*"
+
+        try runGit(["branch", "-D", "feature"], in: srcDir)
+        try runGit(["config", "remote.origin.prune", "true"], in: dest)
+        try repo.fetch(remote: "origin", refspec: refspec, progress: quiet)
+
+        var refs = try runGit(
+            ["for-each-ref", "--format=%(refname)", "refs/remotes"], in: dest)
+        #expect(refs.contains("refs/remotes/origin/feature"))
+
+        try repo.fetch(
+            remote: "origin", refspec: refspec, prune: true, progress: quiet)
+
+        refs = try runGit(
+            ["for-each-ref", "--format=%(refname)", "refs/remotes"], in: dest)
+        #expect(!refs.contains("refs/remotes/origin/feature"))
+    }
+
     // MARK: Full / single-branch behaviour (local transport supports these)
 
     @Test("no depth clones the full history")
