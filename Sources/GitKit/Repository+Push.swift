@@ -209,6 +209,8 @@ extension Repository {
     }
 
     private func qualifiedPushSource(_ src: String) throws -> (String, String) {
+        if src == "HEAD" { return (src, "refs/heads/") }
+
         let branch = "refs/heads/\(src)"
         let tag = "refs/tags/\(src)"
         let hasBranch = try referenceExists(branch)

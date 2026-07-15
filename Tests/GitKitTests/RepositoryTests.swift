@@ -164,6 +164,44 @@ struct RepositoryTests {
         #expect(remoteSHA == localSHA)
     }
 
+    @Test("push accepts detached HEAD and retains fast-forward protection")
+    func pushDetachedHEAD() throws {
+        let dir = try makeFixtureRepo()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let origin = try makeBareOrigin()
+        defer { try? FileManager.default.removeItem(at: origin) }
+
+        let headSHA = try runGit(["rev-parse", "HEAD"], in: dir)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let repo = try Repository.open(at: dir)
+        try repo.addRemote(name: "origin", url: origin)
+        try repo.checkout(ref: headSHA)
+        #expect(try repo.currentBranch() == nil)
+        try repo.push(
+            remote: "origin", refspec: "HEAD:refs/heads/review-fixes",
+            setUpstream: false, progress: { _ in })
+
+        let pushedSHA = try runGit(["rev-parse", "refs/heads/review-fixes"], in: origin)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        #expect(pushedSHA == headSHA)
+
+        try Data("advanced\n".utf8).write(to: dir.appendingPathComponent("README.md"))
+        try runGit(["commit", "-am", "advance remote"], in: dir)
+        try runGit(["push", "origin", "HEAD:refs/heads/review-fixes"], in: dir)
+        let advancedSHA = try runGit(["rev-parse", "HEAD"], in: dir)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        try repo.checkout(ref: headSHA)
+
+        #expect(throws: Libgit2Error.self) {
+            try repo.push(
+                remote: "origin", refspec: "HEAD:refs/heads/review-fixes",
+                setUpstream: false, progress: { _ in })
+        }
+        let protectedSHA = try runGit(["rev-parse", "refs/heads/review-fixes"], in: origin)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        #expect(protectedSHA == advancedSHA)
+    }
+
     @Test("push accepts a short tag refspec")
     func pushShortTag() throws {
         let dir = try makeFixtureRepo()
