@@ -209,7 +209,10 @@ extension Repository {
     }
 
     private func qualifiedPushSource(_ src: String) throws -> (String, String) {
-        if src == "HEAD" { return (src, "refs/heads/") }
+        if src == "HEAD" {
+            guard let branch = try currentBranch() else { return (src, "") }
+            return ("refs/heads/\(branch)", "refs/heads/")
+        }
 
         let branch = "refs/heads/\(src)"
         let tag = "refs/tags/\(src)"

@@ -177,6 +177,11 @@ struct RepositoryTests {
         try repo.addRemote(name: "origin", url: origin)
         try repo.checkout(ref: headSHA)
         #expect(try repo.currentBranch() == nil)
+        #expect(throws: Libgit2Error.self) {
+            try repo.push(
+                remote: "origin", refspec: "HEAD:review-fixes",
+                setUpstream: false, progress: { _ in })
+        }
         try repo.push(
             remote: "origin", refspec: "HEAD:refs/heads/review-fixes",
             setUpstream: false, progress: { _ in })
@@ -200,6 +205,27 @@ struct RepositoryTests {
         let protectedSHA = try runGit(["rev-parse", "refs/heads/review-fixes"], in: origin)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         #expect(protectedSHA == advancedSHA)
+    }
+
+    @Test("push HEAD sets upstream for the attached branch")
+    func pushAttachedHEADSetUpstream() throws {
+        let dir = try makeFixtureRepo()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let origin = try makeBareOrigin()
+        defer { try? FileManager.default.removeItem(at: origin) }
+
+        let repo = try Repository.open(at: dir)
+        try repo.addRemote(name: "origin", url: origin)
+        try repo.push(
+            remote: "origin", refspec: "HEAD:refs/heads/review-fixes",
+            setUpstream: true, progress: { _ in })
+
+        let upstreamRemote = try runGit(["config", "branch.main.remote"], in: dir)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let upstreamMerge = try runGit(["config", "branch.main.merge"], in: dir)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        #expect(upstreamRemote == "origin")
+        #expect(upstreamMerge == "refs/heads/review-fixes")
     }
 
     @Test("push accepts a short tag refspec")
