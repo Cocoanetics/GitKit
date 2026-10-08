@@ -264,18 +264,17 @@ let package = Package(
     dependencies: [
         // libarchive-backed archive writer, used only by the trait-gated
         // `Repository.archive` (tar / tar.gz / tar.bz2 / tar.xz / tar.zstd /
-        // zip). Pinned to the head of upstream's default (`swift`) branch by
-        // commit — no tagged release carries its platform-narrowed filter
-        // gating yet; move to a `from:` pin when one does.
+        // zip). 3.8.9 is the first upstream tag that carries the
+        // platform-narrowed filter gating (marcprux/swift-archive#2), which
+        // is what lets iOS / Android consumers build with the trait on.
         //
-        // SwiftPM rule (verified empirically): a *version*-referenced GitKit
-        // resolves fine with the trait OFF (the dep is pruned), but
-        // consumers who ENABLE the Archive trait must reference GitKit by
-        // branch/revision — a stable-version package may not activate an
-        // unstable-version (branch/revision) dependency.
+        // Keep this a *version* requirement. SwiftPM refuses to let a
+        // version-referenced package activate a branch- or revision-pinned
+        // dependency, so a revision pin here would force every consumer who
+        // enables `Archive` back onto `branch: "main"` for GitKit itself.
         .package(
             url: "https://github.com/marcprux/swift-archive",
-            revision: "60f478d10ae730c4faed643d3fcc746c07a7e7e5",
+            from: "3.8.9",
             traits: [.defaults,
                      "GzipSupport",
                      "Bzip2Support",

@@ -91,7 +91,7 @@ mirroring SQLiteKit's `FTS5`/`SQLiteVec` pattern — so plain consumers build
 zero extra code:
 
 ```swift
-.package(url: "https://github.com/cocoanetics/GitKit.git", branch: "main",
+.package(url: "https://github.com/cocoanetics/GitKit.git", from: "2.1.0",
          traits: ["Archive"]),
 ```
 
@@ -101,13 +101,12 @@ the underlying tree-walk (`treeBlobs` / `commitTime`) is always available.
 The bz2 / xz / zstd filters work where libarchive ships them — macOS /
 Linux / Windows; iOS / Android throw libarchive's "filter not enabled".
 
-> **Why `branch: "main"` in that snippet?** swift-archive has no tagged
-> release containing its platform gating, so GitKit pins it by commit — and
-> SwiftPM only lets a *version*-referenced package carry such a pin while
-> the guarding trait is **off** (it's pruned). Consumers who enable
-> `Archive` must therefore reference GitKit by branch or revision; plain
-> `from: "2.0.0"` consumers are unaffected. This resolves itself the day
-> swift-archive tags a release.
+> **Why 2.1.0?** Before it, GitKit pinned swift-archive by commit (no
+> tagged release carried its platform gating), and SwiftPM only lets a
+> *version*-referenced package carry such a pin while the guarding trait is
+> **off**. Consumers who enabled `Archive` therefore had to reference GitKit
+> by branch. 2.1.0 requires swift-archive `from: "3.8.9"`, so the trait now
+> works from a plain version requirement.
 
 ## Versioning
 
