@@ -74,4 +74,21 @@ typedef ptrdiff_t ssize_t;       /* used by git2/sys/stream.h callback types */
 #include "git2/sys/transport.h"
 /* END sys */
 
+
+/*
+ * GitKit addition, implemented in Sources/Clibgit2Patches/index_flags.c:
+ * `git update-index` for one exact path's entry flags, holding index.lock
+ * across the read-modify-write like git does. Sets then clears the given bits
+ * of the entry's `flags` (GIT_INDEX_ENTRY_VALID = assume-unchanged) and
+ * `flags_extended` (GIT_INDEX_ENTRY_SKIP_WORKTREE). Returns GIT_ELOCKED when
+ * the index is locked and GIT_ENOTFOUND for a path without a stage-0 entry.
+ */
+GIT_EXTERN(int) gitkit_index_update_entry_flags(
+	git_repository *repo,
+	const char *path,
+	uint16_t flags_set,
+	uint16_t flags_clear,
+	uint16_t extended_set,
+	uint16_t extended_clear);
+
 #endif /* GITKIT_LIBGIT2_H */

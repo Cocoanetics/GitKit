@@ -151,6 +151,45 @@ struct RepositoryIndexFlagsTests {
         #expect(try lsFilesTags(in: dir)["config.json"] == "S")
     }
 
+    @Test("with core.ignorecase, a case-mismatched path is neither tracked nor marked")
+    func exactCaseUnderIgnoreCase() throws {
+        let dir = try makeRepo()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try runGit(["config", "core.ignorecase", "true"], in: dir)
+        let repo = try Repository.open(at: dir)
+
+        #expect(try repo.isTracked(path: "config.json"))
+        #expect(try !repo.isTracked(path: "Config.json"))
+        #expect(throws: Libgit2Error.self) { try repo.setSkipWorktree(true, path: "Config.json") }
+        #expect(throws: Libgit2Error.self) { try repo.setAssumeUnchanged(true, path: "CONFIG.JSON") }
+        #expect(try lsFilesTags(in: dir)["config.json"] == "H")
+    }
+
+    @Test("indexedEntries sees flags and entries git changed after the repository was opened")
+    func indexedEntriesRereadsTheIndex() throws {
+        let dir = try makeRepo()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let repo = try Repository.open(at: dir)
+        #expect(try repo.indexedEntries().first { $0.path == "config.json" }?.skipWorktree == false)
+
+        try runGit(["update-index", "--skip-worktree", "config.json"], in: dir)
+        #expect(try repo.indexedEntries().first { $0.path == "config.json" }?.skipWorktree == true)
+    }
+
+    @Test("marking a file keeps what git staged after the repository was opened")
+    func setterDoesNotOverwriteANewerIndex() throws {
+        let dir = try makeRepo()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let repo = try Repository.open(at: dir)
+        _ = try repo.indexedEntries()   // load (and cache) the index now
+
+        try Data("late\n".utf8).write(to: dir.appendingPathComponent("late.txt"))
+        try runGit(["add", "late.txt"], in: dir)
+        try repo.setSkipWorktree(true, path: "config.json")
+
+        #expect(try lsFilesTags(in: dir) == ["config.json": "S", "late.txt": "H", "other.txt": "H"])
+    }
+
     @Test("an untracked path throws like git's 'Unable to mark file'")
     func untrackedPathThrows() throws {
         let dir = try makeRepo()

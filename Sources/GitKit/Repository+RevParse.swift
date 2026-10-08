@@ -82,6 +82,9 @@ extension Repository {
         var index: OpaquePointer?
         try check(git_repository_index(&index, repo))
         defer { git_index_free(index) }
+        // The repository caches its index; pick up what other git processes
+        // (staging, `update-index` flags) committed since it was loaded.
+        try check(git_index_read(index, 0))
         let count = Int(git_index_entrycount(index))
         var entries: [IndexedEntry] = []
         entries.reserveCapacity(count)
