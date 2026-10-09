@@ -15,13 +15,32 @@ public struct IndexedEntry: Sendable, Equatable {
     /// Index conflict stage as `ls-files -s` prints it: 0 = merged
     /// (normal), 1 = common ancestor, 2 = ours, 3 = theirs.
     public let stage: Int
+    /// The entry's skip-worktree bit (`git update-index --skip-worktree`):
+    /// git stops comparing the working-tree file against the index, so
+    /// local changes to it are never reported or staged.
+    public let skipWorktree: Bool
+    /// The entry's assume-unchanged bit (`git update-index
+    /// --assume-unchanged`, the on-disk "valid" flag).
+    public let assumeUnchanged: Bool
 
     /// Creates an entry verbatim — no validation of `mode` or `stage`.
-    public init(path: String, mode: UInt32, oid: String, stage: Int) {
+    public init(path: String, mode: UInt32, oid: String, stage: Int,
+                skipWorktree: Bool = false, assumeUnchanged: Bool = false) {
         self.path = path
         self.mode = mode
         self.oid = oid
         self.stage = stage
+        self.skipWorktree = skipWorktree
+        self.assumeUnchanged = assumeUnchanged
+    }
+
+    /// The status tag `git ls-files -v` prints before the path: `H` for
+    /// a cached entry, `S` for skip-worktree, `M` for an unmerged
+    /// (conflict-stage) entry — lowercased when the entry is marked
+    /// assume-unchanged.
+    public var lsFilesTag: Character {
+        let tag: Character = stage != 0 ? "M" : (skipWorktree ? "S" : "H")
+        return assumeUnchanged ? Character(tag.lowercased()) : tag
     }
 }
 
@@ -63,6 +82,9 @@ extension Repository {
         var index: OpaquePointer?
         try check(git_repository_index(&index, repo))
         defer { git_index_free(index) }
+        // The repository caches its index; pick up what other git processes
+        // (staging, `update-index` flags) committed since it was loaded.
+        try check(git_index_read(index, 0))
         let count = Int(git_index_entrycount(index))
         var entries: [IndexedEntry] = []
         entries.reserveCapacity(count)
@@ -83,7 +105,9 @@ extension Repository {
                 path: String(cString: p),
                 mode: raw.mode,
                 oid: oidString,
-                stage: stage))
+                stage: stage,
+                skipWorktree: raw.flags_extended & UInt16(GIT_INDEX_ENTRY_SKIP_WORKTREE.rawValue) != 0,
+                assumeUnchanged: raw.flags & UInt16(GIT_INDEX_ENTRY_VALID.rawValue) != 0))
         }
         return entries
     }

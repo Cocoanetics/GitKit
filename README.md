@@ -37,6 +37,10 @@ Operations are synchronous, `throws` (typed ``Libgit2Error``), and return
   clones).
 - **Work** — `add`, `commitDetailed`, `status`, `diff`, `checkout`,
   `checkoutNewBranch`, `checkoutPaths`, `reset`, `move`/`remove` (git mv/rm).
+- **Index** — `indexedEntries` (`git ls-files -s`, with the skip-worktree /
+  assume-unchanged bits and the `ls-files -v` tag), `isTracked`,
+  `setSkipWorktree` / `setAssumeUnchanged` (git update-index; a held
+  `index.lock` throws ``Libgit2Error/isLocked`` and leaves the index as it was).
 - **History** — `log` (rich `LogQuery`/`LogEntry` incl. `format(_:)`
   placeholders), `blame`, `describe`, `reflog`, `grep`.
 - **Branches & refs** — `localBranches`, `branchDelete`/`branchRename`,
