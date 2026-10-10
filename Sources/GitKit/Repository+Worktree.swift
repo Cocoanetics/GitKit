@@ -25,6 +25,8 @@ extension Repository {
     ///
     /// If `branch` does not exist, it is created at `startPoint` (default:
     /// `HEAD`) first, like `git worktree add <path> -b <branch> [<start-point>]`.
+    /// As with real git, a `startPoint` that resolves to a remote-tracking
+    /// branch (e.g. `"origin/main"`) is set as the new branch's upstream.
     /// If `branch` already exists, that branch is used as-is and `startPoint`
     /// is ignored. The worktree name follows real git's default: the target
     /// directory's last path component, with a numeric suffix added when
@@ -181,7 +183,34 @@ extension Repository {
 
         var branchRef: OpaquePointer?
         try check(git_branch_create(&branchRef, repo, branch, startCommit, 0))
+
+        // Real git enables tracking by default when the start-point is a
+        // remote-tracking branch (`branch.autoSetupMerge`'s default of
+        // `true`); mirror that so `currentBranchUpstream()`/status/push
+        // behave the same as `git worktree add -b <branch> <path> <ref>`.
+        if let upstream = remoteTrackingShorthand(ofStartPoint: startPoint) {
+            try check(git_branch_set_upstream(branchRef, upstream))
+        }
+
         return branchRef
+    }
+
+    /// If `startPoint` resolves (via the same DWIM rules git itself uses:
+    /// `refs/<p>`, `refs/tags/<p>`, `refs/heads/<p>`, `refs/remotes/<p>`,
+    /// `refs/remotes/<p>/HEAD`, in that order) to a remote-tracking branch,
+    /// its shorthand (e.g. `"origin/main"`) for use with
+    /// `git_branch_set_upstream`. `nil` for local branches, tags, and
+    /// detached commit-ishes.
+    private func remoteTrackingShorthand(ofStartPoint startPoint: String) -> String? {
+        var startRef: OpaquePointer?
+        guard git_reference_dwim(&startRef, repo, startPoint) == 0 else { return nil }
+        defer { git_reference_free(startRef) }
+
+        guard let nameC = git_reference_name(startRef) else { return nil }
+        let name = String(cString: nameC)
+        let prefix = "refs/remotes/"
+        guard name.hasPrefix(prefix) else { return nil }
+        return String(name.dropFirst(prefix.count))
     }
 
     private func uniqueWorktreeName(preferred: String) throws -> String {

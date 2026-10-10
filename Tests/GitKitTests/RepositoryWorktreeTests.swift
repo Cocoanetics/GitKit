@@ -228,6 +228,30 @@ struct RepositoryWorktreeTests {
         try repo.worktreeRemove(name: info.name)
     }
 
+    @Test("add tracks a remote-tracking start point, like git worktree add")
+    func addTracksRemoteTrackingStartPoint() throws {
+        let origin = try makeRepo()
+        defer { try? FileManager.default.removeItem(at: origin) }
+
+        let clone = origin.deletingLastPathComponent()
+            .appendingPathComponent("clone-\(UUID().uuidString)")
+        try runGit(["clone", origin.path, clone.path], in: origin.deletingLastPathComponent())
+        defer { try? FileManager.default.removeItem(at: clone) }
+
+        let worktree = siblingWorktree(of: clone)
+        defer { try? FileManager.default.removeItem(at: worktree) }
+
+        let repo = try Repository.open(at: clone)
+        try repo.worktreeAdd(
+            path: worktree, branch: "feature-from-origin", startPoint: "origin/main")
+
+        #expect(try Repository.open(at: worktree).currentBranch() == "feature-from-origin")
+        #expect(try repo.upstreamBranch(of: "feature-from-origin") == "origin/main")
+
+        let info = try #require(repo.linkedWorktreeList().first)
+        try repo.worktreeRemove(name: info.name)
+    }
+
     @Test("prune removes administrative data for worktrees whose directory is gone")
     func pruneRemovesMissingWorktree() throws {
         let dir = try makeRepo()
