@@ -30,10 +30,17 @@ extension Repository {
                 try check(git_submodule_sync(submodule))
                 if state.recursive {
                     var subrepoPointer: OpaquePointer?
-                    if git_submodule_open(&subrepoPointer, submodule) == 0,
-                       let subrepoPointer {
+                    let openRC = git_submodule_open(&subrepoPointer, submodule)
+                    if openRC == 0, let subrepoPointer {
                         // Takes ownership — freed when this falls out of scope.
                         try Repository(pointer: subrepoPointer).submoduleSync(recursive: true)
+                    } else if openRC != GIT_ENOTFOUND.rawValue {
+                        // GIT_ENOTFOUND means "not checked out" — nothing to
+                        // recurse into, same as real git. Anything else (a
+                        // corrupt or unreadable `.git` link, say) is a real
+                        // failure; propagate it instead of silently leaving
+                        // this submodule's nested URLs unsynchronized.
+                        try check(openRC)
                     }
                 }
                 return 0

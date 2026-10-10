@@ -163,5 +163,23 @@ struct RepositorySubmoduleTests {
         // inner-sub) are no longer present in the working tree.
         try repo.submoduleSync(recursive: true)
     }
+
+    @Test("recursive sync propagates errors opening a corrupt checked-out submodule")
+    func recursiveSyncPropagatesCorruptSubmoduleErrors() throws {
+        let (outer, _, cleanup) = try makeNestedFixture()
+        defer { cleanup() }
+
+        // `middle-sub/.git` is a gitlink file ("gitdir: ../.git/modules/…").
+        // Corrupting its content (not the "not checked out" case — the path
+        // still exists) makes libgit2 fail to open it with a generic error
+        // rather than GIT_ENOTFOUND, simulating a corrupt `.git` link.
+        let gitlinkPath = outer.appendingPathComponent("middle-sub/.git")
+        try Data("not a gitdir pointer\n".utf8).write(to: gitlinkPath)
+
+        let repo = try Repository.open(at: outer)
+        #expect(throws: Libgit2Error.self) {
+            try repo.submoduleSync(recursive: true)
+        }
+    }
 }
 #endif
