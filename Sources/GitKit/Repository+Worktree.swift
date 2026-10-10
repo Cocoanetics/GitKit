@@ -23,13 +23,18 @@ extension Repository {
 
     /// Add a linked worktree at `path`, checking out `branch`.
     ///
-    /// If `branch` does not exist, it is created at `HEAD` first. If it
-    /// already exists, that branch is used as-is. The worktree name follows
-    /// real git's default: the target directory's last path component, with
-    /// a numeric suffix added when that administrative name is taken.
+    /// If `branch` does not exist, it is created at `startPoint` (default:
+    /// `HEAD`) first, like `git worktree add <path> -b <branch> [<start-point>]`.
+    /// As with real git, a `startPoint` that resolves to a remote-tracking
+    /// branch (e.g. `"origin/main"`) is set as the new branch's upstream.
+    /// If `branch` already exists, that branch is used as-is and `startPoint`
+    /// is ignored. The worktree name follows real git's default: the target
+    /// directory's last path component, with a numeric suffix added when
+    /// that administrative name is taken.
     public func worktreeAdd(
         path: URL,
         branch: String,
+        startPoint: String = "HEAD",
         force: Bool = false
     ) throws {
         let preferredName = path.lastPathComponent
@@ -43,7 +48,7 @@ extension Repository {
         var createdBranch = false
         let branchLookupRC = git_branch_lookup(&branchRef, repo, branch, GIT_BRANCH_LOCAL)
         if branchLookupRC == GIT_ENOTFOUND.rawValue {
-            branchRef = try createWorktreeBranch(named: branch)
+            branchRef = try createWorktreeBranch(named: branch, startPoint: startPoint)
             createdBranch = true
         } else {
             try check(branchLookupRC)
@@ -134,19 +139,78 @@ extension Repository {
         try check(git_worktree_prune(worktree, &opts))
     }
 
-    private func createWorktreeBranch(named branch: String) throws -> OpaquePointer? {
-        var headObject: OpaquePointer?
-        try check(git_revparse_single(&headObject, repo, "HEAD"))
-        defer { git_object_free(headObject) }
+    /// Prune administrative data for worktrees that no longer have a
+    /// working directory, like `git worktree prune`. Locked worktrees and
+    /// ones whose working directory is still present are left alone.
+    ///
+    /// - Returns: the names of the worktrees that were pruned.
+    @discardableResult
+    public func worktreePrune() throws -> [String] {
+        var pruned: [String] = []
+        for name in try linkedWorktreeNames() {
+            try Task.checkCancellation()
 
-        var headOID = git_object_id(headObject)?.pointee ?? git_oid()
-        var headCommit: OpaquePointer?
-        try check(git_commit_lookup(&headCommit, repo, &headOID))
-        defer { git_commit_free(headCommit) }
+            var worktree: OpaquePointer?
+            try check(git_worktree_lookup(&worktree, repo, name))
+            defer { git_worktree_free(worktree) }
+
+            var opts = git_worktree_prune_options()
+            try check(git_worktree_prune_options_init(
+                &opts, UInt32(GIT_WORKTREE_PRUNE_OPTIONS_VERSION)))
+
+            let prunableRC = git_worktree_is_prunable(worktree, &opts)
+            if prunableRC < 0 { try check(prunableRC) }
+            guard prunableRC > 0 else { continue }
+
+            try check(git_worktree_prune(worktree, &opts))
+            pruned.append(name)
+        }
+        return pruned
+    }
+
+    private func createWorktreeBranch(
+        named branch: String,
+        startPoint: String
+    ) throws -> OpaquePointer? {
+        var startObject: OpaquePointer?
+        try check(git_revparse_single(&startObject, repo, startPoint))
+        defer { git_object_free(startObject) }
+
+        var startOID = git_object_id(startObject)?.pointee ?? git_oid()
+        var startCommit: OpaquePointer?
+        try check(git_commit_lookup(&startCommit, repo, &startOID))
+        defer { git_commit_free(startCommit) }
 
         var branchRef: OpaquePointer?
-        try check(git_branch_create(&branchRef, repo, branch, headCommit, 0))
+        try check(git_branch_create(&branchRef, repo, branch, startCommit, 0))
+
+        // Real git enables tracking by default when the start-point is a
+        // remote-tracking branch (`branch.autoSetupMerge`'s default of
+        // `true`); mirror that so `currentBranchUpstream()`/status/push
+        // behave the same as `git worktree add -b <branch> <path> <ref>`.
+        if let upstream = remoteTrackingShorthand(ofStartPoint: startPoint) {
+            try check(git_branch_set_upstream(branchRef, upstream))
+        }
+
         return branchRef
+    }
+
+    /// If `startPoint` resolves (via the same DWIM rules git itself uses:
+    /// `refs/<p>`, `refs/tags/<p>`, `refs/heads/<p>`, `refs/remotes/<p>`,
+    /// `refs/remotes/<p>/HEAD`, in that order) to a remote-tracking branch,
+    /// its shorthand (e.g. `"origin/main"`) for use with
+    /// `git_branch_set_upstream`. `nil` for local branches, tags, and
+    /// detached commit-ishes.
+    private func remoteTrackingShorthand(ofStartPoint startPoint: String) -> String? {
+        var startRef: OpaquePointer?
+        guard git_reference_dwim(&startRef, repo, startPoint) == 0 else { return nil }
+        defer { git_reference_free(startRef) }
+
+        guard let nameC = git_reference_name(startRef) else { return nil }
+        let name = String(cString: nameC)
+        let prefix = "refs/remotes/"
+        guard name.hasPrefix(prefix) else { return nil }
+        return String(name.dropFirst(prefix.count))
     }
 
     private func uniqueWorktreeName(preferred: String) throws -> String {
