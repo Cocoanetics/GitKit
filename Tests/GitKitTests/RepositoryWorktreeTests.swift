@@ -205,6 +205,29 @@ struct RepositoryWorktreeTests {
         try repo.worktreeRemove(name: secondInfo.name)
     }
 
+    @Test("add creates missing branch at an explicit start point")
+    func addCreatesBranchAtStartPoint() throws {
+        let dir = try makeRepo()
+        let worktree = siblingWorktree(of: dir)
+        defer { try? FileManager.default.removeItem(at: worktree) }
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let firstCommit = try runGit(["rev-parse", "HEAD"], in: dir)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        try Data("v2\n".utf8).write(to: dir.appendingPathComponent("a.txt"))
+        try runGit(["commit", "-am", "second"], in: dir)
+
+        let repo = try Repository.open(at: dir)
+        try repo.worktreeAdd(
+            path: worktree, branch: "from-start-point", startPoint: firstCommit)
+
+        #expect(try Repository.open(at: worktree).currentBranch() == "from-start-point")
+        #expect(try repo.resolveOID("from-start-point") == firstCommit)
+
+        let info = try #require(repo.linkedWorktreeList().first)
+        try repo.worktreeRemove(name: info.name)
+    }
+
     @Test("remove refuses checked-out submodules unless forced")
     func removeSubmoduleRequiresForce() throws {
         let submoduleSource = try makeSubmoduleSource()

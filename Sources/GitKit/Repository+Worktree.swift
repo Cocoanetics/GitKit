@@ -23,13 +23,16 @@ extension Repository {
 
     /// Add a linked worktree at `path`, checking out `branch`.
     ///
-    /// If `branch` does not exist, it is created at `HEAD` first. If it
-    /// already exists, that branch is used as-is. The worktree name follows
-    /// real git's default: the target directory's last path component, with
-    /// a numeric suffix added when that administrative name is taken.
+    /// If `branch` does not exist, it is created at `startPoint` (default:
+    /// `HEAD`) first, like `git worktree add <path> -b <branch> [<start-point>]`.
+    /// If `branch` already exists, that branch is used as-is and `startPoint`
+    /// is ignored. The worktree name follows real git's default: the target
+    /// directory's last path component, with a numeric suffix added when
+    /// that administrative name is taken.
     public func worktreeAdd(
         path: URL,
         branch: String,
+        startPoint: String = "HEAD",
         force: Bool = false
     ) throws {
         let preferredName = path.lastPathComponent
@@ -43,7 +46,7 @@ extension Repository {
         var createdBranch = false
         let branchLookupRC = git_branch_lookup(&branchRef, repo, branch, GIT_BRANCH_LOCAL)
         if branchLookupRC == GIT_ENOTFOUND.rawValue {
-            branchRef = try createWorktreeBranch(named: branch)
+            branchRef = try createWorktreeBranch(named: branch, startPoint: startPoint)
             createdBranch = true
         } else {
             try check(branchLookupRC)
@@ -134,18 +137,21 @@ extension Repository {
         try check(git_worktree_prune(worktree, &opts))
     }
 
-    private func createWorktreeBranch(named branch: String) throws -> OpaquePointer? {
-        var headObject: OpaquePointer?
-        try check(git_revparse_single(&headObject, repo, "HEAD"))
-        defer { git_object_free(headObject) }
+    private func createWorktreeBranch(
+        named branch: String,
+        startPoint: String
+    ) throws -> OpaquePointer? {
+        var startObject: OpaquePointer?
+        try check(git_revparse_single(&startObject, repo, startPoint))
+        defer { git_object_free(startObject) }
 
-        var headOID = git_object_id(headObject)?.pointee ?? git_oid()
-        var headCommit: OpaquePointer?
-        try check(git_commit_lookup(&headCommit, repo, &headOID))
-        defer { git_commit_free(headCommit) }
+        var startOID = git_object_id(startObject)?.pointee ?? git_oid()
+        var startCommit: OpaquePointer?
+        try check(git_commit_lookup(&startCommit, repo, &startOID))
+        defer { git_commit_free(startCommit) }
 
         var branchRef: OpaquePointer?
-        try check(git_branch_create(&branchRef, repo, branch, headCommit, 0))
+        try check(git_branch_create(&branchRef, repo, branch, startCommit, 0))
         return branchRef
     }
 
