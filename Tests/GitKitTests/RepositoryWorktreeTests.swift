@@ -228,6 +228,64 @@ struct RepositoryWorktreeTests {
         try repo.worktreeRemove(name: info.name)
     }
 
+    @Test("prune removes administrative data for worktrees whose directory is gone")
+    func pruneRemovesMissingWorktree() throws {
+        let dir = try makeRepo()
+        let worktree = siblingWorktree(of: dir)
+        defer { try? FileManager.default.removeItem(at: worktree) }
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let repo = try Repository.open(at: dir)
+        try repo.worktreeAdd(path: worktree, branch: "prune-me")
+        let info = try #require(repo.linkedWorktreeList().first)
+
+        try FileManager.default.removeItem(at: worktree)
+
+        let pruned = try repo.worktreePrune()
+        #expect(pruned == [info.name])
+        #expect(try repo.linkedWorktreeList().isEmpty)
+        #expect(try repo.worktreeList().count == 1)
+    }
+
+    @Test("prune leaves worktrees with a present directory untouched")
+    func pruneLeavesPresentWorktreeAlone() throws {
+        let dir = try makeRepo()
+        let worktree = siblingWorktree(of: dir)
+        defer { try? FileManager.default.removeItem(at: worktree) }
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let repo = try Repository.open(at: dir)
+        try repo.worktreeAdd(path: worktree, branch: "keep-me")
+        let info = try #require(repo.linkedWorktreeList().first)
+
+        let pruned = try repo.worktreePrune()
+        #expect(pruned.isEmpty)
+        #expect(try repo.linkedWorktreeList().map(\.name) == [info.name])
+
+        try repo.worktreeRemove(name: info.name)
+    }
+
+    @Test("prune leaves a locked worktree's administrative data alone")
+    func pruneLeavesLockedWorktreeAlone() throws {
+        let dir = try makeRepo()
+        let worktree = siblingWorktree(of: dir)
+        defer { try? FileManager.default.removeItem(at: worktree) }
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let repo = try Repository.open(at: dir)
+        try repo.worktreeAdd(path: worktree, branch: "locked-prune")
+        let info = try #require(repo.linkedWorktreeList().first)
+        try runGit(["worktree", "lock", worktree.path], in: dir)
+        try FileManager.default.removeItem(at: worktree)
+
+        let pruned = try repo.worktreePrune()
+        #expect(pruned.isEmpty)
+        #expect(try repo.linkedWorktreeList().map(\.name) == [info.name])
+
+        try runGit(["worktree", "unlock", info.name], in: dir)
+        try repo.worktreeRemove(name: info.name, force: true)
+    }
+
     @Test("remove refuses checked-out submodules unless forced")
     func removeSubmoduleRequiresForce() throws {
         let submoduleSource = try makeSubmoduleSource()

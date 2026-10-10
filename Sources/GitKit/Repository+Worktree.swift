@@ -137,6 +137,35 @@ extension Repository {
         try check(git_worktree_prune(worktree, &opts))
     }
 
+    /// Prune administrative data for worktrees that no longer have a
+    /// working directory, like `git worktree prune`. Locked worktrees and
+    /// ones whose working directory is still present are left alone.
+    ///
+    /// - Returns: the names of the worktrees that were pruned.
+    @discardableResult
+    public func worktreePrune() throws -> [String] {
+        var pruned: [String] = []
+        for name in try linkedWorktreeNames() {
+            try Task.checkCancellation()
+
+            var worktree: OpaquePointer?
+            try check(git_worktree_lookup(&worktree, repo, name))
+            defer { git_worktree_free(worktree) }
+
+            var opts = git_worktree_prune_options()
+            try check(git_worktree_prune_options_init(
+                &opts, UInt32(GIT_WORKTREE_PRUNE_OPTIONS_VERSION)))
+
+            let prunableRC = git_worktree_is_prunable(worktree, &opts)
+            if prunableRC < 0 { try check(prunableRC) }
+            guard prunableRC > 0 else { continue }
+
+            try check(git_worktree_prune(worktree, &opts))
+            pruned.append(name)
+        }
+        return pruned
+    }
+
     private func createWorktreeBranch(
         named branch: String,
         startPoint: String
