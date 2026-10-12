@@ -59,15 +59,20 @@ struct RepositorySSHExecTests {
         return bare
     }
 
-    /// A script that stands in for `ssh`: it ignores the host argument and
-    /// evals the remote command verbatim, running `git-upload-pack` against
-    /// the local bare repo instead of actually connecting anywhere. Mirrors
-    /// how `GIT_SSH_COMMAND`/`core.sshCommand` scripts are invoked for real:
-    /// `setup_args()` builds `/bin/sh -c '<script> "$@"' <script> <host> <command>`.
-    private func makeFakeSSHScript() throws -> URL {
+    /// A script that stands in for `ssh`: it records its own pid to `pidLog`
+    /// (so the test can check specifically on the processes it spawns, not
+    /// on every child of the test binary — swift-testing runs suites
+    /// concurrently, so unrelated tests' subprocesses can be transiently
+    /// visible too), then evals the remote command verbatim, running
+    /// `git-upload-pack` against the local bare repo instead of actually
+    /// connecting anywhere. Mirrors how `GIT_SSH_COMMAND`/`core.sshCommand`
+    /// scripts are invoked for real: `setup_args()` builds
+    /// `/bin/sh -c '<script> "$@"' <script> <host> <command>`.
+    private func makeFakeSSHScript(pidLog: URL) throws -> URL {
         let script = tmp("fake-ssh").appendingPathExtension("sh")
         let contents = """
         #!/bin/sh
+        echo "$$" >> "\(pidLog.path)"
         eval "$2"
         """
         try Data(contents.utf8).write(to: script)
@@ -76,36 +81,29 @@ struct RepositorySSHExecTests {
         return script
     }
 
-    /// Zombie (`Z` state) direct children of this test process.
-    private func zombieChildPIDs() throws -> [Int32] {
-        let myPID = ProcessInfo.processInfo.processIdentifier
-
+    /// Every pid currently known to the system (`ps -axo pid=`), as a set
+    /// for cheap membership checks. A pid that has fully exited and been
+    /// reaped — whether it was a zombie or still running — disappears from
+    /// this output entirely.
+    private func livePIDs() throws -> Set<Int32> {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/ps")
-        p.arguments = ["-axo", "pid=,ppid=,stat="]
+        p.arguments = ["-axo", "pid="]
         let out = Pipe()
         p.standardOutput = out
         try p.run()
         p.waitUntilExit()
         let text = String(decoding: (try? out.fileHandleForReading.readToEnd()) ?? Data(),
                           as: UTF8.self)
-
-        var zombies: [Int32] = []
-        for line in text.split(separator: "\n") {
-            let fields = line.split(separator: " ", omittingEmptySubsequences: true)
-            guard fields.count >= 3,
-                  let pid = Int32(fields[0]), let ppid = Int32(fields[1]),
-                  ppid == myPID, fields[2].hasPrefix("Z")
-            else { continue }
-            zombies.append(pid)
-        }
-        return zombies
+        return Set(text.split(separator: "\n").compactMap { Int32($0.trimmingCharacters(in: .whitespaces)) })
     }
 
     @Test("fetch over ssh_exec leaves no zombie children")
     func fetchLeavesNoZombies() throws {
         let bare = try makeBareSource()
-        let script = try makeFakeSSHScript()
+        let pidLog = tmp("ssh-pids")
+        FileManager.default.createFile(atPath: pidLog.path, contents: nil)
+        let script = try makeFakeSSHScript(pidLog: pidLog)
 
         let dest = tmp("SSHExecDest")
         let repo = try Repository.initialize(at: dest, initialBranch: "main")
@@ -114,13 +112,23 @@ struct RepositorySSHExecTests {
             url: URL(string: "ssh://localhost\(bare.path)")!)
         try repo.configSet("core.sshCommand", script.path)
 
-        for _ in 0..<5 {
+        let fetchCount = 5
+        for _ in 0..<fetchCount {
             try repo.fetch(
                 remote: "origin", refspec: "+refs/heads/*:refs/remotes/origin/*",
                 progress: { _ in })
         }
 
-        #expect(try zombieChildPIDs().isEmpty)
+        let pidText = try String(contentsOf: pidLog, encoding: .utf8)
+        let spawnedPIDs = pidText.split(separator: "\n").compactMap { Int32($0) }
+        #expect(spawnedPIDs.count == fetchCount)
+
+        // Each fetch() call connects, transfers, and disconnects in one
+        // shot, so by the time it returns the transport has already closed
+        // (and should have reaped) its ssh child — no need to wait here.
+        let live = try livePIDs()
+        let leaked = spawnedPIDs.filter { live.contains($0) }
+        #expect(leaked.isEmpty)
     }
 }
 #endif
