@@ -23,6 +23,9 @@ import PackageDescription
 //   • indexer.c / xdiff/xpatience.c define a file-local `struct entry` that
 //     collides with POSIX <search.h> under SwiftPM's module C build; they're
 //     compiled via translation-unit-scoped `#include` shims (Clibgit2Patches).
+//   • transports/ssh_exec.c and util/unix/process.c are shimmed the same
+//     way so the ssh_exec transport reaps its `ssh` child on close instead
+//     of leaking a zombie (issue #38); upstream libgit2 has the same gap.
 //   • Consumers only import `GitKit`.
 // =============================================================================
 
@@ -92,6 +95,15 @@ var defines: [CSetting] = [
     .define("GIT_COMPRESSION_BUILTIN", to: "1"),
 ]
 
+// Files NOT to compile in Clibgit2Patches, relative to its own path. Only
+// process_patched.c needs this: it wraps src/util/unix/process.c, which
+// isn't part of the Windows build (see the Windows branch's directory-level
+// "src/util/unix" exclude above) — ssh_exec_patched.c is left unconditional
+// since it degenerates to an empty TU on its own, the same as the upstream
+// file it replaces (its content is entirely `#ifdef GIT_SSH_EXEC`, which is
+// never defined on Windows).
+var patchExcludes: [String] = []
+
 // Files NOT to compile, relative to the submodule (Clibgit2's path).
 var excludes: [String] = [
     "deps/llhttp/CMakeLists.txt", "deps/llhttp/LICENSE-MIT",
@@ -111,6 +123,10 @@ var excludes: [String] = [
     // Compiled via Sources/Clibgit2Patches/*_patched.c (struct entry rename).
     "src/libgit2/indexer.c",
     "deps/xdiff/xpatience.c",
+
+    // Compiled via Sources/Clibgit2Patches/ssh_exec_patched.c, whose close
+    // path reaps the `ssh` child instead of leaking a zombie (issue #38).
+    "src/libgit2/transports/ssh_exec.c",
 ]
 
 // Header search paths for the .c compilation, relative to Clibgit2's path
@@ -152,6 +168,9 @@ var linkerSettings: [LinkerSetting] = []
         "src/util/hash/rfc6234", "src/util/hash/sha1dc",
         "src/util/hash/openssl.c", "src/util/hash/openssl.h",
         "deps/ntlmclient/crypt_openssl.c", "deps/ntlmclient/crypt_openssl.h",
+        // Compiled via Sources/Clibgit2Patches/process_patched.c, whose
+        // git_process_free() backstops the ssh_exec reap (issue #38).
+        "src/util/unix/process.c",
     ]
     defines += [
         .define("GIT_QSORT_BSD"),
@@ -175,6 +194,7 @@ var linkerSettings: [LinkerSetting] = []
         "src/util/hash/openssl.c", "src/util/hash/openssl.h",
         "deps/winhttp",
     ]
+    patchExcludes += ["process_patched.c"]
     defines += [
         .define("GIT_QSORT_MSC"),
         .define("GIT_WINHTTP", to: "1"),
@@ -206,6 +226,9 @@ var linkerSettings: [LinkerSetting] = []
         // OpenSSL hash backend. In 1.9.4 the rfc6234 `SHA1` enum collides with
         // <openssl/sha.h>'s `SHA1()` if this TU is compiled, so drop it.
         "src/util/hash/openssl.c", "src/util/hash/openssl.h",
+        // Compiled via Sources/Clibgit2Patches/process_patched.c, whose
+        // git_process_free() backstops the ssh_exec reap (issue #38).
+        "src/util/unix/process.c",
     ]
     defines += [
         .define("_GNU_SOURCE"),
@@ -326,6 +349,7 @@ let package = Package(
         .target(
             name: "Clibgit2Patches",
             path: "Sources/Clibgit2Patches",
+            exclude: patchExcludes,
             publicHeadersPath: ".",
             cSettings: shimHeaderPaths + defines
         ),
