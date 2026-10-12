@@ -51,7 +51,11 @@ Operations are synchronous, `throws` (typed ``Libgit2Error``), and return
   (save/apply/pop/list/show/branch), `apply` (patches).
 - **Remotes** — `fetch` (with shallow `depth`), `unshallow`, `push` (incl.
   `-u` upstream wiring), `addRemote`, `remoteList`, `remoteURL`,
-  real-git-style progress output.
+  real-git-style progress output. `GitSSHTransport.register(_:)` lets a
+  host plug its own in-process SSH client (e.g. one built on
+  swift-nio-ssh) in place of libgit2's process-spawning `ssh_exec`
+  transport for `ssh://` and scp-style remotes; `unregister()` restores
+  the default.
 - **Bulk traversal** — `treeBlobs` walks a tree in one pass with content
   loaded (`git ls-tree -r` order); `commitTime` gives the reproducible
   timestamp `git archive` stamps entries with.
