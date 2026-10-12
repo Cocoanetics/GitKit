@@ -220,7 +220,9 @@ private let gitkitSSHSubtransportFree: @convention(c) (
 
 // MARK: Stream callbacks
 
-private func context(forStream streamPtr: UnsafeMutablePointer<git_smart_subtransport_stream>) -> SSHSubtransportContext? {
+private func context(
+    forStream streamPtr: UnsafeMutablePointer<git_smart_subtransport_stream>
+) -> SSHSubtransportContext? {
     guard let subtransportPtr = streamPtr.pointee.subtransport else { return nil }
     return SSHSubtransportRegistry.shared.context(for: UnsafeRawPointer(subtransportPtr))
 }
