@@ -53,7 +53,15 @@ static void gitkit_process_reap(pid_t pid)
 	}
 
 	kill(pid, SIGKILL);
-	waitpid(pid, &status, 0);
+
+	/*
+	 * Blocking wait: with a non-restarting handler installed, a signal
+	 * arriving while we're blocked here can make waitpid return -1/EINTR
+	 * before the (by-now SIGKILLed) child has actually been reaped. Retry
+	 * until it hands back the pid, or ECHILD says someone else already did.
+	 */
+	while (waitpid(pid, &status, 0) < 0 && errno == EINTR)
+		;
 }
 
 #endif
