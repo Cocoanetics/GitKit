@@ -80,6 +80,29 @@ public protocol GitSSHTransportProvider: Sendable {
 /// With no provider registered, behaviour is unchanged: libgit2 uses
 /// `ssh_exec` exactly as it always has. ``unregister()`` restores that
 /// default.
+///
+/// ## Synchronization contract
+///
+/// `register`/`unregister` serialize against *each other*, but that
+/// alone isn't enough. They write into libgit2's own process-wide
+/// transport registry (`git_transport_register`/`_unregister`), which
+/// libgit2's header explicitly documents as the caller's responsibility
+/// to synchronize "with other calls to the library that instantiate
+/// transports" — i.e. with any `fetch`/`clone`/`push` (over *any*
+/// remote, not just SSH) that might be creating a transport at the same
+/// moment, anywhere in the process. GitKit cannot provide that broader
+/// synchronization itself without serializing every network operation
+/// in the library against a lock most callers never need, so it doesn't
+/// try: this lock only protects GitKit's own bookkeeping (the retained
+/// provider box and the `git_smart_subtransport_definition`).
+///
+/// In practice: call ``register(_:)`` once, before starting any git
+/// network operations (e.g. at process or app startup), and only call
+/// ``unregister()`` once every such operation in the process has fully
+/// quiesced (e.g. at shutdown). Calling either while a fetch, clone, or
+/// push is in flight anywhere in the process is undefined behavior —
+/// libgit2's internal transport registry is a plain, unsynchronized
+/// `git_vector`.
 public enum GitSSHTransport {
     private static let lock = NSLock()
     /// Guarded exclusively by `lock` — never touched outside it.
