@@ -100,35 +100,41 @@ struct RepositorySSHExecTests {
 
     @Test("fetch over ssh_exec leaves no zombie children")
     func fetchLeavesNoZombies() throws {
-        let bare = try makeBareSource()
-        let pidLog = tmp("ssh-pids")
-        FileManager.default.createFile(atPath: pidLog.path, contents: nil)
-        let script = try makeFakeSSHScript(pidLog: pidLog)
+        // Serialized with GitSSHTransportTests: both mutate libgit2's
+        // process-wide ssh:// transport dispatch, and a `.serialized`
+        // suite trait alone wouldn't stop the two suites racing — see
+        // SSHTransportTestLock.
+        try SSHTransportTestLock.shared.withLock {
+            let bare = try makeBareSource()
+            let pidLog = tmp("ssh-pids")
+            FileManager.default.createFile(atPath: pidLog.path, contents: nil)
+            let script = try makeFakeSSHScript(pidLog: pidLog)
 
-        let dest = tmp("SSHExecDest")
-        let repo = try Repository.initialize(at: dest, initialBranch: "main")
-        try repo.addRemote(
-            name: "origin",
-            url: URL(string: "ssh://localhost\(bare.path)")!)
-        try repo.configSet("core.sshCommand", script.path)
+            let dest = tmp("SSHExecDest")
+            let repo = try Repository.initialize(at: dest, initialBranch: "main")
+            try repo.addRemote(
+                name: "origin",
+                url: URL(string: "ssh://localhost\(bare.path)")!)
+            try repo.configSet("core.sshCommand", script.path)
 
-        let fetchCount = 5
-        for _ in 0..<fetchCount {
-            try repo.fetch(
-                remote: "origin", refspec: "+refs/heads/*:refs/remotes/origin/*",
-                progress: { _ in })
+            let fetchCount = 5
+            for _ in 0..<fetchCount {
+                try repo.fetch(
+                    remote: "origin", refspec: "+refs/heads/*:refs/remotes/origin/*",
+                    progress: { _ in })
+            }
+
+            let pidText = try String(contentsOf: pidLog, encoding: .utf8)
+            let spawnedPIDs = pidText.split(separator: "\n").compactMap { Int32($0) }
+            #expect(spawnedPIDs.count == fetchCount)
+
+            // Each fetch() call connects, transfers, and disconnects in one
+            // shot, so by the time it returns the transport has already closed
+            // (and should have reaped) its ssh child — no need to wait here.
+            let live = try livePIDs()
+            let leaked = spawnedPIDs.filter { live.contains($0) }
+            #expect(leaked.isEmpty)
         }
-
-        let pidText = try String(contentsOf: pidLog, encoding: .utf8)
-        let spawnedPIDs = pidText.split(separator: "\n").compactMap { Int32($0) }
-        #expect(spawnedPIDs.count == fetchCount)
-
-        // Each fetch() call connects, transfers, and disconnects in one
-        // shot, so by the time it returns the transport has already closed
-        // (and should have reaped) its ssh child — no need to wait here.
-        let live = try livePIDs()
-        let leaked = spawnedPIDs.filter { live.contains($0) }
-        #expect(leaked.isEmpty)
     }
 }
 #endif
