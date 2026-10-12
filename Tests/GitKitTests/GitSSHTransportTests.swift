@@ -120,7 +120,12 @@ final class FakeSSHProvider: GitSSHTransportProvider, @unchecked Sendable {
     }
 }
 
-@Suite("GitSSHTransport", .serialized)
+// Every test here mutates `GitSSHTransport`'s process-wide registration,
+// so each one runs its body inside `SSHTransportTestLock.shared.withLock`
+// — not just to serialize within this suite (a `.serialized` trait would
+// do that) but to serialize against `RepositorySSHExecTests` too, which
+// shares the same `ssh://` transport dispatch. See SSHTransportTestLock.
+@Suite("GitSSHTransport")
 struct GitSSHTransportTests {
 
     private func tmp(_ label: String) -> URL {
@@ -209,112 +214,120 @@ struct GitSSHTransportTests {
 
     @Test("fetch over the registered transport is carried by the provider")
     func fetchUsesRegisteredProvider() throws {
-        let provider = FakeSSHProvider()
-        try GitSSHTransport.register(provider)
-        defer { GitSSHTransport.unregister() }
+        try SSHTransportTestLock.shared.withLock {
+            let provider = FakeSSHProvider()
+            try GitSSHTransport.register(provider)
+            defer { GitSSHTransport.unregister() }
 
-        let bare = try makeBareSource()
-        let dest = tmp("GitSSHFetchDest")
-        let repo = try Repository.initialize(at: dest, initialBranch: "main")
-        try repo.addRemote(name: "origin", url: URL(string: "ssh://localhost\(bare.path)")!)
+            let bare = try makeBareSource()
+            let dest = tmp("GitSSHFetchDest")
+            let repo = try Repository.initialize(at: dest, initialBranch: "main")
+            try repo.addRemote(name: "origin", url: URL(string: "ssh://localhost\(bare.path)")!)
 
-        try repo.fetch(
-            remote: "origin", refspec: "+refs/heads/*:refs/remotes/origin/*",
-            progress: { _ in })
+            try repo.fetch(
+                remote: "origin", refspec: "+refs/heads/*:refs/remotes/origin/*",
+                progress: { _ in })
 
-        #expect(provider.openedCommands.contains {
-            if case .uploadPack = $0 { return true }
-            return false
-        })
-        // The fetched ref landed, proving bytes actually flowed through
-        // the fake channel rather than the fetch silently no-oping.
-        try runGit(["rev-parse", "refs/remotes/origin/main"], in: dest)
+            #expect(provider.openedCommands.contains {
+                if case .uploadPack = $0 { return true }
+                return false
+            })
+            // The fetched ref landed, proving bytes actually flowed through
+            // the fake channel rather than the fetch silently no-oping.
+            try runGit(["rev-parse", "refs/remotes/origin/main"], in: dest)
+        }
     }
 
     @Test("push over the registered transport is carried by the provider")
     func pushUsesRegisteredProvider() throws {
-        let provider = FakeSSHProvider()
-        try GitSSHTransport.register(provider)
-        defer { GitSSHTransport.unregister() }
+        try SSHTransportTestLock.shared.withLock {
+            let provider = FakeSSHProvider()
+            try GitSSHTransport.register(provider)
+            defer { GitSSHTransport.unregister() }
 
-        let destBare = try makeBareDestination()
-        let work = try makeWorkRepo()
-        let repo = try Repository.open(at: work)
-        try repo.addRemote(name: "origin", url: URL(string: "ssh://localhost\(destBare.path)")!)
+            let destBare = try makeBareDestination()
+            let work = try makeWorkRepo()
+            let repo = try Repository.open(at: work)
+            try repo.addRemote(name: "origin", url: URL(string: "ssh://localhost\(destBare.path)")!)
 
-        try repo.push(remote: "origin", refspec: "main", setUpstream: false)
+            try repo.push(remote: "origin", refspec: "main", setUpstream: false)
 
-        #expect(provider.openedCommands.contains {
-            if case .receivePack = $0 { return true }
-            return false
-        })
-        let localSHA = try runGit(["rev-parse", "HEAD"], in: work)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let remoteSHA = try runGit(["rev-parse", "main"], in: destBare)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        #expect(localSHA == remoteSHA)
+            #expect(provider.openedCommands.contains {
+                if case .receivePack = $0 { return true }
+                return false
+            })
+            let localSHA = try runGit(["rev-parse", "HEAD"], in: work)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let remoteSHA = try runGit(["rev-parse", "main"], in: destBare)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            #expect(localSHA == remoteSHA)
+        }
     }
 
     @Test("a provider error surfaces as a GitKit error")
     func providerErrorSurfacesAsGitKitError() throws {
-        let provider = FakeSSHProvider()
-        provider.failureMessage = "fake provider refused the connection"
-        try GitSSHTransport.register(provider)
-        defer { GitSSHTransport.unregister() }
+        try SSHTransportTestLock.shared.withLock {
+            let provider = FakeSSHProvider()
+            provider.failureMessage = "fake provider refused the connection"
+            try GitSSHTransport.register(provider)
+            defer { GitSSHTransport.unregister() }
 
-        let bare = try makeBareSource()
-        let dest = tmp("GitSSHErrorDest")
-        let repo = try Repository.initialize(at: dest, initialBranch: "main")
-        try repo.addRemote(name: "origin", url: URL(string: "ssh://localhost\(bare.path)")!)
+            let bare = try makeBareSource()
+            let dest = tmp("GitSSHErrorDest")
+            let repo = try Repository.initialize(at: dest, initialBranch: "main")
+            try repo.addRemote(name: "origin", url: URL(string: "ssh://localhost\(bare.path)")!)
 
-        do {
-            try repo.fetch(
-                remote: "origin", refspec: "+refs/heads/*:refs/remotes/origin/*",
-                progress: { _ in })
-            Issue.record("expected the fetch to throw")
-        } catch let error as Libgit2Error {
-            #expect(error.message.contains("fake provider refused the connection"))
+            do {
+                try repo.fetch(
+                    remote: "origin", refspec: "+refs/heads/*:refs/remotes/origin/*",
+                    progress: { _ in })
+                Issue.record("expected the fetch to throw")
+            } catch let error as Libgit2Error {
+                #expect(error.message.contains("fake provider refused the connection"))
+            }
         }
     }
 
     @Test("unregister restores ssh_exec")
     func unregisterRestoresSSHExec() throws {
-        let provider = FakeSSHProvider()
-        try GitSSHTransport.register(provider)
+        try SSHTransportTestLock.shared.withLock {
+            let provider = FakeSSHProvider()
+            try GitSSHTransport.register(provider)
 
-        let bare = try makeBareSource()
+            let bare = try makeBareSource()
 
-        // First, confirm the registered provider is actually in the loop.
-        let dest1 = tmp("GitSSHUnregisterDest1")
-        let repo1 = try Repository.initialize(at: dest1, initialBranch: "main")
-        try repo1.addRemote(name: "origin", url: URL(string: "ssh://localhost\(bare.path)")!)
-        try repo1.fetch(
-            remote: "origin", refspec: "+refs/heads/*:refs/remotes/origin/*",
-            progress: { _ in })
-        #expect(!provider.openedCommands.isEmpty)
-        let openedBeforeUnregister = provider.openedCommands.count
+            // First, confirm the registered provider is actually in the loop.
+            let dest1 = tmp("GitSSHUnregisterDest1")
+            let repo1 = try Repository.initialize(at: dest1, initialBranch: "main")
+            try repo1.addRemote(name: "origin", url: URL(string: "ssh://localhost\(bare.path)")!)
+            try repo1.fetch(
+                remote: "origin", refspec: "+refs/heads/*:refs/remotes/origin/*",
+                progress: { _ in })
+            #expect(!provider.openedCommands.isEmpty)
+            let openedBeforeUnregister = provider.openedCommands.count
 
-        GitSSHTransport.unregister()
+            GitSSHTransport.unregister()
 
-        // Now the same ssh:// scheme should fall back to ssh_exec: drive
-        // it through a fake `ssh` script exactly like
-        // RepositorySSHExecTests, and confirm it — not the provider —
-        // carried this second fetch.
-        let pidLog = tmp("ssh-pids")
-        FileManager.default.createFile(atPath: pidLog.path, contents: nil)
-        let script = try makeFakeSSHScript(pidLog: pidLog)
+            // Now the same ssh:// scheme should fall back to ssh_exec: drive
+            // it through a fake `ssh` script exactly like
+            // RepositorySSHExecTests, and confirm it — not the provider —
+            // carried this second fetch.
+            let pidLog = tmp("ssh-pids")
+            FileManager.default.createFile(atPath: pidLog.path, contents: nil)
+            let script = try makeFakeSSHScript(pidLog: pidLog)
 
-        let dest2 = tmp("GitSSHUnregisterDest2")
-        let repo2 = try Repository.initialize(at: dest2, initialBranch: "main")
-        try repo2.addRemote(name: "origin", url: URL(string: "ssh://localhost\(bare.path)")!)
-        try repo2.configSet("core.sshCommand", script.path)
-        try repo2.fetch(
-            remote: "origin", refspec: "+refs/heads/*:refs/remotes/origin/*",
-            progress: { _ in })
+            let dest2 = tmp("GitSSHUnregisterDest2")
+            let repo2 = try Repository.initialize(at: dest2, initialBranch: "main")
+            try repo2.addRemote(name: "origin", url: URL(string: "ssh://localhost\(bare.path)")!)
+            try repo2.configSet("core.sshCommand", script.path)
+            try repo2.fetch(
+                remote: "origin", refspec: "+refs/heads/*:refs/remotes/origin/*",
+                progress: { _ in })
 
-        let pidText = try String(contentsOf: pidLog, encoding: .utf8)
-        #expect(!pidText.split(separator: "\n").isEmpty)
-        #expect(provider.openedCommands.count == openedBeforeUnregister)
+            let pidText = try String(contentsOf: pidLog, encoding: .utf8)
+            #expect(!pidText.split(separator: "\n").isEmpty)
+            #expect(provider.openedCommands.count == openedBeforeUnregister)
+        }
     }
 }
 #endif
