@@ -225,14 +225,17 @@ struct FetchSummaryTests {
         try runGit(["config", "--unset", "core.abbrev"], in: kit)
         #expect(try runGit(["rev-parse", "origin/main"], in: kit) != runGit(["rev-parse", "main"], in: work))
 
-        // `no` is the full ID; a number takes git's units, at most 40.
-        for value in ["no", "7k"] {
+        // `no` is the full ID, a number is read as git reads one (`0x10`
+        // is 16). (git 2.54 caps larger ones at 40; older git refuses
+        // them, so the comparison leaves them out.)
+        for value in ["no", "0x10"] {
             for clone in [git, kit] { try runGit(["config", "core.abbrev", value], in: clone) }
             try runGit(["commit", "-q", "--allow-empty", "-m", value], in: work)
             try runGit(["push", "-q", "origin", "main"], in: work)
             let expected = try runGit(["fetch", "origin"], in: git)
-            #expect(expected.contains(try runGit(["rev-parse", "main"], in: work)
-                .trimmingCharacters(in: .whitespacesAndNewlines)))
+            let head = try runGit(["rev-parse", "main"], in: work)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            #expect(expected.contains(".." + head.prefix(value == "no" ? 40 : 16) + " "))
             #expect(try gitKitFetch(kit) == expected)
         }
     }
