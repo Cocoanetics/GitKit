@@ -201,16 +201,32 @@ extension Repository {
             return OctopusMergeResult(steps: steps, outcome: .conflicts(paths: conflictedPaths))
         }
 
+        let outcome = try conclude(head: head, headTree: headTree, mergedTree: mergedTree, oids: oids,
+                                   noFastForward: noFastForward, message: message, author: author, env: env)
+        try keepSkipWorktree(skipWorktree)
+        return OctopusMergeResult(steps: steps, outcome: outcome)
+    }
+
+    /// Commit the merged tree on HEAD, or, where another process holds
+    /// HEAD's ref, leave the merge staged for `git commit`, as git does.
+    func conclude(
+        head: git_oid, headTree: git_oid, mergedTree: git_oid, oids: [git_oid], noFastForward: Bool,
+        message: String, author: Signature?, env: [String: String]
+    ) throws -> OctopusMergeOutcome {
         let headSubsumed = oids.contains { isDescendant($0, of: head) }
         let parents = (headSubsumed && !noFastForward ? [] : [head]) + oids
         // git ends a message with a newline.
         let text = message.hasSuffix("\n") ? message : message + "\n"
-        let sha = try commitMerge(tree: mergedTree, from: headTree, parents: parents, message: text,
+        let sha: String
+        do {
+            sha = try commitMerge(tree: mergedTree, from: headTree, parents: parents, message: text,
                                   author: author, env: env)
-        try keepSkipWorktree(skipWorktree)
+        } catch let locked as HeadLocked {
+            try writeMergeState(oids: oids, message: message, conflicts: [], noFastForward: noFastForward)
+            return .headLocked(lockFile: locked.lockFile)
+        }
         let stats = try mergeStats(from: headTree, to: mergedTree)
-        return OctopusMergeResult(steps: steps, outcome: .mergeCommit(
-            sha: sha, statSummary: stats.summary, addedFiles: stats.added, deletedFiles: stats.deleted))
+        return .mergeCommit(sha: sha, statSummary: stats.summary, addedFiles: stats.added, deletedFiles: stats.deleted)
     }
 
     /// Refuse as git does before merging at all: a bare repository, and

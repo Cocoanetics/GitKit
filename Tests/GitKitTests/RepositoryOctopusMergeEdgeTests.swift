@@ -533,6 +533,34 @@ extension RepositoryOctopusMergeTests {
         #expect(FileManager.default.fileExists(atPath: f.path, isDirectory: &isDirectory) && isDirectory.boolValue)
     }
 
+    @Test("a locked branch leaves the merge staged for git commit, as git leaves it")
+    func lockedBranch() throws {
+        let dir = try makeRepository()
+        try Data().write(to: dir.appendingPathComponent(".git/refs/heads/main.lock"))
+        let other = try twin(of: dir)
+        let head = try git(["rev-parse", "HEAD"], in: dir).stdout
+        let result = try merge(["a", "b"], in: dir)
+        #expect(try git(["merge", "-q", "-m", "Merge branches", "a", "b"], in: other, check: false).status == 128)
+        guard case .headLocked(let lockFile) = result.outcome else {
+            Issue.record("expected the lock to stop HEAD, got \(result.outcome)"); return
+        }
+        #expect(lockFile.hasSuffix("/.git/refs/heads/main.lock"))
+        #expect(try git(["rev-parse", "HEAD"], in: dir).stdout == head)
+        #expect(try state(of: dir) == state(of: other))
+        let message = { (url: URL) in
+            try String(contentsOf: url.appendingPathComponent(".git/MERGE_MSG"), encoding: .utf8)
+        }
+        #expect(try message(dir) == message(other))
+    }
+
+    @Test("a side file the user had before a conflicted checkout stays")
+    func preexistingSideFile() throws {
+        let dir = try makeRepository()
+        try write("mine\n", to: "f~HEAD", in: dir)
+        _ = try merge(["a", "b", "x"], in: dir)
+        #expect(try String(contentsOf: dir.appendingPathComponent("f~HEAD"), encoding: .utf8) == "mine\n")
+    }
+
     @Test("refuses a bare repository before anything changes")
     func refusesBare() throws {
         let dir = try makeRepository()

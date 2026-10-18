@@ -30,6 +30,11 @@ extension Repository {
         for path in lost { try setSkipWorktree(true, path: path) }
     }
 
+    /// HEAD's ref couldn't be moved: `lockFile` is in the way.
+    struct HeadLocked: Error {
+        let lockFile: String
+    }
+
     /// Whether anything is at `path`, a symbolic link counted as itself
     /// even when what it points to is missing (lstat, not stat).
     static func exists(_ path: String) -> Bool {
@@ -81,6 +86,12 @@ extension Repository {
             }
         })
         let paths = changed.filter { !skipped.contains($0) && !removedGitlinks.contains($0) }
+        // Side files libgit2 may write (`<path>~<label>`) that were there
+        // before belong to the user.
+        let sideFiles = try unmergedPaths(merged).flatMap { path in
+            ["HEAD", theirLabel].map { path + "~" + $0 }
+        }
+        let preexisting = Set(sideFiles.filter { Self.exists(workdir + $0) })
         try withCheckout(of: paths, strategy: UInt32(GIT_CHECKOUT_SAFE.rawValue)
                          | UInt32(GIT_CHECKOUT_ALLOW_CONFLICTS.rawValue)) { options in
             try "HEAD".withCString { ours in
@@ -113,7 +124,7 @@ extension Repository {
             try check(git_index_write(index))
         }
         try restoreWorkTree(merged, workdir: workdir, theirLabel: theirLabel, skipped: skipped,
-                            keepingOurs: keepingOurs, mergedContent: mergedContent)
+                            keepingOurs: keepingOurs, mergedContent: mergedContent, preexisting: preexisting)
     }
 
     /// The work tree as git-merge-one-file leaves it where libgit2's
@@ -121,7 +132,7 @@ extension Repository {
     /// files over directories, deleted paths and modes.
     func restoreWorkTree(
         _ merged: OpaquePointer?, workdir: String, theirLabel: String, skipped: [String], keepingOurs: [String],
-        mergedContent: [String: git_oid]
+        mergedContent: [String: git_oid], preexisting: Set<String>
     ) throws {
         let root = URL(fileURLWithPath: workdir)
         /// Write `oid` at `path` as an entry of `mode` is: a symbolic
@@ -158,7 +169,8 @@ extension Repository {
         for path in try unmergedPaths(merged) {
             for label in ["HEAD", theirLabel] {
                 let side = root.appendingPathComponent(path + "~" + label)
-                if git_index_get_bypath(merged, path + "~" + label, 0) == nil {
+                let name = path + "~" + label
+                if git_index_get_bypath(merged, name, 0) == nil, !preexisting.contains(name) {
                     try? FileManager.default.removeItem(at: side)
                 }
             }
@@ -237,7 +249,8 @@ extension Repository {
                 index == 0 ? "\(comment)\t\(line)\n" : line.isEmpty ? "\(comment)\n" : "\(comment) \(line)\n"
             }.joined()
         }
-        let text = message + "\n\n\(comment) Conflicts:\n" + conflicts.map(commented).joined()
+        let text = conflicts.isEmpty ? message
+            : message + "\n\n\(comment) Conflicts:\n" + conflicts.map(commented).joined()
         try Data(text.utf8).write(to: dir.appendingPathComponent("MERGE_MSG"))
         try Data((noFastForward ? "no-ff" : "").utf8).write(to: dir.appendingPathComponent("MERGE_MODE"))
     }
@@ -319,12 +332,23 @@ extension Repository {
             defer { git_reference_free(head) }
             // A symbolic HEAD moves whatever it names (a branch, or any
             // other ref); only a detached HEAD is set itself.
-            if git_repository_head_detached(repo) == 0 {
+            let detached = git_repository_head_detached(repo) != 0
+            let rc: Int32
+            if !detached {
                 var moved: OpaquePointer?
-                try check(git_reference_set_target(&moved, head, &commitOID, reflog))
+                rc = git_reference_set_target(&moved, head, &commitOID, reflog)
                 git_reference_free(moved)
             } else {
-                try check(git_repository_set_head_detached(repo, &commitOID))
+                rc = git_repository_set_head_detached(repo, &commitOID)
+            }
+            if rc < 0 {
+                // Another process holds the ref's lock: git leaves the
+                // merge for `git commit` to conclude.
+                let directory = detached ? git_repository_path(repo) : git_repository_commondir(repo)
+                let lock = (directory.map { String(cString: $0) } ?? "")
+                    + (detached ? "HEAD" : String(cString: git_reference_name(head))) + ".lock"
+                if Self.exists(lock) { throw HeadLocked(lockFile: lock) }
+                try check(rc)
             }
             return formatOID(&commitOID)
         }
