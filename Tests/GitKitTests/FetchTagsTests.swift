@@ -187,6 +187,17 @@ struct FetchTagsTests {
         #expect(try tagNames(clone).contains("tdangling"))
     }
 
+    @Test("a fetched ref that is a blob itself vouches for a tag of it")
+    func blobTip() throws {
+        let (upstream, clone) = try makeUpstreamAndClone()
+        defer { [upstream, clone].forEach { try? FileManager.default.removeItem(at: $0) } }
+        let blob = try runGit(["hash-object", "-w", "--stdin"], in: upstream, input: "meta\n")
+        try runGit(["update-ref", "refs/meta/blob", blob], in: upstream)
+        try runGit(["tag", "tmeta", blob], in: upstream)
+        _ = try fetch(clone, ["refs/meta/blob:refs/meta/blob"], tags: nil)
+        #expect(try tagNames(clone).contains("tmeta"))
+    }
+
     @Test("an object an alternate holds counts as here already")
     func alternateTarget() throws {
         let (upstream, clone) = try makeUpstreamAndClone()

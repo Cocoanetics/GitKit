@@ -311,10 +311,35 @@ extension Repository {
             }
         }
         let search = Search(targets)
+        /// Walk `tree`'s entries, skipping subtrees walked before.
+        func walkTree(_ tree: OpaquePointer?) {
+            _ = git_tree_walk(tree, GIT_TREEWALK_PRE, { _, entry, payload in
+                guard let entry, let payload, let id = git_tree_entry_id(entry)?.pointee else { return 0 }
+                let search = Unmanaged<Search>.fromOpaque(payload).takeUnretainedValue()
+                let isTree = git_tree_entry_type(entry) == GIT_OBJECT_TREE
+                // A subtree walked before holds nothing new: skip it.
+                return search.visit(Repository.hex(id), isTree: isTree) || !isTree ? 0 : 1
+            }, Unmanaged.passUnretained(search).toOpaque())
+        }
+        // A tip can be a tree or blob itself (`refs/meta/blob`).
+        for var tip in tips {
+            var object: OpaquePointer?
+            guard git_object_lookup(&object, repo, &tip, GIT_OBJECT_ANY) == 0 else { continue }
+            defer { git_object_free(object) }
+            switch git_object_type(object) {
+            case GIT_OBJECT_TREE:
+                if search.visit(Self.hex(tip), isTree: true) { walkTree(object) }
+            case GIT_OBJECT_BLOB:
+                _ = search.visit(Self.hex(tip), isTree: false)
+            default:
+                break
+            }
+        }
         var walk: OpaquePointer?
         guard git_revwalk_new(&walk, repo) == 0 else { return [] }
         defer { git_revwalk_free(walk) }
-        for var tip in tips { _ = git_revwalk_push(walk, &tip) }
+        // Only commits start a walk.
+        for var tip in tips where git_revwalk_push(walk, &tip) != 0 { git_error_clear() }
         var oid = git_oid()
         while !search.wanted.isEmpty, git_revwalk_next(&oid, walk) == 0 {
             var commit: OpaquePointer?
@@ -326,13 +351,7 @@ extension Repository {
             guard let root = git_tree_id(tree)?.pointee,
                   search.visit(Self.hex(root), isTree: true)
             else { continue }
-            _ = git_tree_walk(tree, GIT_TREEWALK_PRE, { _, entry, payload in
-                guard let entry, let payload, let id = git_tree_entry_id(entry)?.pointee else { return 0 }
-                let search = Unmanaged<Search>.fromOpaque(payload).takeUnretainedValue()
-                let isTree = git_tree_entry_type(entry) == GIT_OBJECT_TREE
-                // A subtree walked before holds nothing new: skip it.
-                return search.visit(Repository.hex(id), isTree: isTree) || !isTree ? 0 : 1
-            }, Unmanaged.passUnretained(search).toOpaque())
+            walkTree(tree)
         }
         return search.found
     }
