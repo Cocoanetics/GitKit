@@ -40,17 +40,20 @@ struct PushPlan {
     }
 
     /// What `*` stands for where `pattern` matches `name`; a pattern
-    /// without `*` matches only itself.
+    /// without `*` matches only itself. Like git, this compares bytes:
+    /// Swift's `String` equality would also match a canonically
+    /// equivalent Unicode spelling (`é` composed or decomposed).
     static func wildcard(_ pattern: String, matching name: String) -> String? {
-        guard let star = pattern.firstIndex(of: "*") else {
+        let pattern = Array(pattern.utf8), name = Array(name.utf8)
+        guard let star = pattern.firstIndex(of: UInt8(ascii: "*")) else {
             return pattern == name ? "" : nil
         }
         let prefix = pattern[..<star]
-        let suffix = pattern[pattern.index(after: star)...]
+        let suffix = pattern[(star + 1)...]
         guard name.count >= prefix.count + suffix.count,
-              name.hasPrefix(prefix), name.hasSuffix(suffix)
+              name.starts(with: prefix), name.reversed().starts(with: suffix.reversed())
         else { return nil }
-        return String(name.dropFirst(prefix.count).dropLast(suffix.count))
+        return String(decoding: name[prefix.count..<(name.count - suffix.count)], as: UTF8.self)
     }
 }
 
@@ -97,9 +100,12 @@ extension Repository {
     /// drops every update to a ref it names.
     func expandedPushRefspecs(_ plan: PushPlan, remoteRefs: Set<String>?) throws -> [String] {
         var refspecs = plan.explicit
-        var claimed = Set(plan.explicit.compactMap { destinationRefName(fromPushRefspec: $0) })
+        // Ref names as bytes, as git compares them.
+        var claimed = Set(plan.explicit.compactMap {
+            destinationRefName(fromPushRefspec: $0).map { Array($0.utf8) }
+        })
         func expand(_ force: Bool, _ source: String, _ destination: String) {
-            guard claimed.insert(destination).inserted else { return }
+            guard claimed.insert(Array(destination.utf8)).inserted else { return }
             refspecs.append("\(force ? "+" : "")\(source):\(destination)")
         }
         let needsLocalRefs = !plan.patterns.isEmpty || (plan.matching != nil && remoteRefs != nil)
