@@ -212,10 +212,29 @@ extension Repository {
                 }
                 // …and the merge keeps no file there.
                 guard inBase, parents.allSatisfy({ git_index_get_bypath(merged, $0, 0) == nil }) else { continue }
-                result.append(.addedOverDirectory(path: path, files: []))
+                // A submodule removed for the directory keeps its files.
+                let workdir = git_repository_workdir(repo).map { String(cString: $0) } ?? ""
+                for parent in parents where !reported.contains(parent) {
+                    let gitlink = try ([trees[0]] + trees.dropFirst(2))
+                        .contains { try entry($0, parent)?.mode == 0o160000 }
+                    let listing = try? FileManager.default.contentsOfDirectory(atPath: workdir + parent)
+                    let held = listing?.isEmpty == false
+                    if gitlink, held {
+                        result.append(.submoduleDirectoryKept(path: parent))
+                        reported.insert(parent)
+                    }
+                }
                 reported.insert(path)
-                // Added, in place of what libgit2 made of it.
                 _ = git_index_conflict_remove(merged, path)
+                // A file there the index doesn't track: git-merge-one-file
+                // refuses to overwrite it, leaving their side unmerged.
+                if Self.exists(workdir + path), let their = try entry(trees[1], path) {
+                    result.append(.addedOverUntracked(path: path))
+                    try conflict(path, ancestor: nil, ours: nil, theirs: their, in: merged)
+                    continue
+                }
+                result.append(.addedOverDirectory(path: path, files: []))
+                // Added, in place of what libgit2 made of it.
                 if let their = try entry(trees[1], path) {
                     var added = git_index_entry()
                     added.id = their.oid
@@ -403,6 +422,19 @@ extension Repository {
         try check(git_diff_index_to_workdir(&diff, repo, index, &options))
         defer { git_diff_free(diff) }
         var changes: [String: Bool] = [:]
+        // A skip-worktree entry's file is one diff no longer looks at, but
+        // read-tree does: changed content there is a local change.
+        let workdir = git_repository_workdir(repo).map { String(cString: $0) } ?? ""
+        for i in 0..<git_index_entrycount(index) {
+            guard let entry = git_index_get_byindex(index, i)?.pointee,
+                  entry.flags_extended & UInt16(GIT_INDEX_ENTRY_SKIP_WORKTREE.rawValue) != 0 else { continue }
+            let path = String(cString: entry.path)
+            guard (try? FileManager.default.attributesOfItem(atPath: workdir + path))?[.type] as? FileAttributeType
+                    == .typeRegular else { continue }
+            var actual = git_oid(), expected = entry.id
+            guard git_odb_hashfile(&actual, workdir + path, GIT_OBJECT_BLOB) == 0 else { continue }
+            if git_oid_equal(&actual, &expected) == 0 { changes[path] = false }
+        }
         for i in 0..<git_diff_num_deltas(diff) {
             // A file gone from the work tree has nothing to lose: git's
             // verify_uptodate takes it as up to date.

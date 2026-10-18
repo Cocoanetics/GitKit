@@ -332,6 +332,52 @@ extension RepositoryOctopusMergeTests {
         #expect(try attributes(dir)[.posixPermissions] as? Int == attributes(other)[.posixPermissions] as? Int)
     }
 
+    @Test("a skip-worktree file with local changes stops the merge, as read-tree does")
+    func skipWorktreeChanges() throws {
+        let dir = try makeRepository()
+        try git(["update-index", "--skip-worktree", "f"], in: dir)
+        try write("local\n", to: "f", in: dir)
+        let other = try twin(of: dir)
+        let result = try merge(["a", "b"], in: dir)
+        #expect(try git(["merge", "-q", "a", "b"], in: other, check: false).status == 2)
+        #expect(result.outcome == .failed(.notUpToDate(path: "f")))
+        #expect(try String(contentsOf: dir.appendingPathComponent("f"), encoding: .utf8) == "local\n")
+    }
+
+    @Test("a submodule replaced by a directory: its files block the paths the head adds")
+    func submoduleReplacedByDirectory() throws {
+        let sub = FileManager.default.temporaryDirectory.appendingPathComponent("OctopusSub-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: sub, withIntermediateDirectories: true)
+        try git(["init", "-q", "-b", "main"], in: sub)
+        try write("1\n", to: "s", in: sub)
+        try git(["add", "s"], in: sub)
+        try git(["commit", "-q", "-m", "s1"], in: sub)
+
+        let dir = try makeRepository()
+        try git(["-c", "protocol.file.allow=always", "submodule", "-q", "add", sub.path, "sub"], in: dir)
+        try git(["commit", "-q", "-m", "sub"], in: dir)
+        try git(["checkout", "-q", "-b", "flat"], in: dir)
+        try git(["rm", "-q", "--cached", "sub", ".gitmodules"], in: dir)
+        try FileManager.default.removeItem(at: dir.appendingPathComponent("sub"))
+        try FileManager.default.removeItem(at: dir.appendingPathComponent(".gitmodules"))
+        let flatSub = dir.appendingPathComponent("sub")
+        try FileManager.default.createDirectory(at: flatSub, withIntermediateDirectories: true)
+        try write("tracked\n", to: "sub/s", in: dir)
+        try git(["add", "sub"], in: dir)
+        try git(["commit", "-q", "-m", "flat"], in: dir)
+        try git(["checkout", "-q", "-f", "main"], in: dir)
+        try git(["-c", "protocol.file.allow=always", "submodule", "-q", "update", "--init"], in: dir)
+
+        let other = try twin(of: dir)
+        let result = try merge(["c", "flat"], in: dir)
+        let status = try git(["merge", "-q", "-m", "Merge branches", "c", "flat"], in: other, check: false).status
+        #expect(status == 1)
+        #expect(result.steps.last?.automatic?.contains(.addedOverUntracked(path: "sub/s")) == true)
+        #expect(result.steps.last?.automatic?.contains(.submoduleDirectoryKept(path: "sub")) == true)
+        #expect(try state(of: dir) == state(of: other))
+        #expect(try String(contentsOf: dir.appendingPathComponent("sub/s"), encoding: .utf8) == "1\n")
+    }
+
     @Test("refuses a bare repository before anything changes")
     func refusesBare() throws {
         let dir = try makeRepository()

@@ -38,13 +38,24 @@ extension Repository {
         // the work tree no longer has it; libgit2 can't recreate it.
         let workdir = git_repository_workdir(repo).map { String(cString: $0) } ?? ""
         let changed = try changes(from: headTree, to: merged).keys.sorted(by: Self.indexOrder)
-        let skipped = changed.filter { path in
+        // So has one our side lacks where a file HEAD doesn't track
+        // stands: git-merge-one-file leaves that file alone.
+        let skipped = try changed.filter { path in
             var ancestor, ours, theirs: UnsafePointer<git_index_entry>?
             guard git_index_conflict_get(&ancestor, &ours, &theirs, merged, path) == 0, ours == nil || theirs == nil
             else { return false }
-            return !Self.exists(workdir + path)
+            if !Self.exists(workdir + path) { return true }
+            return try ours == nil && withTree(headTree) { try entry($0, path) == nil }
         }
-        let paths = changed.filter { !skipped.contains($0) }
+        // A submodule the merge removes keeps its directory and files:
+        // read-tree only tries rmdir. The index alone drops it.
+        let removedGitlinks = Set(try withTree(headTree) { tree in
+            try changed.filter { path in
+                try entry(tree, path)?.mode == 0o160000
+                    && (0...3).allSatisfy { git_index_get_bypath(merged, path, Int32($0)) == nil }
+            }
+        })
+        let paths = changed.filter { !skipped.contains($0) && !removedGitlinks.contains($0) }
         try withCheckout(of: paths, strategy: UInt32(GIT_CHECKOUT_SAFE.rawValue)
                          | UInt32(GIT_CHECKOUT_ALLOW_CONFLICTS.rawValue)) { options in
             try "HEAD".withCString { ours in
@@ -57,11 +68,17 @@ extension Repository {
                 }
             }
         }
-        // Their stages go to the index all the same.
-        if !skipped.isEmpty {
+        // Their stages go to the index all the same, and a path the merge
+        // deletes leaves it even where checkout kept its directory (a
+        // submodule that still holds files).
+        let deleted = changed.filter { path in
+            (0...3).allSatisfy { git_index_get_bypath(merged, path, Int32($0)) == nil }
+        }
+        if !skipped.isEmpty || !deleted.isEmpty {
             var index: OpaquePointer?
             try check(git_repository_index(&index, repo))
             defer { git_index_free(index) }
+            for path in deleted { _ = git_index_remove_bypath(index, path) }
             for path in skipped {
                 var ancestor, ours, theirs: UnsafePointer<git_index_entry>?
                 guard git_index_conflict_get(&ancestor, &ours, &theirs, merged, path) == 0 else { continue }
@@ -70,6 +87,17 @@ extension Repository {
             }
             try check(git_index_write(index))
         }
+        try restoreWorkTree(merged, workdir: workdir, theirLabel: theirLabel, skipped: skipped,
+                            keepingOurs: keepingOurs, mergedContent: mergedContent)
+    }
+
+    /// The work tree as git-merge-one-file leaves it where libgit2's
+    /// checkout of `merged` differs: our side's content, merged content,
+    /// files over directories, deleted paths and modes.
+    func restoreWorkTree(
+        _ merged: OpaquePointer?, workdir: String, theirLabel: String, skipped: [String], keepingOurs: [String],
+        mergedContent: [String: git_oid]
+    ) throws {
         let root = URL(fileURLWithPath: workdir)
         /// Write `oid` at `path` as an entry of `mode` is: a symbolic
         /// link, a submodule's (empty) directory, or a file, executable
@@ -117,7 +145,8 @@ extension Repository {
         // tree, as read-tree -u left it (a directory there stays).
         for path in try unmergedPaths(merged) {
             var ancestor, ours, theirs: UnsafePointer<git_index_entry>?
-            guard git_index_conflict_get(&ancestor, &ours, &theirs, merged, path) == 0, ours == nil else { continue }
+            guard git_index_conflict_get(&ancestor, &ours, &theirs, merged, path) == 0, ours == nil,
+                  !skipped.contains(path) else { continue }
             let file = root.appendingPathComponent(path).path
             let type = (try? FileManager.default.attributesOfItem(atPath: file))?[.type] as? FileAttributeType
             if type == .typeRegular || type == .typeSymbolicLink { try FileManager.default.removeItem(atPath: file) }
@@ -216,7 +245,15 @@ extension Repository {
         // only the index's business; libgit2 can't "recreate" it.
         let workdir = git_repository_workdir(repo).map { String(cString: $0) } ?? ""
         let changed = try diffEntries(headTree, tree)
-        let gone = changed.filter { $0.value.oid == nil && !Self.exists(workdir + $0.key) }
+        // …and so does a submodule the merge removes, whose directory
+        // and files stay as read-tree leaves them.
+        let gone = try withTree(headTree) { head in
+            try changed.filter { path, change in
+                guard change.oid == nil else { return false }
+                if !Self.exists(workdir + path) { return true }
+                return try entry(head, path)?.mode == 0o160000
+            }
+        }
         let paths = changed.keys.filter { gone[$0] == nil }.sorted(by: Self.indexOrder)
         var commits: [OpaquePointer?] = []
         defer { commits.forEach { git_commit_free($0) } }

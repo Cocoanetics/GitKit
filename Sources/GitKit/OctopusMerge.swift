@@ -65,6 +65,13 @@ public enum OctopusPathMerge: Sendable, Equatable {
     /// `ERROR: but permissions conflict <ours>-><theirs>.`: the same
     /// content, added with different modes (octal, as `100644`).
     case addedWithDifferentModes(path: String, ours: String, theirs: String)
+    /// `Adding <path>`, then `ERROR: untracked <path> is overwritten by
+    /// the merge.`: their side adds a path where a directory replaces
+    /// a file or submodule, and a file the index doesn't track is there.
+    case addedOverUntracked(path: String)
+    /// `warning: unable to rmdir '<path>': Directory not empty`: read-tree
+    /// removed a submodule whose directory still holds files.
+    case submoduleDirectoryKept(path: String)
     /// `ERROR: File <path> deleted on one branch but had its` and
     /// `ERROR: permissions changed on the other.`: one side deleted it,
     /// the other kept its content but changed its mode.
@@ -86,7 +93,8 @@ public enum OctopusPathMerge: Sendable, Equatable {
         case .merged(let path), .conflict(let path), .addedInBoth(let path, _),
              .notHandled(let path, _, _, _), .addedOverDirectory(let path, _), .symlink(let path),
              .submodule(let path), .addedWithDifferentModes(let path, _, _), .removed(let path),
-             .permissionsConflict(let path, _, _, _, _), .deletedWithModeChange(let path):
+             .permissionsConflict(let path, _, _, _, _), .deletedWithModeChange(let path),
+             .addedOverUntracked(let path), .submoduleDirectoryKept(let path):
             return path
         }
     }
@@ -94,7 +102,7 @@ public enum OctopusPathMerge: Sendable, Equatable {
     /// Whether the path was left unmerged.
     public var failed: Bool {
         switch self {
-        case .merged, .removed: return false
+        case .merged, .removed, .submoduleDirectoryKept: return false
         case .addedOverDirectory(_, let files): return !files.isEmpty
         default: return true
         }
