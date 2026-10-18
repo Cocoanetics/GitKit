@@ -252,6 +252,8 @@ extension Repository {
             headerURL: remoteURL, direction: .fetch, output: progress)
         reporter.suppressTransferProgress =
             ProgressReporter.isLocalURL(remoteURL)
+        reporter.repository = repo
+        reporter.abbreviation = summaryAbbreviation()
 
         // One fetch for all of them, as git applies them; with none,
         // libgit2 takes the remote's configured refspecs, else `HEAD`.
@@ -278,6 +280,9 @@ extension Repository {
                     outReporter: { reporter = $0 })
             }
         }
+        reporter.fetchLines = orderedFetchLines(
+            reporter.fetchLines,
+            refspecs: refspecs.isEmpty ? try configuredFetchRefspecs(remoteHandle) : refspecs)
         reporter.flushRefLines()
     }
 

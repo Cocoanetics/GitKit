@@ -361,28 +361,64 @@ private let combinedUpdateRefsTrampoline: @convention(c) (
     UnsafePointer<git_oid>?,
     OpaquePointer?,
     UnsafeMutableRawPointer?
-) -> Int32 = { refnamePtr, aOid, bOid, _, payload in
+) -> Int32 = { refnamePtr, aOid, bOid, spec, payload in
     guard let payload, let refnamePtr else { return 0 }
     let box = Unmanaged<CallbackBox>.fromOpaque(payload).takeUnretainedValue()
-    guard box.reporter != nil else { return 0 }
-    let refname = String(cString: refnamePtr)
-
-    let isNew = aOid.map { isAllZero($0.pointee) } ?? true
-    let dst = stripRemotesPrefix(refname)
-    let local = sourceShorthand(refname)
-
-    let line: String
-    if isNew {
-        line = " * [new branch]      \(pad(local, to: 11))-> \(dst)"
-    } else if let aOid, let bOid {
-        let oldSha = shortSHA(aOid.pointee)
-        let newSha = shortSHA(bOid.pointee)
-        line = "   \(oldSha)..\(newSha)  \(pad(local, to: 11))-> \(dst)"
-    } else {
-        line = "   \(local) -> \(dst)"
-    }
-    box.reporter!.refLines.append(line)
+    guard let reporter = box.reporter else { return 0 }
+    let old = aOid.map(\.pointee).flatMap { isAllZero($0) ? nil : $0 }
+    let new = bOid.map(\.pointee).flatMap { isAllZero($0) ? nil : $0 }
+    box.reporter!.fetchLines.append(fetchLine(
+        refname: String(cString: refnamePtr), old: old, new: new, spec: spec, reporter: reporter))
     return 0
+}
+
+/// git's line for a local ref a fetch changed (`update_local_ref`): new
+/// refs by the kind of remote ref, fast-forwards as `old..new`, other
+/// moves as forced, a moved tag as `[tag update]`, a pruned ref as
+/// `[deleted]`.
+private func fetchLine(
+    refname: String, old: git_oid?, new: git_oid?, spec: OpaquePointer?,
+    reporter: ProgressReporter
+) -> FetchSummaryLine {
+    let local = shortRefName(refname)
+    guard let new else {
+        return .init(kind: .deleted, flag: "-", summary: "[deleted]",
+                     remoteRef: "", remote: "(none)", local: local)
+    }
+    // Tags map onto themselves; libgit2 hands an auto-followed tag over
+    // with whatever refspec it was working through.
+    let remoteRef = refname.hasPrefix("refs/tags/")
+        ? refname : remoteRefName(of: refname, through: spec) ?? refname
+    let remote = shortRefName(remoteRef)
+    guard let old else {
+        let kind = remoteRef.hasPrefix("refs/tags/") ? "[new tag]"
+            : remoteRef.hasPrefix("refs/heads/") ? "[new branch]" : "[new ref]"
+        return .init(kind: .update, flag: "*", summary: kind,
+                     remoteRef: remoteRef, remote: remote, local: local)
+    }
+    if refname.hasPrefix("refs/tags/") {
+        return .init(kind: .update, flag: "t", summary: "[tag update]",
+                     remoteRef: remoteRef, remote: remote, local: local)
+    }
+    let oldID = abbreviated(old, minimum: reporter.abbreviation, in: reporter.repository)
+    let newID = abbreviated(new, minimum: reporter.abbreviation, in: reporter.repository)
+    if isFastForward(from: old, to: new, in: reporter.repository) {
+        return .init(kind: .update, flag: " ", summary: "\(oldID)..\(newID)",
+                     remoteRef: remoteRef, remote: remote, local: local)
+    }
+    return .init(kind: .update, flag: "+", summary: "\(oldID)...\(newID)",
+                 remoteRef: remoteRef, remote: remote, local: local, note: "forced update")
+}
+
+/// The remote ref `spec` maps onto local ref `refname`, if it does.
+private func remoteRefName(of refname: String, through spec: OpaquePointer?) -> String? {
+    guard let spec else { return nil }
+    var buffer = git_buf()
+    defer { git_buf_dispose(&buffer) }
+    guard git_refspec_rtransform(&buffer, spec, refname) == 0, let pointer = buffer.ptr else {
+        return nil
+    }
+    return String(cString: pointer)
 }
 
 /// `pack_progress`: server-side pack-builder phases for push.
@@ -648,35 +684,4 @@ private func isAllZero(_ oid: git_oid) -> Bool {
     return withUnsafeBytes(of: &oid) { bytes in
         bytes.allSatisfy { $0 == 0 }
     }
-}
-
-private func shortSHA(_ oid: git_oid) -> String {
-    var oid = oid
-    let buf = UnsafeMutablePointer<CChar>.allocate(capacity: 41)
-    defer { buf.deallocate() }
-    buf.initialize(repeating: 0, count: 41)
-    _ = git_oid_tostr(buf, 41, &oid)
-    return String(String(cString: buf).prefix(7))
-}
-
-private func stripRemotesPrefix(_ refname: String) -> String {
-    let prefix = "refs/remotes/"
-    return refname.hasPrefix(prefix)
-        ? String(refname.dropFirst(prefix.count))
-        : refname
-}
-
-private func sourceShorthand(_ refname: String) -> String {
-    let prefix = "refs/remotes/"
-    guard refname.hasPrefix(prefix) else { return refname }
-    let trimmed = refname.dropFirst(prefix.count)
-    if let slash = trimmed.firstIndex(of: "/") {
-        return String(trimmed[trimmed.index(after: slash)...])
-    }
-    return String(trimmed)
-}
-
-private func pad(_ s: String, to width: Int) -> String {
-    if s.count >= width { return s + " " }
-    return s + String(repeating: " ", count: width - s.count)
 }

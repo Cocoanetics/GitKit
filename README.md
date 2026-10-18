@@ -54,7 +54,8 @@ Operations are synchronous, `throws` (typed ``Libgit2Error``), and return
   `fetch first`, `non-fast-forward`, a tag that `already exists` — are
   left out and reported through `PushRejectedError` while the rest go
   through), `addRemote`,
-  `remoteList`, `remoteURL`, real-git-style progress output. Remotes go in
+  `remoteList`, `remoteURL`, real-git-style progress output (fetch's per-ref
+  summary included, and remotes shown without their credentials). Remotes go in
   as git spells them (`clone(fromRemote:)`, `addRemote(name:remote:)`),
   and `fetch` / `push` take a URL or path as well as a remote's name, and
   a set of refspecs applied together, as git applies them: negative

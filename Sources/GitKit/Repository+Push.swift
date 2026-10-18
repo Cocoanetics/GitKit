@@ -220,7 +220,8 @@ extension Repository {
             throw Libgit2Error(
                 code: GIT_ERROR.rawValue,
                 klass: Int32(GIT_ERROR_REFERENCE.rawValue),
-                message: "failed to push some refs to '\(remoteURL ?? remote)'")
+                message: "failed to push some refs to "
+                    + "'\(ProgressReporter.anonymizedURL(remoteURL ?? remote))'")
         }
 
         var pushed: [String] = []
@@ -247,7 +248,8 @@ extension Repository {
         }
         guard rejections.isEmpty else {
             throw PushRejectedError(
-                url: remoteURL ?? remote, rejections: rejections, pushed: pushed, summary: summary)
+                url: ProgressReporter.anonymizedURL(remoteURL ?? remote),
+                rejections: rejections, pushed: pushed, summary: summary)
         }
         return pushed
     }
@@ -311,10 +313,10 @@ extension Repository {
         return source.isEmpty || source.contains("*") ? nil : String(source)
     }
 
-    /// `core.abbrev` as git applies it to the push summary: a number of
+    /// `core.abbrev` as git applies it to the push and fetch summaries: a number of
     /// hex digits (4–40), `no` for full IDs, else (unset, `auto`) git's
     /// default of 7.
-    private func summaryAbbreviation() -> Int {
+    func summaryAbbreviation() -> Int {
         guard let value = try? configGet("core.abbrev")?.lowercased() else { return 7 }
         if let length = Int(value) { return min(max(length, 4), 40) }
         return ["no", "false", "off"].contains(value) ? 40 : 7
