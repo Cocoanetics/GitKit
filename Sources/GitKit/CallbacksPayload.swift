@@ -527,7 +527,7 @@ private let combinedPushRefTrampoline: git_push_update_reference_cb = {
     let status = statusPtr.map { String(cString: $0) } ?? ""
     let update = box.reporter!.pushUpdates[refname]
     let destination = shortRefName(refname)
-    let source = box.reporter!.typedSource.map(shortRefName)
+    let source = box.reporter!.typedSources[refname].map(shortRefName)
         ?? update.map { shortRefName($0.source) } ?? destination
     let refs = source.isEmpty ? destination : "\(source) -> \(destination)"
 

@@ -148,7 +148,42 @@ extension Repository {
         progress: @escaping @Sendable (String) -> Void = GitProgress.standardError
     ) throws {
         try fetch(
-            remote: remote, refspec: refspec,
+            remote: remote, refspecs: [refspec], depth: depth, prune: prune,
+            credentials: credentials, progress: progress)
+    }
+
+    /// Fetch `refspecs` from `remote` in one operation, as
+    /// `git fetch <remote> [<refspec>…]` does.
+    ///
+    /// The refspecs apply together, so a negative refspec
+    /// (`^refs/heads/wip`) excludes what the others would fetch, and
+    /// `FETCH_HEAD` lists everything fetched. Empty `refspecs` fetches
+    /// what the remote is configured to fetch (`remote.<name>.fetch`);
+    /// with nothing configured, and for a URL or path, that is the
+    /// remote's `HEAD`, into `FETCH_HEAD` only.
+    ///
+    /// - Parameters:
+    ///   - remote: The remote to fetch from: a configured remote's name
+    ///     (e.g. `"origin"`), or, as in git, a URL or path.
+    ///   - refspecs: The refspecs to fetch, or none for the remote's own.
+    ///   - depth: Limit the fetch to the last `depth` commits per tip — a
+    ///     shallow fetch (`git fetch --depth N`). `nil` (the default) or a
+    ///     non-positive value fetches full history.
+    ///   - prune: Remove remote-tracking refs that no longer exist on the
+    ///     remote (`git fetch --prune`). Defaults to `false`.
+    ///   - credentials: Invoked by the transport on auth challenges.
+    ///   - progress: Sink for real-git-style progress lines (defaults to
+    ///     the process's stderr).
+    public func fetch(
+        remote: String,
+        refspecs: [String],
+        depth: Int? = nil,
+        prune: Bool = false,
+        credentials: CredentialProvider? = nil,
+        progress: @escaping @Sendable (String) -> Void = GitProgress.standardError
+    ) throws {
+        try fetch(
+            remote: remote, refspecs: refspecs,
             rawDepth: Repository.normalizedDepth(depth) ?? Int32(GIT_FETCH_DEPTH_FULL.rawValue),
             prune: prune, credentials: credentials, progress: progress)
     }
@@ -171,15 +206,38 @@ extension Repository {
         credentials: CredentialProvider? = nil,
         progress: @escaping @Sendable (String) -> Void = GitProgress.standardError
     ) throws {
+        try unshallow(
+            remote: remote, refspecs: [refspec],
+            credentials: credentials, progress: progress)
+    }
+
+    /// Deepen a shallow clone back to full history, fetching `refspecs`
+    /// from `remote` in one operation — `git fetch --unshallow <remote>
+    /// [<refspec>…]`. Empty `refspecs` means the remote's configured
+    /// ones, as for ``fetch(remote:refspecs:depth:prune:credentials:progress:)``.
+    ///
+    /// - Parameters:
+    ///   - remote: The remote to fetch from: a configured remote's name
+    ///     (e.g. `"origin"`), or, as in git, a URL or path.
+    ///   - refspecs: The refspecs to unshallow, or none for the remote's own.
+    ///   - credentials: Invoked by the transport on auth challenges.
+    ///   - progress: Sink for real-git-style progress lines (defaults to
+    ///     the process's stderr).
+    public func unshallow(
+        remote: String,
+        refspecs: [String],
+        credentials: CredentialProvider? = nil,
+        progress: @escaping @Sendable (String) -> Void = GitProgress.standardError
+    ) throws {
         try fetch(
-            remote: remote, refspec: refspec,
+            remote: remote, refspecs: refspecs,
             rawDepth: Int32(GIT_FETCH_DEPTH_UNSHALLOW.rawValue),
             prune: false, credentials: credentials, progress: progress)
     }
 
     private func fetch(
         remote: String,
-        refspec: String,
+        refspecs: [String],
         rawDepth: Int32,
         prune: Bool,
         credentials: CredentialProvider?,
@@ -195,11 +253,11 @@ extension Repository {
         reporter.suppressTransferProgress =
             ProgressReporter.isLocalURL(remoteURL)
 
-        try refspec.withCString { cstr in
-            var copy: UnsafeMutablePointer<CChar>? = strdup(cstr)
-            defer { free(copy) }
-            try withUnsafeMutablePointer(to: &copy) { copyPtr in
-                var arr = git_strarray(strings: copyPtr, count: 1)
+        // One fetch for all of them, as git applies them; with none,
+        // libgit2 takes the remote's configured refspecs, else `HEAD`.
+        try withCStringArray(refspecs) { copies in
+            try copies.withUnsafeMutableBufferPointer { buffer in
+                var arr = git_strarray(strings: buffer.baseAddress, count: buffer.count)
                 var opts = git_fetch_options()
                 try check(git_fetch_options_init(&opts, UInt32(GIT_FETCH_OPTIONS_VERSION)))
                 opts.depth = rawDepth

@@ -53,7 +53,10 @@ Operations are synchronous, `throws` (typed ``Libgit2Error``), and return
   `-u` upstream wiring and git's per-ref summary), `addRemote`,
   `remoteList`, `remoteURL`, real-git-style progress output. Remotes go in
   as git spells them (`clone(fromRemote:)`, `addRemote(name:remote:)`),
-  and `fetch` / `push` take a URL or path as well as a remote's name. `GitSSHTransport.register(_:)` lets a
+  and `fetch` / `push` take a URL or path as well as a remote's name, and
+  a set of refspecs applied together, as git applies them: negative
+  refspecs (`^refs/heads/wip`), and for `push`, patterns and the matching
+  refspec `:`. `GitSSHTransport.register(_:)` lets a
   host plug its own in-process SSH client (e.g. one built on
   swift-nio-ssh) in place of libgit2's process-spawning `ssh_exec`
   transport for `ssh://` and scp-style remotes; `unregister()` restores
@@ -218,6 +221,19 @@ Swift 6.3). Plugin-generated **Swift** is compiled; C/C++/Objective-C is not.
 The `#include` shim sidesteps the limitation entirely — it's an ordinary
 checked-in source file, so SwiftPM compiles it normally.
 
+### Behaviour fixes, the same way
+
+The same kind of shim carries the few changes GitKit makes to how libgit2
+behaves, each worth offering upstream too:
+
+- `ssh_exec_patched.c` and `process_patched.c` reap the `ssh` child when an
+  `ssh_exec` connection closes, instead of leaving a zombie per connection
+  (#38).
+- `remote_patched.c` keeps the refs a negative fetch refspec
+  (`^refs/heads/wip`) excludes out of the ref updates and `FETCH_HEAD`, as
+  git does. libgit2 only leaves them out of the negotiation, then updates
+  them anyway whenever their objects are present.
+
 ## The curated module and vendored headers (Windows, and why the submodule stays pristine)
 
 libgit2's public headers assume two things the Windows MSVC/clang-cl toolchain
@@ -302,7 +318,7 @@ GitKit/
 │   ├── GitKit/                   # the Swift SDK (Repository + operations)
 │   │                             #   + re-export of the full C API
 │   ├── CGitKit/                  # curated umbrella + vendored libgit2 public headers
-│   └── Clibgit2Patches/          # two #include shims (struct entry rename)
+│   └── Clibgit2Patches/          # #include shims over pristine libgit2 sources
 ├── Tests/GitKitTests/            # the SDK test suite (exercises real repos)
 └── vendor/libgit2/               # submodule → libgit2/libgit2 @ vX.Y.Z (pristine)
 ```

@@ -64,9 +64,10 @@ struct ProgressReporter {
     /// How many hex digits object IDs show in the push summary
     /// (`core.abbrev`).
     var abbreviation = 7
-    /// The push's source as the caller spelled it (`HEAD`, `main`), which
-    /// git shows instead of the ref it resolves to.
-    var typedSource: String?
+    /// Each pushed ref's source as the caller spelled it (`HEAD`,
+    /// `main`), keyed by the destination ref; git shows it instead of
+    /// the ref it resolves to.
+    var typedSources: [String: String] = [:]
 
     struct PushUpdate {
         /// The local ref being pushed, e.g. `refs/heads/main`.
