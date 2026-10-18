@@ -36,6 +36,14 @@ extension Repository {
         let reason: String
     }
 
+    /// A work tree file's permissions as checkout creates them: 0666 or
+    /// 0777 for an executable, less the process's umask.
+    static func fileMode(executable: Bool) -> Int {
+        let mask = umask(0)
+        umask(mask)
+        return (executable ? 0o777 : 0o666) & ~Int(mask)
+    }
+
     /// Whether anything is at `path`, a symbolic link counted as itself
     /// even when what it points to is missing (lstat, not stat).
     static func exists(_ path: String) -> Bool {
@@ -154,15 +162,23 @@ extension Repository {
             var blob: OpaquePointer?
             try check(git_blob_lookup(&blob, repo, &oid))
             defer { git_blob_free(blob) }
-            let data = Data(bytes: git_blob_rawcontent(blob), count: Int(git_blob_rawsize(blob)))
             if Self.exists(url.path) { try FileManager.default.removeItem(at: url) }
             if mode == 0o120000 {
+                let target = Data(bytes: git_blob_rawcontent(blob), count: Int(git_blob_rawsize(blob)))
                 try FileManager.default.createSymbolicLink(atPath: url.path,
-                                                           withDestinationPath: String(decoding: data, as: UTF8.self))
+                                                           withDestinationPath: String(decoding: target, as: UTF8.self))
                 return
             }
+            // Through the checkout filters (eol, smudge, …), as checkout
+            // writes a file.
+            var options = git_blob_filter_options()
+            try check(git_blob_filter_options_init(&options, UInt32(GIT_BLOB_FILTER_OPTIONS_VERSION)))
+            var buffer = git_buf()
+            try check(git_blob_filter(&buffer, blob, path, &options))
+            defer { git_buf_dispose(&buffer) }
+            let data = buffer.ptr.map { Data(bytes: $0, count: buffer.size) } ?? Data()
             try data.write(to: url)
-            try FileManager.default.setAttributes([.posixPermissions: mode == 0o100755 ? 0o755 : 0o644],
+            try FileManager.default.setAttributes([.posixPermissions: Self.fileMode(executable: mode == 0o100755)],
                                                   ofItemAtPath: url.path)
         }
         // libgit2 writes a side's file next to a directory in its way as
@@ -198,7 +214,7 @@ extension Repository {
             guard (try? FileManager.default.attributesOfItem(atPath: file))?[.type] as? FileAttributeType
                     == .typeRegular else { continue }
             try FileManager.default.setAttributes(
-                [.posixPermissions: ours.pointee.mode == 0o100755 ? 0o755 : 0o644], ofItemAtPath: file)
+                [.posixPermissions: Self.fileMode(executable: ours.pointee.mode == 0o100755)], ofItemAtPath: file)
         }
         for path in keepingOurs {
             var ancestor, ours, theirs: UnsafePointer<git_index_entry>?

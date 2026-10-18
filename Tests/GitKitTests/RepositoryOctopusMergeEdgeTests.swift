@@ -609,6 +609,37 @@ extension RepositoryOctopusMergeTests {
         #expect(try String(contentsOf: dir.appendingPathComponent("f/x"), encoding: .utf8) == "mine\n")
     }
 
+    @Test("a file GitKit restores itself goes through the checkout filters, with the umask's mode")
+    func restoredFileThroughFilters() throws {
+        let dir = try makeRepository()
+        try write("f text eol=crlf\n", to: ".gitattributes", in: dir)
+        try git(["add", ".gitattributes"], in: dir)
+        try git(["commit", "-q", "-m", "attributes"], in: dir)
+        try git(["tag", "-f", "withattributes"], in: dir)
+        try git(["checkout", "-q", "-b", "rm", "withattributes"], in: dir)
+        try git(["rm", "-q", "f"], in: dir)
+        try git(["commit", "-q", "-m", "rm"], in: dir)
+        try git(["checkout", "-q", "-b", "chmod", "withattributes"], in: dir)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755],
+                                              ofItemAtPath: dir.appendingPathComponent("f").path)
+        try git(["commit", "-q", "-am", "chmod"], in: dir)
+        try git(["checkout", "-q", "main"], in: dir)
+        try git(["merge", "-q", "--no-edit", "withattributes"], in: dir)
+        try FileManager.default.removeItem(at: dir.appendingPathComponent("f"))
+        try git(["checkout", "-q", "--", "f"], in: dir)
+
+        let other = try twin(of: dir)
+        _ = try merge(["chmod", "rm"], in: dir)
+        _ = try git(["merge", "-q", "-m", "Merge branches", "chmod", "rm"], in: other, check: false)
+        #expect(try state(of: dir) == state(of: other))
+        let bytes = { (url: URL) in try Data(contentsOf: url.appendingPathComponent("f")) }
+        #expect(try bytes(dir) == bytes(other))
+        let mask = umask(0)
+        umask(mask)
+        #expect(Repository.fileMode(executable: true) == 0o777 & ~Int(mask))
+        #expect(Repository.fileMode(executable: false) == 0o666 & ~Int(mask))
+    }
+
     @Test("refuses a bare repository before anything changes")
     func refusesBare() throws {
         let dir = try makeRepository()
