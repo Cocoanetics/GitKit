@@ -7,6 +7,12 @@ extension Repository {
 
     /// Clone `url` into `directory` and return the new repository open.
     ///
+    /// A `URL` can't always hold a scp-style remote exactly: Foundation
+    /// percent-encodes `git@[::1]:repo.git`, and a space it encoded reads
+    /// the same as a `%20` that was typed. ``URL/gitRemote`` undoes what
+    /// Foundation adds; with the remote as typed, prefer
+    /// ``clone(fromRemote:to:depth:singleBranch:branch:credentials:progress:)``.
+    ///
     /// - Parameters:
     ///   - depth: Limit history to the last `depth` commits per tip — a
     ///     shallow clone (`git clone --depth N`). `nil` (the default) or a
@@ -31,6 +37,26 @@ extension Repository {
         credentials: CredentialProvider? = nil,
         progress: @escaping @Sendable (String) -> Void = GitProgress.standardError
     ) throws -> Repository {
+        try clone(
+            fromRemote: url.gitRemote, to: directory, depth: depth,
+            singleBranch: singleBranch, branch: branch,
+            credentials: credentials, progress: progress)
+    }
+
+    /// Clone `remote` — a URL, a scp-style `[user@]host:path` or a path,
+    /// exactly as git takes it — into `directory` and return the new
+    /// repository open. The parameters are those of
+    /// ``clone(from:to:depth:singleBranch:branch:credentials:progress:)``.
+    @discardableResult
+    public static func clone(
+        fromRemote remote: String,
+        to directory: URL,
+        depth: Int? = nil,
+        singleBranch: Bool = false,
+        branch: String? = nil,
+        credentials: CredentialProvider? = nil,
+        progress: @escaping @Sendable (String) -> Void = GitProgress.standardError
+    ) throws -> Repository {
         Libgit2.ensureInitialized()
 
         var opts = git_clone_options()
@@ -41,11 +67,10 @@ extension Repository {
         }
 
         var reporter = ProgressReporter(
-            headerURL: url.absoluteString, direction: .fetch, output: progress)
+            headerURL: remote, direction: .fetch, output: progress)
         // Real git's local clone (file:// or bare path) skips the
         // `remote: …` / `Receiving objects: …` lines — match it.
-        reporter.suppressTransferProgress =
-            ProgressReporter.isLocalURL(url.absoluteString)
+        reporter.suppressTransferProgress = ProgressReporter.isLocalURL(remote)
 
         // Single-branch installs a `remote_cb` whose payload must outlive
         // the `git_clone` call; retain it here and release on the way out.
@@ -75,7 +100,7 @@ extension Repository {
                     opts.fetch_opts.callbacks.transfer_progress = transferCB
                     opts.fetch_opts.callbacks.payload = payload
 
-                    try check(git_clone(&out, url.absoluteString, directory.path, &opts))
+                    try check(git_clone(&out, remote, directory.path, &opts))
                 },
                 outReporter: { reporter = $0 })
         }

@@ -93,20 +93,34 @@ enum GitSSHURL {
 
     /// `[user@]host:path` — git's scp-style shorthand. Unlike the
     /// hierarchical form, a port can't be expressed here (matching real
-    /// `ssh`/`git`: scp-style syntax never carries one).
+    /// `ssh`/`git`: scp-style syntax never carries one). An IPv6 host
+    /// goes in brackets, `git@[::1]:path`, as in git.
     private static func parseSCP(_ raw: String) -> ParsedGitSSHURL? {
-        guard !raw.contains("://"), let colon = raw.firstIndex(of: ":") else { return nil }
-        let hostPart = raw[..<colon]
-        let path = String(raw[raw.index(after: colon)...])
-        guard !hostPart.isEmpty, !path.isEmpty else { return nil }
-
-        if let at = hostPart.firstIndex(of: "@") {
-            let user = String(hostPart[..<at])
-            let host = String(hostPart[hostPart.index(after: at)...])
-            guard !user.isEmpty, !host.isEmpty else { return nil }
-            return ParsedGitSSHURL(user: user, host: host, port: nil, path: path)
+        guard !raw.contains("://") else { return nil }
+        var user: String?
+        var rest = Substring(raw)
+        // The user ends at the first `@` before the host's colon.
+        if let at = rest.firstIndex(of: "@"),
+           rest[..<at].firstIndex(of: ":") == nil {
+            user = String(rest[..<at])
+            rest = rest[rest.index(after: at)...]
+            guard user?.isEmpty == false else { return nil }
         }
-        return ParsedGitSSHURL(user: nil, host: String(hostPart), port: nil, path: path)
+        let host: Substring
+        let path: Substring
+        if rest.hasPrefix("[") {
+            guard let close = rest.firstIndex(of: "]"),
+                  rest[rest.index(after: close)...].hasPrefix(":")
+            else { return nil }
+            host = rest[rest.index(after: rest.startIndex)..<close]
+            path = rest[rest.index(close, offsetBy: 2)...]
+        } else {
+            guard let colon = rest.firstIndex(of: ":") else { return nil }
+            host = rest[..<colon]
+            path = rest[rest.index(after: colon)...]
+        }
+        guard !host.isEmpty, !path.isEmpty else { return nil }
+        return ParsedGitSSHURL(user: user, host: String(host), port: nil, path: String(path))
     }
 }
 
