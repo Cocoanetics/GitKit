@@ -71,7 +71,15 @@ Operations are synchronous, `throws` (typed ``Libgit2Error``), and return
   configured remote keeps its name for its refspecs, tracking refs and
   `-u`, and the output (`From`/`To`, `FETCH_HEAD`, `PushRejectedError.url`,
   `PushRefusedError.url`) names the remote as configured or as given
-  (`To ../bare`). `GitSSHTransport.register(_:)` lets a
+  (`To ../bare`). `push(…leases:)` is `git push --force-with-lease`:
+  each ref a ``PushLeases`` lease covers is forced while the remote ref is
+  where the lease expects it (its remote-tracking ref, an object ID, or
+  absent) and refused as `stale info` otherwise, the rest of the push
+  going ahead. `fetch(…tags:)` is `--tags` (`.all`) / `--no-tags`
+  (`.off`), `nil` leaving it to `remote.<name>.tagOpt`; as in git, a
+  non-forced refspec never moves a tag this repository has — that's
+  refused as `would clobber existing tag` and thrown as
+  `FetchRejectedError` once the rest is fetched. `GitSSHTransport.register(_:)` lets a
   host plug its own in-process SSH client (e.g. one built on
   swift-nio-ssh) in place of libgit2's process-spawning `ssh_exec`
   transport for `ssh://` and scp-style remotes; `unregister()` restores

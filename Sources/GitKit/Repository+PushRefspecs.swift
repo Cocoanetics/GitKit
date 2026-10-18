@@ -370,6 +370,114 @@ extension Repository {
         return (accepted, rejected)
     }
 
+    /// `refspecs` in git's order for a push's ref list: those updating a
+    /// ref the remote has, by where it advertised the ref, then those
+    /// creating one, as given.
+    func advertisedOrder(_ refspecs: [String], remoteRefs: RemoteRefs) -> [String] {
+        // Ref names as bytes, as git compares them.
+        let positions = Dictionary(
+            remoteRefs.names.enumerated().map { (Array($0.element.utf8), $0.offset) },
+            uniquingKeysWith: { first, _ in first })
+        return refspecs.enumerated()
+            .map { entry -> (position: Int, offset: Int, refspec: String) in
+                let destination = destinationRefName(fromPushRefspec: entry.element)
+                let position = destination.flatMap { positions[Array($0.utf8)] } ?? Int.max
+                return (position, entry.offset, entry.element)
+            }
+            .sorted { ($0.position, $0.offset) < ($1.position, $1.offset) }
+            .map(\.refspec)
+    }
+
+    /// `refspecs` as `leases` settles them (git's `apply_cas` and
+    /// `set_ref_status_for_push`): an update a lease covers is forced if
+    /// the remote ref is where the lease expects it, and refused as
+    /// stale if not; an update already forced, one that leaves the
+    /// remote ref as it is, and one no lease covers stay as they are.
+    func leasedPushRefspecs(
+        _ refspecs: [String], leases: PushLeases, remoteRefs: RemoteRefs, remote: OpaquePointer?
+    ) throws -> (refspecs: [String], stale: [(refspec: String, reason: PushRejectedError.Reason)]) {
+        var settled: [String] = []
+        var stale: [(refspec: String, reason: PushRejectedError.Reason)] = []
+        for refspec in refspecs {
+            guard !refspec.hasPrefix("+"),
+                  let destination = destinationRefName(fromPushRefspec: refspec),
+                  let expectation = leases.expectation(for: destination)
+            else {
+                settled.append(refspec)
+                continue
+            }
+            let isDeletion = refspec.hasPrefix(":")
+            if !isDeletion, isUpToDate(refspec, remoteRefs: remoteRefs) {
+                settled.append(refspec)
+                continue
+            }
+            let expected: git_oid?
+            switch expectation {
+            case .tracking:
+                expected = try trackingRef(of: destination, remote: remote).flatMap(oidOfReference)
+            case .object(let sha):
+                var oid = git_oid()
+                guard sha.withCString({ git_oid_fromstrp(&oid, $0) }) == 0 else {
+                    throw Libgit2Error(
+                        code: GIT_EINVALID.rawValue, klass: Int32(GIT_ERROR_INVALID.rawValue),
+                        message: "cannot parse expected object name '\(sha)'")
+                }
+                expected = oid
+            case .absent:
+                expected = nil
+            }
+            let actual = remoteRefs.object(of: destination)
+            let matches: Bool
+            if var actual, var expected {
+                matches = git_oid_equal(&actual, &expected) == 1
+            } else {
+                matches = actual == nil && expected == nil
+            }
+            if matches {
+                settled.append("+\(refspec)")
+            } else {
+                stale.append((refspec, .stale))
+            }
+        }
+        return (settled, stale)
+    }
+
+    /// The remote-tracking ref `remote`'s fetch refspecs map remote ref
+    /// `name` to (git's `remote_tracking`), or `nil` when none does, as
+    /// for a URL or path, which has no fetch refspecs.
+    private func trackingRef(of name: String, remote: OpaquePointer?) throws -> String? {
+        let specs = (0..<git_remote_refspec_count(remote)).compactMap { git_remote_get_refspec(remote, $0) }
+            .filter { git_refspec_direction($0) == GIT_DIRECTION_FETCH }
+        // A negative refspec keeps a ref from being tracked at all.
+        if specs.contains(where: { spec in
+            git_refspec_string(spec).map { String(cString: $0).hasPrefix("^") } == true
+                && git_refspec_src_matches_negative(spec, name) == 1
+        }) {
+            return nil
+        }
+        for spec in specs {
+            guard git_refspec_string(spec).map({ !String(cString: $0).hasPrefix("^") }) == true,
+                  let dst = git_refspec_dst(spec), dst.pointee != 0,
+                  git_refspec_src_matches(spec, name) == 1
+            else { continue }
+            var buffer = git_buf()
+            defer { git_buf_dispose(&buffer) }
+            try check(git_refspec_transform(&buffer, spec, name))
+            return buffer.ptr.map { String(cString: $0) }
+        }
+        return nil
+    }
+
+    /// The object `name` points at, peeled through symbolic refs, or
+    /// `nil` if there's no such ref.
+    private func oidOfReference(_ name: String) throws -> git_oid? {
+        var oid = git_oid()
+        let rc = git_reference_name_to_id(&oid, repo, name)
+        if rc == GIT_ENOTFOUND.rawValue { return nil }
+        try check(rc)
+        return oid
+    }
+
     /// Why git would refuse `refspec` without force, given the remote's
     /// refs, or `nil` to push it. A new ref, a deletion, a forced update
     /// and a ref already up to date always go; otherwise a tag can't

@@ -179,6 +179,10 @@ extension Repository {
     ///     non-positive value fetches full history.
     ///   - prune: Remove remote-tracking refs that no longer exist on the
     ///     remote (`git fetch --prune`). Defaults to `false`.
+    ///   - tags: Which tags come along: all of them (`.all`, `--tags`),
+    ///     none (`.off`, `--no-tags`), or, by default (`nil`), what the remote's
+    ///     `remote.<name>.tagOpt` says, else the tags pointing into what
+    ///     the fetch brings, when it stores what it fetches.
     ///   - credentials: Invoked by the transport on auth challenges.
     ///   - progress: Sink for real-git-style progress lines (defaults to
     ///     the process's stderr).
@@ -188,13 +192,14 @@ extension Repository {
         connectingTo location: String? = nil,
         depth: Int? = nil,
         prune: Bool = false,
+        tags: FetchTags? = nil,
         credentials: CredentialProvider? = nil,
         progress: @escaping @Sendable (String) -> Void = GitProgress.standardError
     ) throws {
         try fetch(
             remote: remote, refspecs: refspecs, location: location,
             rawDepth: Repository.normalizedDepth(depth) ?? Int32(GIT_FETCH_DEPTH_FULL.rawValue),
-            prune: prune, credentials: credentials, progress: progress)
+            prune: prune, tags: tags, credentials: credentials, progress: progress)
     }
 
     /// Deepen a shallow clone back to full history — the libgit2 equivalent
@@ -223,7 +228,7 @@ extension Repository {
     /// Deepen a shallow clone back to full history, fetching `refspecs`
     /// from `remote` in one operation — `git fetch --unshallow <remote>
     /// [<refspec>…]`. Empty `refspecs` means the remote's configured
-    /// ones, as for ``fetch(remote:refspecs:connectingTo:depth:prune:credentials:progress:)``.
+    /// ones, as for ``fetch(remote:refspecs:connectingTo:depth:prune:tags:credentials:progress:)``.
     ///
     /// - Parameters:
     ///   - remote: The remote to fetch from: a configured remote's name
@@ -237,6 +242,8 @@ extension Repository {
     ///     `From`, `FETCH_HEAD` — still shows its URL as configured, or
     ///     `remote` as given. `nil` (the default) connects where libgit2
     ///     reads `remote` to be.
+    ///   - tags: Which tags come along, as for
+    ///     ``fetch(remote:refspecs:connectingTo:depth:prune:tags:credentials:progress:)``.
     ///   - credentials: Invoked by the transport on auth challenges.
     ///   - progress: Sink for real-git-style progress lines (defaults to
     ///     the process's stderr).
@@ -244,13 +251,14 @@ extension Repository {
         remote: String,
         refspecs: [String],
         connectingTo location: String? = nil,
+        tags: FetchTags? = nil,
         credentials: CredentialProvider? = nil,
         progress: @escaping @Sendable (String) -> Void = GitProgress.standardError
     ) throws {
         try fetch(
             remote: remote, refspecs: refspecs, location: location,
             rawDepth: Int32(GIT_FETCH_DEPTH_UNSHALLOW.rawValue),
-            prune: false, credentials: credentials, progress: progress)
+            prune: false, tags: tags, credentials: credentials, progress: progress)
     }
 
     private func fetch(
@@ -259,6 +267,7 @@ extension Repository {
         location: String?,
         rawDepth: Int32,
         prune: Bool,
+        tags: FetchTags?,
         credentials: CredentialProvider?,
         progress: @escaping @Sendable (String) -> Void
     ) throws {
@@ -287,6 +296,15 @@ extension Repository {
         }
         let effectiveRefspecs = refspecs.isEmpty
             ? try configuredFetchRefspecs(remoteHandle) : refspecs
+        // All tags, by `--tags` or the remote's `tagOpt`: one more
+        // refspec, after the others (git's `tag_refspec`).
+        let allTags = tags == .all
+            || (tags == nil && git_remote_autotag(remoteHandle) == GIT_REMOTE_DOWNLOAD_TAGS_ALL)
+        // A refspec that stores into refs/tags/ can't move a tag unless
+        // forced: what the tags were tells which moved.
+        let tagsBefore = allTags || (effectiveRefspecs.contains {
+            !$0.hasPrefix("+") && !$0.hasPrefix("^") && Self.storesFetchedRef($0)
+        }) ? try localTagObjects() : [:]
 
         // One fetch for all of them, as git applies them; with none,
         // libgit2 takes the remote's configured refspecs, else `HEAD`.
@@ -302,9 +320,16 @@ extension Repository {
                 // fetch of a URL's HEAD, brings no tags along. A remote
                 // set to fetch all tags (`tagOpt = --tags`) still does.
                 // (libgit2/libgit2#7436)
-                if git_remote_autotag(remoteHandle) == GIT_REMOTE_DOWNLOAD_TAGS_AUTO,
-                   !effectiveRefspecs.contains(where: Self.storesFetchedRef) {
+                switch tags {
+                case .all?:
+                    opts.download_tags = GIT_REMOTE_DOWNLOAD_TAGS_ALL
+                case .off?:
                     opts.download_tags = GIT_REMOTE_DOWNLOAD_TAGS_NONE
+                case nil:
+                    if git_remote_autotag(remoteHandle) == GIT_REMOTE_DOWNLOAD_TAGS_AUTO,
+                       !effectiveRefspecs.contains(where: Self.storesFetchedRef) {
+                        opts.download_tags = GIT_REMOTE_DOWNLOAD_TAGS_NONE
+                    }
                 }
                 try withCallbacksPayload(
                     credentials: credentials, reporter: reporter,
@@ -327,8 +352,29 @@ extension Repository {
         if location != nil, let remoteURL {
             try relabelFetchHead(as: ProgressReporter.fetchDisplayURL(remoteURL))
         }
-        reporter.fetchLines = orderedFetchLines(reporter.fetchLines, refspecs: effectiveRefspecs)
+        var refusedTags: [String] = []
+        if !tagsBefore.isEmpty || allTags {
+            let remoteRefs = try advertisedRefs(remoteHandle)
+            let settled = try settleFetchedTags(
+                before: tagsBefore, remoteRefs: remoteRefs, refspecs: effectiveRefspecs,
+                allTags: allTags, lines: &reporter.fetchLines)
+            refusedTags = settled.refused
+            if allTags {
+                try reorderFetchHeadForAllTags(
+                    tags: remoteRefs.names.filter { $0.hasPrefix("refs/tags/") },
+                    excluding: settled.excluded)
+            }
+            // A fetch git refused part of lines its summary up unpadded.
+            reporter.fetchSummaryUnpadded = !refusedTags.isEmpty
+        }
+        // The tag refspec's updates come after the others'; with nothing
+        // else to fetch by, libgit2 fetched HEAD.
+        let shownRefspecs = allTags
+            ? (effectiveRefspecs.isEmpty ? ["HEAD"] : effectiveRefspecs) + [Self.allTagsRefspec]
+            : effectiveRefspecs
+        reporter.fetchLines = orderedFetchLines(reporter.fetchLines, refspecs: shownRefspecs)
         reporter.flushRefLines()
+        guard refusedTags.isEmpty else { throw FetchRejectedError(refs: refusedTags) }
     }
 
     // MARK: Depth
@@ -341,4 +387,14 @@ extension Repository {
         guard let depth, depth > 0 else { return nil }
         return Int32(clamping: depth)
     }
+}
+
+/// Which tags a fetch brings along besides what its refspecs fetch.
+public enum FetchTags: Sendable, Equatable {
+    /// Every tag the remote has, into `refs/tags/` (`git fetch --tags`):
+    /// as if `refs/tags/*:refs/tags/*` were one more refspec.
+    case all
+    /// None, not even the ones pointing into what was fetched
+    /// (`git fetch --no-tags`).
+    case off
 }

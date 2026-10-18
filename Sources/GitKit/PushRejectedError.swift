@@ -21,6 +21,9 @@ public struct PushRejectedError: Error, LocalizedError, Sendable, Equatable {
         /// The remote didn't report on the update (`remote failed to
         /// report status`), as when two updates target one new ref.
         case remoteFailure
+        /// The remote ref isn't where the push's lease expects it
+        /// (`stale info`), as `git push --force-with-lease` refuses it.
+        case stale
 
         /// The parenthesised reason in the summary line.
         var summary: String {
@@ -31,6 +34,7 @@ public struct PushRejectedError: Error, LocalizedError, Sendable, Equatable {
             case .needsForce: "needs force"
             case .remoteRejected(let message): message
             case .remoteFailure: "remote failed to report status"
+            case .stale: "stale info"
             }
         }
     }

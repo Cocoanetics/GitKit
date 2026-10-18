@@ -110,12 +110,16 @@ struct ProgressReporter {
     /// line still fits 80 columns. git measures those in terminal
     /// columns but pads with printf's `%-*s`, which counts bytes, so a
     /// non-ASCII name gets fewer spaces than its columns would suggest.
+    /// Whether the fetch summary goes without padding its summary
+    /// column, as git's does once it refused an update.
+    var fetchSummaryUnpadded = false
+
     var formattedFetchLines: [String] {
         let refWidth = fetchLines
             .filter { $0.kind == .update
                 && 21 + DisplayWidth.of($0.remote) + 4 + DisplayWidth.of($0.local) < 80 }
             .map { DisplayWidth.of($0.remote) }.reduce(10, max)
-        let summaryWidth = 2 * abbreviation + 3
+        let summaryWidth = fetchSummaryUnpadded ? 0 : 2 * abbreviation + 3
         func padded(_ text: String, _ width: Int) -> String {
             let bytes = text.utf8.count
             return bytes >= width ? text : text + String(repeating: " ", count: width - bytes)

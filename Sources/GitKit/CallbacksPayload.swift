@@ -541,7 +541,9 @@ func pushReportLine(refname: String, status: String, reporter: ProgressReporter)
         if git_oid_equal(&old, &new) == 1 { return nil }
         let oldID = abbreviated(old, minimum: reporter.abbreviation, in: reporter.repository)
         let newID = abbreviated(new, minimum: reporter.abbreviation, in: reporter.repository)
-        if isFastForward(from: old, to: new, in: reporter.repository) {
+        // A tag that moves is a forced update however it moves: git
+        // refuses to move one without force (`already exists`).
+        if !refname.hasPrefix("refs/tags/"), isFastForward(from: old, to: new, in: reporter.repository) {
             return pushSummaryLine(" ", "\(oldID)..\(newID)", refs, width: width)
         }
         return pushSummaryLine("+", "\(oldID)...\(newID)", "\(refs) (forced update)", width: width)
