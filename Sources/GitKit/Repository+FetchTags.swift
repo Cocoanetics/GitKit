@@ -335,7 +335,39 @@ extension Repository {
                 if symbolic != nil, allTags { excluded.append(tag) }
             }
         }
+        // A source that is an object ID names no advertised ref; it moves
+        // a tag only when forced, like any other.
+        for (tag, oid, source) in refspecs.compactMap(Self.objectIDTagRefspec) {
+            var new = oid
+            guard var old = before[Array(tag.utf8)], git_oid_equal(&old, &new) == 0,
+                  !refusedNames.contains(Array(tag.utf8))
+            else { continue }
+            try restore(tag)
+            lines.removeAll { $0.localRef.utf8.elementsEqual(tag.utf8) }
+            lines.append(.init(
+                kind: .update, flag: "!", summary: "[rejected]",
+                remoteRef: source, remote: source, localRef: tag, local: shortRefName(tag),
+                note: "would clobber existing tag"))
+            refused.append(tag)
+            refusedNames.insert(Array(tag.utf8))
+        }
         return (refused, excluded)
+    }
+
+    /// A non-forced `<object ID>:refs/tags/<name>` refspec's tag, object
+    /// and source as written; `nil` for any other refspec.
+    private static func objectIDTagRefspec(_ refspec: String) -> (String, git_oid, String)? {
+        guard !refspec.hasPrefix("+"), !refspec.hasPrefix("^"),
+              let colon = refspec.firstIndex(of: ":")
+        else { return nil }
+        let source = String(refspec[..<colon])
+        let destination = String(refspec[refspec.index(after: colon)...])
+        guard [40, 64].contains(source.count), source.allSatisfy(\.isHexDigit),
+              destination.hasPrefix("refs/tags/")
+        else { return nil }
+        var oid = git_oid()
+        guard source.withCString({ git_oid_fromstrp(&oid, $0) }) == 0 else { return nil }
+        return (destination, oid, source)
     }
 
     /// Drop the tags libgit2 followed that git wouldn't have. git follows

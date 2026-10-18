@@ -299,6 +299,20 @@ struct FetchTagsTests {
         #expect(output.components(separatedBy: " -> v1\n").count == 2)
     }
 
+    @Test("an object ID fetched into a tag doesn't clobber it")
+    func objectIDIntoTag() throws {
+        let (upstream, clone) = try makeUpstreamAndClone()
+        defer { [upstream, clone].forEach { try? FileManager.default.removeItem(at: $0) } }
+        _ = try fetch(clone, ["main:refs/tags/x"], tags: .off)
+        let before = try runGit(["rev-parse", "x"], in: clone)
+        try runGit(["commit", "-q", "--allow-empty", "-m", "four"], in: upstream)
+        let sha = try runGit(["rev-parse", "main"], in: upstream)
+        let (output, error) = try fetch(clone, ["\(sha):refs/tags/x"], tags: .off)
+        #expect(error == FetchRejectedError(refs: ["refs/tags/x"]))
+        #expect(output.contains(" ! [rejected] \(sha) -> x  (would clobber existing tag)\n"))
+        #expect(try runGit(["rev-parse", "x"], in: clone) == before)
+    }
+
     @Test("the remote's HEAD fetched into a tag doesn't clobber it")
     func headIntoTag() throws {
         let (upstream, clone) = try makeUpstreamAndClone()
