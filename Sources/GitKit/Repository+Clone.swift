@@ -102,7 +102,8 @@ extension Repository {
     /// Mirrors `git fetch <remote> <refspec>` including its progress output.
     ///
     /// - Parameters:
-    ///   - remote: The remote name to fetch from (e.g. `"origin"`).
+    ///   - remote: The remote to fetch from: a configured remote's name
+    ///     (e.g. `"origin"`), or, as in git, a URL or path.
     ///   - refspec: The refspec to fetch (e.g. `"main"` or
     ///     `"+refs/heads/*:refs/remotes/origin/*"`).
     ///   - depth: Limit the fetch to the last `depth` commits per tip — a
@@ -159,8 +160,7 @@ extension Repository {
         credentials: CredentialProvider?,
         progress: @escaping @Sendable (String) -> Void
     ) throws {
-        var remoteHandle: OpaquePointer?
-        try check(git_remote_lookup(&remoteHandle, repo, remote))
+        let (remoteHandle, _) = try lookupRemote(remote)
         defer { git_remote_free(remoteHandle) }
 
         // Pull the remote URL out of the handle for the `From <url>` header.

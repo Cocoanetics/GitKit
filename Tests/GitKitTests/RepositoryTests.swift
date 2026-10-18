@@ -204,6 +204,66 @@ struct RepositoryTests {
             "   \(before.prefix(12))..\(after.prefix(12))  main -> main\n"))
     }
 
+    @Test("fetch and push take a path, like git's <repository>")
+    func fetchAndPushAPath() throws {
+        let source = try makeFixtureRepo()
+        defer { try? FileManager.default.removeItem(at: source) }
+        let origin = try makeBareOrigin()
+        defer { try? FileManager.default.removeItem(at: origin) }
+
+        // push <path> main, with -u: no remote is configured.
+        let repo = try Repository.open(at: source)
+        try repo.push(remote: origin.path, refspec: "main", setUpstream: true, progress: { _ in })
+        let head = try runGit(["rev-parse", "HEAD"], in: source)
+        #expect(try runGit(["rev-parse", "main"], in: origin) == head)
+        #expect(try runGit(["remote"], in: source).isEmpty)
+        #expect(try runGit(["config", "branch.main.remote"], in: source)
+                == origin.path + "\n")
+        #expect(try runGit(["config", "branch.main.merge"], in: source) == "refs/heads/main\n")
+
+        // fetch <path> <refspec>, and fetch <path> main into FETCH_HEAD.
+        let dest = try makeFixtureRepo(withCommit: false)
+        defer { try? FileManager.default.removeItem(at: dest) }
+        let fetcher = try Repository.open(at: dest)
+        try fetcher.fetch(remote: origin.path, refspec: "refs/heads/main:refs/heads/fetched",
+                          progress: { _ in })
+        #expect(try runGit(["rev-parse", "fetched"], in: dest) == head)
+        try fetcher.fetch(remote: origin.path, refspec: "main", progress: { _ in })
+        #expect(try runGit(["rev-parse", "FETCH_HEAD"], in: dest) == head)
+        #expect(try runGit(["remote"], in: dest).isEmpty)
+    }
+
+    @Test("a tracking lease on a URL or path expects the branch absent")
+    func trackingLeaseOnAPath() throws {
+        let source = try makeFixtureRepo()
+        defer { try? FileManager.default.removeItem(at: source) }
+        let origin = try makeBareOrigin()
+        defer { try? FileManager.default.removeItem(at: origin) }
+
+        let repo = try Repository.open(at: source)
+        // Absent on the remote: the leased push goes through.
+        try repo.push(remote: origin.path, refspec: "main", setUpstream: false,
+                      forceWithLease: .tracking, progress: { _ in })
+        #expect(try runGit(["rev-parse", "main"], in: origin)
+                == runGit(["rev-parse", "HEAD"], in: source))
+        // Present now, with no tracking ref to vouch for it: refused.
+        try runGit(["commit", "--allow-empty", "-m", "two"], in: source)
+        #expect(throws: Libgit2Error.self) {
+            try repo.push(remote: origin.path, refspec: "main", setUpstream: false,
+                          forceWithLease: .tracking, progress: { _ in })
+        }
+    }
+
+    @Test("a remote that is neither configured nor a repository fails")
+    func unknownRemoteFails() throws {
+        let dir = try makeFixtureRepo()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let repo = try Repository.open(at: dir)
+        #expect(throws: Libgit2Error.self) {
+            try repo.fetch(remote: "orign", refspec: "main", progress: { _ in })
+        }
+    }
+
     @Test("push accepts a short nested branch refspec")
     func pushShortNestedBranch() throws {
         let dir = try makeFixtureRepo()

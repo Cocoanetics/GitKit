@@ -18,7 +18,8 @@ extension Repository {
     /// including its progress output and per-ref summary lines.
     ///
     /// - Parameters:
-    ///   - remote: The remote name to push to (e.g. `"origin"`).
+    ///   - remote: The remote to push to: a configured remote's name
+    ///     (e.g. `"origin"`), or, as in git, a URL or path.
     ///   - refspec: The refspec to push (e.g. `"main"` or
     ///     `"refs/heads/main:refs/heads/main"`).
     ///   - setUpstream: When `true`, configure the pushed branch's upstream
@@ -76,8 +77,7 @@ extension Repository {
         credentials: CredentialProvider?,
         progress: @escaping @Sendable (String) -> Void
     ) throws {
-        var remoteHandle: OpaquePointer?
-        try check(git_remote_lookup(&remoteHandle, repo, remote))
+        let (remoteHandle, isConfigured) = try lookupRemote(remote)
         defer { git_remote_free(remoteHandle) }
 
         let remoteURL = git_remote_url(remoteHandle).map { String(cString: $0) }
@@ -93,7 +93,8 @@ extension Repository {
         reporter.repository = repo
         reporter.abbreviation = summaryAbbreviation()
         let pushLease = try lease.map {
-            try pushLeaseCheck($0, remote: remote, refspec: pushRefspec)
+            try pushLeaseCheck(
+                $0, remote: remote, refspec: pushRefspec, isConfigured: isConfigured)
         }
 
         try pushRefspec.withCString { cstr in
@@ -136,7 +137,8 @@ extension Repository {
         // push, write the upstream config ourselves to mirror the CLI's
         // `--set-upstream` semantics.
         if setUpstream {
-            try setUpstreamForRefspec(remote: remote, refspec: pushRefspec)
+            try setUpstreamForRefspec(
+                remote: remote, refspec: pushRefspec, isConfigured: isConfigured)
         }
     }
 
@@ -180,7 +182,8 @@ extension Repository {
     private func pushLeaseCheck(
         _ lease: PushLease,
         remote: String,
-        refspec: String
+        refspec: String,
+        isConfigured: Bool
     ) throws -> PushLeaseCheck {
         guard let destination = destinationRefName(fromPushRefspec: refspec) else {
             throw Libgit2Error(
@@ -198,7 +201,11 @@ extension Repository {
                     klass: Int32(GIT_ERROR_INVALID.rawValue),
                     message: "force-with-lease tracking requires a branch destination")
             }
-            expectedOID = try oidForReference("refs/remotes/\(remote)/\(branch)")
+            // A URL or path has no remote-tracking refs, so the lease
+            // expects the destination to be absent.
+            expectedOID = isConfigured
+                ? try oidForReference("refs/remotes/\(remote)/\(branch)")
+                : nil
         case .expecting(let sha):
             expectedOID = try parseFullOID(sha, label: "force-with-lease expected oid")
         }
@@ -291,7 +298,9 @@ extension Repository {
     /// `<src>:<dst>` form has both sides; bare ref like `main` means
     /// `refs/heads/main:refs/heads/main`. Use the local side as the branch
     /// being configured, and the destination side as its upstream merge ref.
-    private func setUpstreamForRefspec(remote: String, refspec: String) throws {
+    private func setUpstreamForRefspec(
+        remote: String, refspec: String, isConfigured: Bool
+    ) throws {
         let body = refspec.hasPrefix("+")
             ? String(refspec.dropFirst())
             : refspec
@@ -310,6 +319,14 @@ extension Repository {
         guard let localBranch = localBranchName(from: src),
               let upstreamBranch = localBranchName(from: dst)
         else { return }
+
+        // A URL or path has no remote-tracking branches to point at;
+        // like git, record it as the upstream remote directly.
+        guard isConfigured else {
+            try configSet("branch.\(localBranch).remote", remote)
+            try configSet("branch.\(localBranch).merge", "refs/heads/\(upstreamBranch)")
+            return
+        }
 
         var branch: OpaquePointer?
         let lookupRC = git_branch_lookup(&branch, repo, localBranch, GIT_BRANCH_LOCAL)
