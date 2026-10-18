@@ -524,6 +524,13 @@ extension Repository {
               let upstreamBranch = localBranchName(from: dst)
         else { return }
 
+        // Only a local branch gets an upstream; a revision pushed by
+        // expression (`HEAD^`, an object ID) leaves the config alone.
+        var branch: OpaquePointer?
+        let lookupRC = git_branch_lookup(&branch, repo, localBranch, GIT_BRANCH_LOCAL)
+        guard lookupRC == 0 else { return }
+        defer { git_reference_free(branch) }
+
         // A URL or path has no remote-tracking branches to point at;
         // like git, record it as the upstream remote directly.
         guard isConfigured else {
@@ -531,11 +538,6 @@ extension Repository {
             try configSet("branch.\(localBranch).merge", "refs/heads/\(upstreamBranch)")
             return
         }
-
-        var branch: OpaquePointer?
-        let lookupRC = git_branch_lookup(&branch, repo, localBranch, GIT_BRANCH_LOCAL)
-        guard lookupRC == 0 else { return }
-        defer { git_reference_free(branch) }
 
         try check(git_branch_set_upstream(branch, "\(remote)/\(upstreamBranch)"))
     }
