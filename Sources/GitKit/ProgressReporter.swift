@@ -79,7 +79,9 @@ struct ProgressReporter {
     /// What a push is about to do to each remote ref, keyed by the
     /// destination ref name — recorded at push negotiation, so the
     /// summary can print `old..new` like git.
-    var pushUpdates: [String: PushUpdate] = [:]
+    /// (Keyed, like `typedSources`, by the ref name's UTF-8 bytes: git
+    /// compares ref names byte for byte, Swift's `String` canonically.)
+    var pushUpdates: [[UInt8]: PushUpdate] = [:]
     /// The pushing repository, to tell a forced update from a
     /// fast-forward.
     var repository: OpaquePointer?
@@ -89,13 +91,13 @@ struct ProgressReporter {
     /// Each pushed ref's source as the caller spelled it (`HEAD`,
     /// `main`), keyed by the destination ref; git shows it instead of
     /// the ref it resolves to.
-    var typedSources: [String: String] = [:]
+    var typedSources: [[UInt8]: String] = [:]
     /// Every ref the remote reported on, in the order of its first
     /// report.
     var reportedRefs: [String] = []
-    /// The remote's last word on each ref it reported on: its reason
-    /// for refusing the update, or empty if it took it.
-    var reportStatuses: [String: String] = [:]
+    /// The remote's last word on each ref it reported on (by name
+    /// bytes): its reason for refusing the update, or empty if it took it.
+    var reportStatuses: [[UInt8]: String] = [:]
 
     /// Whether a fetch tells forced updates from fast-forwards
     /// (`fetch.showForcedUpdates`, on unless configured off).

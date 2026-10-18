@@ -46,12 +46,12 @@ struct PushPlan {
     /// becomes `refs/heads/main:refs/heads/main`).
     var explicit: [String] = []
     /// How each explicit refspec's source was typed (`HEAD`, `main`),
-    /// keyed by its destination ref, for the summary of what the remote
-    /// reports on (which goes to the first update of a ref).
-    var typedSources: [String: String] = [:]
+    /// keyed by its destination ref's UTF-8 bytes, for the summary of
+    /// what the remote reports on (which goes to the first update of a ref).
+    var typedSources: [[UInt8]: String] = [:]
     /// The same, keyed by the qualified refspec (without `+`), for the
     /// summary lines of updates the remote never got to judge.
-    var typedSourcesByRefspec: [String: String] = [:]
+    var typedSourcesByRefspec: [[UInt8]: String] = [:]
     var patterns: [Pattern] = []
     /// Whether the matching refspec was given: `nil` if not, `true` if
     /// forced (`+:`).
@@ -108,13 +108,13 @@ extension Repository {
                 let qualified = try qualifiedPushRefspec(refspec)
                 plan.explicit.append(qualified)
                 if let typed = typedPushSource(refspec) {
-                    plan.typedSourcesByRefspec[Self.unforced(qualified)] = typed
+                    plan.typedSourcesByRefspec[Array(Self.unforced(qualified).utf8)] = typed
                 }
                 // The remote reports on the first update to a ref.
                 if let destination = destinationRefName(fromPushRefspec: qualified),
-                   plan.typedSources[destination] == nil,
+                   plan.typedSources[Array(destination.utf8)] == nil,
                    let typed = typedPushSource(refspec) {
-                    plan.typedSources[destination] = typed
+                    plan.typedSources[Array(destination.utf8)] = typed
                 }
             }
         }

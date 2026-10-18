@@ -505,7 +505,7 @@ private let combinedPushNegotiationTrampoline: git_push_negotiation = {
             guard let update = updates[index]?.pointee,
                   let destination = update.dst_refname else { continue }
             // Two updates for one ref: the remote reports on the first.
-            let name = String(cString: destination)
+            let name = Array(String(cString: destination).utf8)
             guard box.reporter!.pushUpdates[name] == nil else { continue }
             var old = update.src
             var new = update.dst
@@ -569,10 +569,11 @@ private let combinedPushRefTrampoline: git_push_update_reference_cb = {
     // As git's receive_status() does, every report on a ref goes to the
     // ref's first update, the last report winning; a second update to
     // that ref stays unreported. The lines are written once all are in.
-    if box.reporter!.reportStatuses[refname] == nil {
+    let key = Array(refname.utf8)
+    if box.reporter!.reportStatuses[key] == nil {
         box.reporter!.reportedRefs.append(refname)
     }
-    box.reporter!.reportStatuses[refname] = statusPtr.map { String(cString: $0) } ?? ""
+    box.reporter!.reportStatuses[key] = statusPtr.map { String(cString: $0) } ?? ""
     // A refused ref doesn't fail the push: libgit2 still updates the
     // tracking refs of the others, and the caller reports the refusal.
     return 0
@@ -582,9 +583,9 @@ private let combinedPushRefTrampoline: git_push_update_reference_cb = {
 /// its reason for refusing it (empty when it took the update); `nil` for
 /// a ref that was already up to date, which git shows only with `-v`.
 func pushReportLine(refname: String, status: String, reporter: ProgressReporter) -> String? {
-    let update = reporter.pushUpdates[refname]
+    let update = reporter.pushUpdates[Array(refname.utf8)]
     let destination = shortRefName(refname)
-    let source = reporter.typedSources[refname].map(shortRefName)
+    let source = reporter.typedSources[Array(refname.utf8)].map(shortRefName)
         ?? update.map { shortRefName($0.source) } ?? destination
     let refs = source.isEmpty ? destination : "\(source) -> \(destination)"
 

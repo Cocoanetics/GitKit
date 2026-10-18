@@ -284,13 +284,13 @@ extension Repository {
         _ accepted: [String],
         rejected: [(refspec: String, reason: PushRejectedError.Reason)],
         remoteRefs: RemoteRefs,
-        typedSources: [String: String],
+        typedSources: [[UInt8]: String],
         reporter: inout ProgressReporter
     ) -> (pushed: [String], rejections: [PushRejectedError.Rejection]) {
         var rejections: [PushRejectedError.Rejection] = []
         var refusedLines: [String] = []
         for refname in reporter.reportedRefs {
-            let status = reporter.reportStatuses[refname] ?? ""
+            let status = reporter.reportStatuses[Array(refname.utf8)] ?? ""
             guard let line = pushReportLine(refname: refname, status: status, reporter: reporter) else {
                 continue
             }
@@ -302,12 +302,13 @@ extension Repository {
             }
         }
         reporter.refLines += refusedLines
-        let refusedByRemote = Set(rejections.map(\.remoteRef))
+        // Ref names as bytes, as git compares them.
+        let refusedByRemote = Set(rejections.map { Array($0.remoteRef.utf8) })
         func refuse(_ refspec: String, _ reason: PushRejectedError.Reason) {
             guard let destination = destinationRefName(fromPushRefspec: refspec) else { return }
             reporter.refLines.append(rejectedSummaryLine(
                 refspec, destination: destination, reason: reason,
-                typedSource: typedSources[Self.unforced(refspec)],
+                typedSource: typedSources[Array(Self.unforced(refspec).utf8)],
                 abbreviation: reporter.abbreviation))
             rejections.append(.init(remoteRef: destination, reason: reason))
         }
@@ -315,20 +316,21 @@ extension Repository {
 
         // receive-pack's reports go to the first update for each ref, so
         // a second update for one ref goes unreported: `[remote failure]`.
-        var reports = Dictionary(reporter.reportedRefs.map { ($0, 1) }, uniquingKeysWith: +)
-        var unreported = Set<String>()
+        var reports = Dictionary(reporter.reportedRefs.map { (Array($0.utf8), 1) }, uniquingKeysWith: +)
+        var unreported = Set<[UInt8]>()
         for refspec in accepted where !isUpToDate(refspec, remoteRefs: remoteRefs) {
             guard let destination = destinationRefName(fromPushRefspec: refspec) else { continue }
-            if let count = reports[destination], count > 0 {
-                reports[destination] = count - 1
+            if let count = reports[Array(destination.utf8)], count > 0 {
+                reports[Array(destination.utf8)] = count - 1
             } else {
                 refuse(refspec, .remoteFailure)
-                unreported.insert(refspec)
+                unreported.insert(Array(refspec.utf8))
             }
         }
         let pushed = accepted.filter { refspec in
-            !unreported.contains(refspec)
-                && (destinationRefName(fromPushRefspec: refspec).map { !refusedByRemote.contains($0) } ?? true)
+            !unreported.contains(Array(refspec.utf8))
+                && (destinationRefName(fromPushRefspec: refspec)
+                    .map { !refusedByRemote.contains(Array($0.utf8)) } ?? true)
         }
         return (pushed, rejections)
     }
