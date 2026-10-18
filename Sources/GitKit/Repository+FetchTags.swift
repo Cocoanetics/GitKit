@@ -269,6 +269,13 @@ extension Repository {
             targets.append((line.localRef, id, git_object_type(object) == GIT_OBJECT_COMMIT))
             git_object_free(object)
         }
+        // The commit graph takes commits only; a tip can be a tree or blob.
+        let commitTips = tips.filter { tip in
+            var tip = tip
+            var object: OpaquePointer?
+            defer { git_object_free(object) }
+            return git_object_lookup(&object, repo, &tip, GIT_OBJECT_COMMIT) == 0
+        }
         let others = Set(targets.filter { !$0.isCommit }.map { Self.hex($0.id) })
         let held = others.isEmpty ? [] : historyHolds(others, from: tips)
         var dropped: [String] = []
@@ -276,8 +283,8 @@ extension Repository {
         for target in targets {
             var id = target.id
             let reached = target.isCommit
-                ? tips.contains { tip in var tip = tip; return git_oid_equal(&tip, &id) == 1 }
-                    || git_graph_reachable_from_any(repo, &id, tips, tips.count) == 1
+                ? commitTips.contains { tip in var tip = tip; return git_oid_equal(&tip, &id) == 1 }
+                    || git_graph_reachable_from_any(repo, &id, commitTips, commitTips.count) == 1
                 : held.contains(Self.hex(id))
             guard !reached else { continue }
             // An object the repository had before, reachable or not, is

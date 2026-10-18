@@ -194,8 +194,11 @@ struct FetchTagsTests {
         let blob = try runGit(["hash-object", "-w", "--stdin"], in: upstream, input: "meta\n")
         try runGit(["update-ref", "refs/meta/blob", blob], in: upstream)
         try runGit(["tag", "tmeta", blob], in: upstream)
-        _ = try fetch(clone, ["refs/meta/blob:refs/meta/blob"], tags: nil)
+        // Alongside it, a branch's tag still follows: the blob tip doesn't
+        // upset the commit graph.
+        _ = try fetch(clone, ["refs/meta/blob:refs/meta/blob", "+refs/heads/*:refs/remotes/origin/*"], tags: nil)
         #expect(try tagNames(clone).contains("tmeta"))
+        #expect(try tagNames(clone).contains("v3"))
     }
 
     @Test("an object an alternate holds counts as here already")
