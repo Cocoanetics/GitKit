@@ -163,6 +163,9 @@ extension Repository {
             for path in automatic.map(\.path) where touched[path] == nil {
                 touched[path] = Change(oid: "", mode: 0)
             }
+            // A path git-merge-one-file itself refuses over an untracked
+            // file is its conflict to report, not read-tree's refusal.
+            for case .addedOverUntracked(let path) in automatic { touched[path] = nil }
             if let failure = overwrites(touched, worktree: worktree, ignoreCase: ignoreCase) {
                 git_index_free(merged)
                 steps.append(OctopusMergeStep(head: name, kind: .merge, automatic: nil))

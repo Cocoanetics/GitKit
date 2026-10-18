@@ -561,6 +561,23 @@ extension RepositoryOctopusMergeTests {
         #expect(try String(contentsOf: dir.appendingPathComponent("f~HEAD"), encoding: .utf8) == "mine\n")
     }
 
+    @Test("an untracked file where their path goes below a deleted base file is merge-one-file's conflict")
+    func untrackedBelowDeletedBaseFile() throws {
+        let dir = try makeFileOverDirectory()
+        // Ours deleted f; `df` puts f/x there; an untracked f/x stands.
+        try git(["rm", "-q", "f"], in: dir)
+        try git(["commit", "-q", "-m", "rm"], in: dir)
+        try FileManager.default.createDirectory(at: dir.appendingPathComponent("f"), withIntermediateDirectories: true)
+        try write("mine\n", to: "f/x", in: dir)
+        let other = try twin(of: dir)
+        let result = try merge(["c", "df"], in: dir)
+        #expect(try git(["merge", "-q", "-m", "Merge branches", "c", "df"], in: other, check: false).status == 1)
+        #expect(result.outcome == .conflicts(paths: ["f/x"]))
+        #expect(result.steps.last?.automatic == [.addedOverUntracked(path: "f/x")])
+        #expect(try state(of: dir) == state(of: other))
+        #expect(try String(contentsOf: dir.appendingPathComponent("f/x"), encoding: .utf8) == "mine\n")
+    }
+
     @Test("refuses a bare repository before anything changes")
     func refusesBare() throws {
         let dir = try makeRepository()
