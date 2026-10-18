@@ -510,8 +510,8 @@ private let combinedPushRefTrampoline: git_push_update_reference_cb = {
     let refname = String(cString: refnamePtr)
     let status = statusPtr.map { String(cString: $0) } ?? ""
     let update = box.reporter!.pushUpdates[refname]
-    let destination = stripHeadsPrefix(refname)
-    let source = update.map { stripHeadsPrefix($0.source) } ?? destination
+    let destination = shortRefName(refname)
+    let source = update.map { shortRefName($0.source) } ?? destination
     let refs = source.isEmpty ? destination : "\(source) -> \(destination)"
 
     let line: String
@@ -536,6 +536,15 @@ private let combinedPushRefTrampoline: git_push_update_reference_cb = {
     }
     box.reporter!.refLines.append(line)
     return status.isEmpty ? 0 : -1
+}
+
+/// A ref name as git's push summary shows it: without `refs/heads/` or
+/// `refs/tags/`.
+private func shortRefName(_ refname: String) -> String {
+    for prefix in ["refs/heads/", "refs/tags/"] where refname.hasPrefix(prefix) {
+        return String(refname.dropFirst(prefix.count))
+    }
+    return refname
 }
 
 /// One line of git's push summary: ` <flag> <summary> <refs>`, the
@@ -632,13 +641,6 @@ private func sourceShorthand(_ refname: String) -> String {
         return String(trimmed[trimmed.index(after: slash)...])
     }
     return String(trimmed)
-}
-
-private func stripHeadsPrefix(_ refname: String) -> String {
-    let prefix = "refs/heads/"
-    return refname.hasPrefix(prefix)
-        ? String(refname.dropFirst(prefix.count))
-        : refname
 }
 
 private func pad(_ s: String, to width: Int) -> String {

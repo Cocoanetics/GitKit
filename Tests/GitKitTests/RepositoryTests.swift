@@ -177,6 +177,11 @@ struct RepositoryTests {
         try runGit(["branch", "dev"], in: dir)
         _ = try push("dev")
         #expect(try push(":refs/heads/dev").hasSuffix(" - [deleted]         dev\n"))
+
+        try runGit(["tag", "v1"], in: dir)
+        #expect(try push("v1").hasSuffix(" * [new tag]         v1 -> v1\n"))
+        try runGit(["switch", "-c", "local"], in: dir)
+        #expect(try push("local:remote").hasSuffix(" * [new branch]      local -> remote\n"))
     }
 
     @Test("push accepts a short nested branch refspec")
