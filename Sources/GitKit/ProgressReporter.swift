@@ -13,6 +13,28 @@ public enum GitProgress {
     }
 }
 
+/// A fetch's line for one ref, held until the fetch is done: git
+/// orders the lines and sizes their ref column once it knows them all.
+struct FetchSummaryLine {
+    enum Kind { case deleted, fetchHead, update }
+    let kind: Kind
+    /// `*` new, ` ` fast-forward, `+` forced, `t` tag update,
+    /// `-` deleted.
+    let flag: Character
+    /// `[new branch]`, `abc1234..def5678`, `branch` (FETCH_HEAD), …
+    var summary: String
+    /// The remote ref, e.g. `refs/heads/main` (empty when deleted).
+    var remoteRef: String
+    /// The remote ref as shown (`main`, `(none)`).
+    var remote: String
+    /// The local ref, e.g. `refs/remotes/origin/main` (`FETCH_HEAD`).
+    let localRef: String
+    /// The local ref as shown (`origin/main`).
+    let local: String
+    /// Shown after the line in parentheses (`forced update`).
+    var note: String?
+}
+
 /// Formats and emits `remote: …` / `Receiving objects: …` /
 /// `From <url>` / `<oldsha>..<newsha> <ref> -> <tracking>` lines to
 /// stderr. Mirrors what real git prints during fetch / clone / push.
@@ -70,6 +92,40 @@ struct ProgressReporter {
     /// `main`), keyed by the destination ref; git shows it instead of
     /// the ref it resolves to.
     var typedSources: [[UInt8]: String] = [:]
+    /// Every ref the remote reported on, in the order of its first
+    /// report.
+    var reportedRefs: [String] = []
+    /// The remote's last word on each ref it reported on (by name
+    /// bytes): its reason for refusing the update, or empty if it took it.
+    var reportStatuses: [[UInt8]: String] = [:]
+
+    /// Whether a fetch tells forced updates from fast-forwards
+    /// (`fetch.showForcedUpdates`, on unless configured off).
+    var showForcedUpdates = true
+    /// The fetch's lines, in the order to print them once ordered.
+    var fetchLines: [FetchSummaryLine] = []
+
+    /// `fetchLines` as git prints them (`format_display`). The ref column
+    /// is at least 10 wide, widened for an update's remote ref when its
+    /// line still fits 80 columns. git measures those in terminal
+    /// columns but pads with printf's `%-*s`, which counts bytes, so a
+    /// non-ASCII name gets fewer spaces than its columns would suggest.
+    var formattedFetchLines: [String] {
+        let refWidth = fetchLines
+            .filter { $0.kind == .update
+                && 21 + DisplayWidth.of($0.remote) + 4 + DisplayWidth.of($0.local) < 80 }
+            .map { DisplayWidth.of($0.remote) }.reduce(10, max)
+        let summaryWidth = 2 * abbreviation + 3
+        func padded(_ text: String, _ width: Int) -> String {
+            let bytes = text.utf8.count
+            return bytes >= width ? text : text + String(repeating: " ", count: width - bytes)
+        }
+        return fetchLines.map { line in
+            let note = line.note.map { "  (\($0))" } ?? ""
+            return " \(line.flag) \(padded(line.summary, summaryWidth)) "
+                + "\(padded(line.remote, refWidth)) -> \(line.local)\(note)"
+        }
+    }
 
     struct PushUpdate {
         /// The local ref being pushed, e.g. `refs/heads/main`.
@@ -114,10 +170,51 @@ struct ProgressReporter {
 
     /// Emit the `From <url>\n` / `To <url>\n` header on first call.
     mutating func emitHeaderIfNeeded() {
-        guard !headerEmitted, let url = headerURL else { return }
+        guard !headerEmitted, let header else { return }
         headerEmitted = true
-        let verb = direction == .fetch ? "From" : "To"
-        write("\(verb) \(url)\n")
+        write(header)
+    }
+
+    /// `From <url>\n` / `To <url>\n`, the URL shown as git shows it.
+    private var header: String? {
+        guard let url = headerURL else { return nil }
+        return direction == .fetch
+            ? "From \(Self.fetchDisplayURL(url))\n"
+            : "To \(Self.anonymizedURL(url))\n"
+    }
+
+    /// `url` without the credentials it may carry, as git shows remotes
+    /// (`transport_anonymize_url`): `https://user:token@host/r` becomes
+    /// `https://host/r`, `git@host:r` becomes `host:r`. Local paths stay.
+    static func anonymizedURL(_ url: String) -> String {
+        guard let at = url.firstIndex(of: "@") else { return url }
+        let colon = url.firstIndex(of: ":")
+        let slash = url.firstIndex(of: "/")
+        // A local path: no colon, or a slash before the first one.
+        guard let colon, slash.map({ $0 > colon }) ?? true else { return url }
+        let rest = url[url.index(after: at)...]
+        guard let scheme = url.range(of: "://") else {
+            // `me@there:/path` — the `@` has to come before a colon.
+            return rest.contains(":") ? String(rest) : url
+        }
+        let schemeName = url[..<scheme.lowerBound]
+        guard schemeName.allSatisfy({ $0.isLetter || $0.isNumber || "+.-".contains($0) }) else {
+            return url
+        }
+        // An `@` past the first slash is part of the path.
+        if let pathSlash = url[scheme.upperBound...].firstIndex(of: "/"), pathSlash < at {
+            return url
+        }
+        return String(url[..<scheme.upperBound]) + rest
+    }
+
+    /// The URL in a fetch's `From` line: anonymized, without trailing
+    /// slashes and a `.git` suffix (builtin/fetch.c).
+    static func fetchDisplayURL(_ url: String) -> String {
+        var shown = Substring(anonymizedURL(url))
+        while shown.count > 1, shown.hasSuffix("/") { shown = shown.dropLast() }
+        if shown.count > 5, shown.hasSuffix(".git") { shown = shown.dropLast(4) }
+        return String(shown)
     }
 
     /// True if `url` points at a local repo (file:// or a plain path
@@ -136,9 +233,18 @@ struct ProgressReporter {
         return FileManager.default.fileExists(atPath: url)
     }
 
+    /// The `From`/`To` header and the pending per-ref summary lines, as
+    /// ``flushRefLines()`` writes them.
+    var refSummary: String {
+        guard !refLines.isEmpty else { return "" }
+        return (header ?? "") + refLines.map { $0 + "\n" }.joined()
+    }
+
     /// Flush any pending per-ref summary lines. Caller invokes this
     /// after the network op completes.
     mutating func flushRefLines() {
+        refLines += formattedFetchLines
+        fetchLines.removeAll()
         guard !refLines.isEmpty else { return }
         emitHeaderIfNeeded()
         for line in refLines {

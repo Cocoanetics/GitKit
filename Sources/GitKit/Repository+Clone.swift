@@ -252,6 +252,19 @@ extension Repository {
             headerURL: remoteURL, direction: .fetch, output: progress)
         reporter.suppressTransferProgress =
             ProgressReporter.isLocalURL(remoteURL)
+        reporter.repository = repo
+        reporter.abbreviation = try summaryAbbreviation()
+        reporter.showForcedUpdates = try configFlag("fetch.showForcedUpdates") ?? true
+        if !reporter.showForcedUpdates, try configFlag("advice.fetchShowForcedUpdates") ?? true {
+            reporter.write("""
+                warning: fetch normally indicates which branches had a forced update,
+                but that check has been disabled; to re-enable, use '--show-forced-updates'
+                flag or run 'git config fetch.showForcedUpdates true'
+
+                """)
+        }
+        let effectiveRefspecs = refspecs.isEmpty
+            ? try configuredFetchRefspecs(remoteHandle) : refspecs
 
         // One fetch for all of them, as git applies them; with none,
         // libgit2 takes the remote's configured refspecs, else `HEAD`.
@@ -262,6 +275,15 @@ extension Repository {
                 try check(git_fetch_options_init(&opts, UInt32(GIT_FETCH_OPTIONS_VERSION)))
                 opts.depth = rawDepth
                 opts.prune = prune ? GIT_FETCH_PRUNE : GIT_FETCH_NO_PRUNE
+                // git follows tags only when a refspec stores what it
+                // fetches (get_ref_map): `git fetch origin main`, or a
+                // fetch of a URL's HEAD, brings no tags along. A remote
+                // set to fetch all tags (`tagOpt = --tags`) still does.
+                // (libgit2/libgit2#7436)
+                if git_remote_autotag(remoteHandle) == GIT_REMOTE_DOWNLOAD_TAGS_AUTO,
+                   !effectiveRefspecs.contains(where: Self.storesFetchedRef) {
+                    opts.download_tags = GIT_REMOTE_DOWNLOAD_TAGS_NONE
+                }
                 try withCallbacksPayload(
                     credentials: credentials, reporter: reporter,
                     { credCB, sidebandCB, transferCB, updateCB, _, _, _, _, payload in
@@ -278,6 +300,7 @@ extension Repository {
                     outReporter: { reporter = $0 })
             }
         }
+        reporter.fetchLines = orderedFetchLines(reporter.fetchLines, refspecs: effectiveRefspecs)
         reporter.flushRefLines()
     }
 

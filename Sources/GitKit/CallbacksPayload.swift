@@ -9,7 +9,8 @@ import CGitKit
 final class CallbackBox {
     let credentialsProvider: CredentialProvider?
     var reporter: ProgressReporter?
-    let pushLease: PushLeaseCheck?
+    /// Set once the remote's refs have completed the lease's destination.
+    var pushLease: PushLeaseCheck?
 
     init(
         credentials: CredentialProvider?,
@@ -361,27 +362,14 @@ private let combinedUpdateRefsTrampoline: @convention(c) (
     UnsafePointer<git_oid>?,
     OpaquePointer?,
     UnsafeMutableRawPointer?
-) -> Int32 = { refnamePtr, aOid, bOid, _, payload in
+) -> Int32 = { refnamePtr, aOid, bOid, spec, payload in
     guard let payload, let refnamePtr else { return 0 }
     let box = Unmanaged<CallbackBox>.fromOpaque(payload).takeUnretainedValue()
-    guard box.reporter != nil else { return 0 }
-    let refname = String(cString: refnamePtr)
-
-    let isNew = aOid.map { isAllZero($0.pointee) } ?? true
-    let dst = stripRemotesPrefix(refname)
-    let local = sourceShorthand(refname)
-
-    let line: String
-    if isNew {
-        line = " * [new branch]      \(pad(local, to: 11))-> \(dst)"
-    } else if let aOid, let bOid {
-        let oldSha = shortSHA(aOid.pointee)
-        let newSha = shortSHA(bOid.pointee)
-        line = "   \(oldSha)..\(newSha)  \(pad(local, to: 11))-> \(dst)"
-    } else {
-        line = "   \(local) -> \(dst)"
-    }
-    box.reporter!.refLines.append(line)
+    guard let reporter = box.reporter else { return 0 }
+    let old = aOid.map(\.pointee).flatMap { isAllZero($0) ? nil : $0 }
+    let new = bOid.map(\.pointee).flatMap { isAllZero($0) ? nil : $0 }
+    box.reporter!.fetchLines.append(fetchLine(
+        refname: String(cString: refnamePtr), old: old, new: new, spec: spec, reporter: reporter))
     return 0
 }
 
@@ -465,9 +453,12 @@ private let combinedPushNegotiationTrampoline: git_push_negotiation = {
         for index in 0..<Int(len) {
             guard let update = updates[index]?.pointee,
                   let destination = update.dst_refname else { continue }
+            // Two updates for one ref: the remote reports on the first.
+            let name = Array(String(cString: destination).utf8)
+            guard box.reporter!.pushUpdates[name] == nil else { continue }
             var old = update.src
             var new = update.dst
-            box.reporter!.pushUpdates[Array(String(cString: destination).utf8)] = ProgressReporter.PushUpdate(
+            box.reporter!.pushUpdates[name] = ProgressReporter.PushUpdate(
                 source: update.src_refname.map { String(cString: $0) } ?? "",
                 oldID: git_oid_is_zero(&old) == 1 ? nil : old,
                 newID: git_oid_is_zero(&new) == 1 ? nil : new)
@@ -498,15 +489,6 @@ func abbreviated(_ oid: git_oid, minimum: Int, in repository: OpaquePointer?) ->
     return unique.count >= minimum ? unique : String(full.prefix(minimum))
 }
 
-/// Whether moving a ref from `old` to `new` is a fast-forward: `new`
-/// descends from `old` in `repository`.
-private func isFastForward(from old: git_oid, to new: git_oid, in repository: OpaquePointer?) -> Bool {
-    guard let repository else { return false }
-    var old = old
-    var new = new
-    return git_graph_descendant_of(repository, &new, &old) == 1
-}
-
 private func humanBytes(_ bytes: Int) -> String {
     let kib = 1024.0
     let mib = kib * 1024.0
@@ -524,49 +506,56 @@ private let combinedPushRefTrampoline: git_push_update_reference_cb = {
     let box = Unmanaged<CallbackBox>.fromOpaque(payload).takeUnretainedValue()
     guard box.reporter != nil else { return 0 }
     let refname = String(cString: refnamePtr)
-    let status = statusPtr.map { String(cString: $0) } ?? ""
-    let update = box.reporter!.pushUpdates[Array(refname.utf8)]
+    // As git's receive_status() does, every report on a ref goes to the
+    // ref's first update, the last report winning; a second update to
+    // that ref stays unreported. The lines are written once all are in.
+    let key = Array(refname.utf8)
+    if box.reporter!.reportStatuses[key] == nil {
+        box.reporter!.reportedRefs.append(refname)
+    }
+    box.reporter!.reportStatuses[key] = statusPtr.map { String(cString: $0) } ?? ""
+    // A refused ref doesn't fail the push: libgit2 still updates the
+    // tracking refs of the others, and the caller reports the refusal.
+    return 0
+}
+
+/// git's summary line for a ref the remote reported on, `status` being
+/// its reason for refusing it (empty when it took the update); `nil` for
+/// a ref that was already up to date, which git shows only with `-v`.
+func pushReportLine(refname: String, status: String, reporter: ProgressReporter) -> String? {
+    let update = reporter.pushUpdates[Array(refname.utf8)]
     let destination = shortRefName(refname)
-    let source = box.reporter!.typedSources[Array(refname.utf8)].map(shortRefName)
+    let source = reporter.typedSources[Array(refname.utf8)].map(shortRefName)
         ?? update.map { shortRefName($0.source) } ?? destination
     let refs = source.isEmpty ? destination : "\(source) -> \(destination)"
 
     // git's TRANSPORT_SUMMARY_WIDTH: room for `old...new`.
-    let width = 2 * box.reporter!.abbreviation + 3
-    let line: String
+    let width = 2 * reporter.abbreviation + 3
     if !status.isEmpty {
-        line = pushSummaryLine("!", "[rejected]", "\(refs) (\(status))", width: width)
-    } else if let update, update.newID == nil {
-        line = pushSummaryLine("-", "[deleted]", destination, width: width)
-    } else if var old = update?.oldID, var new = update?.newID {
-        // A ref already up to date gets no line (git shows those only
-        // with `-v`); with nothing else, the push says `Everything
-        // up-to-date`.
-        if git_oid_equal(&old, &new) == 1 { return 0 }
-        let repository = box.reporter!.repository
-        let abbrev = box.reporter!.abbreviation
-        let oldID = abbreviated(old, minimum: abbrev, in: repository)
-        let newID = abbreviated(new, minimum: abbrev, in: repository)
-        if isFastForward(from: old, to: new, in: repository) {
-            line = pushSummaryLine(" ", "\(oldID)..\(newID)", refs, width: width)
-        } else {
-            line = pushSummaryLine(
-                "+", "\(oldID)...\(newID)", "\(refs) (forced update)", width: width)
-        }
-    } else {
-        let kind = refname.hasPrefix("refs/heads/") ? "[new branch]"
-            : refname.hasPrefix("refs/tags/") ? "[new tag]" : "[new reference]"
-        line = pushSummaryLine("*", kind, refs, width: width)
+        return pushSummaryLine("!", "[remote rejected]", "\(refs) (\(status))", width: width)
     }
-    box.reporter!.refLines.append(line)
-    return status.isEmpty ? 0 : -1
+    if let update, update.newID == nil {
+        return pushSummaryLine("-", "[deleted]", destination, width: width)
+    }
+    if var old = update?.oldID, var new = update?.newID {
+        if git_oid_equal(&old, &new) == 1 { return nil }
+        let oldID = abbreviated(old, minimum: reporter.abbreviation, in: reporter.repository)
+        let newID = abbreviated(new, minimum: reporter.abbreviation, in: reporter.repository)
+        if isFastForward(from: old, to: new, in: reporter.repository) {
+            return pushSummaryLine(" ", "\(oldID)..\(newID)", refs, width: width)
+        }
+        return pushSummaryLine("+", "\(oldID)...\(newID)", "\(refs) (forced update)", width: width)
+    }
+    let kind = refname.hasPrefix("refs/heads/") ? "[new branch]"
+        : refname.hasPrefix("refs/tags/") ? "[new tag]" : "[new reference]"
+    return pushSummaryLine("*", kind, refs, width: width)
 }
 
 /// A ref name as git's push summary shows it (`prettify_refname`):
 /// `refs/heads/main` → `main`, `refs/tags/v1` → `v1`,
 /// `refs/remotes/upstream/topic` → `upstream/topic`. Other namespaces
 /// stay fully qualified.
-private func shortRefName(_ refname: String) -> String {
+func shortRefName(_ refname: String) -> String {
     for prefix in ["refs/heads/", "refs/tags/", "refs/remotes/"]
     where refname.hasPrefix(prefix) {
         return String(refname.dropFirst(prefix.count))
@@ -577,7 +566,7 @@ private func shortRefName(_ refname: String) -> String {
 /// One line of git's push summary: ` <flag> <summary> <refs>`, the
 /// summary padded to `width` columns (`TRANSPORT_SUMMARY_WIDTH`, 17 at
 /// the default abbreviation) so the refs line up.
-private func pushSummaryLine(
+func pushSummaryLine(
     _ flag: Character, _ summary: String, _ refs: String, width: Int
 ) -> String {
     let padded = summary.count >= width
@@ -644,35 +633,4 @@ private func isAllZero(_ oid: git_oid) -> Bool {
     return withUnsafeBytes(of: &oid) { bytes in
         bytes.allSatisfy { $0 == 0 }
     }
-}
-
-private func shortSHA(_ oid: git_oid) -> String {
-    var oid = oid
-    let buf = UnsafeMutablePointer<CChar>.allocate(capacity: 41)
-    defer { buf.deallocate() }
-    buf.initialize(repeating: 0, count: 41)
-    _ = git_oid_tostr(buf, 41, &oid)
-    return String(String(cString: buf).prefix(7))
-}
-
-private func stripRemotesPrefix(_ refname: String) -> String {
-    let prefix = "refs/remotes/"
-    return refname.hasPrefix(prefix)
-        ? String(refname.dropFirst(prefix.count))
-        : refname
-}
-
-private func sourceShorthand(_ refname: String) -> String {
-    let prefix = "refs/remotes/"
-    guard refname.hasPrefix(prefix) else { return refname }
-    let trimmed = refname.dropFirst(prefix.count)
-    if let slash = trimmed.firstIndex(of: "/") {
-        return String(trimmed[trimmed.index(after: slash)...])
-    }
-    return String(trimmed)
-}
-
-private func pad(_ s: String, to width: Int) -> String {
-    if s.count >= width { return s + " " }
-    return s + String(repeating: " ", count: width - s.count)
 }

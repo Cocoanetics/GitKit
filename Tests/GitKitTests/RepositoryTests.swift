@@ -326,10 +326,13 @@ struct RepositoryTests {
         try repo.addRemote(name: "origin", url: origin)
         try repo.checkout(ref: headSHA)
         #expect(try repo.currentBranch() == nil)
-        #expect(throws: Libgit2Error.self) {
+        // A detached HEAD isn't a branch to guess a destination from.
+        #expect {
             try repo.push(
                 remote: "origin", refspec: "HEAD:review-fixes",
                 setUpstream: false, progress: { _ in })
+        } throws: { error in
+            (error as? PushRefusedError)?.refusals.first?.hint.last == "'HEAD:refs/heads/review-fixes'?"
         }
         try repo.push(
             remote: "origin", refspec: "HEAD:refs/heads/review-fixes",
@@ -346,11 +349,13 @@ struct RepositoryTests {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         try repo.checkout(ref: headSHA)
 
-        #expect(throws: Libgit2Error.self) {
+        let error = #expect(throws: PushRejectedError.self) {
             try repo.push(
                 remote: "origin", refspec: "HEAD:refs/heads/review-fixes",
                 setUpstream: false, progress: { _ in })
         }
+        #expect(error?.rejections == [.init(remoteRef: "refs/heads/review-fixes",
+                                            reason: .nonFastForward)])
         let protectedSHA = try runGit(["rev-parse", "refs/heads/review-fixes"], in: origin)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         #expect(protectedSHA == advancedSHA)
@@ -411,10 +416,10 @@ struct RepositoryTests {
         do {
             try repo.push(remote: "origin", refspec: "release", setUpstream: false, progress: { _ in })
             Issue.record("expected ambiguous refspec error")
-        } catch let error as Libgit2Error {
-            #expect(error.message == "src refspec release matches more than one")
+        } catch let error as PushRefusedError {
+            #expect(error.refusals.map(\.message) == ["src refspec release matches more than one"])
         } catch {
-            Issue.record("expected Libgit2Error, got \(error)")
+            Issue.record("expected PushRefusedError, got \(error)")
         }
     }
 
