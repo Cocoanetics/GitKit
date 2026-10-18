@@ -90,6 +90,7 @@ extension Repository {
         let pushRefspec = lease == nil
             ? qualifiedRefspec
             : forcePushRefspec(qualifiedRefspec)
+        reporter.repository = repo
         let pushLease = try lease.map {
             try pushLeaseCheck($0, remote: remote, refspec: pushRefspec)
         }
@@ -124,6 +125,10 @@ extension Repository {
             }
         }
 
+        // Nothing to send: git says so instead of printing a summary.
+        if reporter.refLines.isEmpty {
+            reporter.write("Everything up-to-date\n")
+        }
         reporter.flushRefLines()
 
         // libgit2 doesn't have a one-shot "push -u": after a successful

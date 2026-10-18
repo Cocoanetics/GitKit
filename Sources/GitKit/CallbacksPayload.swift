@@ -135,7 +135,8 @@ func withCallbacksPayload<T>(
     let pushRefCB = reporter != nil ? combinedPushRefTrampoline : nil
     let packCB = reporter != nil ? combinedPackProgressTrampoline : nil
     let pushTransferCB = reporter != nil ? combinedPushTransferTrampoline : nil
-    let pushNegotiationCB = pushLease != nil ? combinedPushNegotiationTrampoline : nil
+    let pushNegotiationCB = (reporter != nil || pushLease != nil)
+        ? combinedPushNegotiationTrampoline : nil
     return try body(credCB, sidebandCB, transferCB, updateCB, pushRefCB,
                     packCB, pushTransferCB, pushNegotiationCB, raw)
 }
@@ -460,8 +461,34 @@ private let combinedPushNegotiationTrampoline: git_push_negotiation = {
     updates, len, payload in
     guard let payload else { return 0 }
     let box = Unmanaged<CallbackBox>.fromOpaque(payload).takeUnretainedValue()
+    if box.reporter != nil, let updates {
+        for index in 0..<Int(len) {
+            guard let update = updates[index]?.pointee,
+                  let destination = update.dst_refname else { continue }
+            var old = update.src
+            var new = update.dst
+            box.reporter!.pushUpdates[String(cString: destination)] = ProgressReporter.PushUpdate(
+                source: update.src_refname.map { String(cString: $0) } ?? "",
+                oldID: git_oid_is_zero(&old) == 1 ? nil : old,
+                newID: git_oid_is_zero(&new) == 1 ? nil : new)
+        }
+    }
     guard let pushLease = box.pushLease else { return 0 }
     return pushLease.verify(updates: updates, count: Int(len))
+}
+
+private func shortHex(_ oid: git_oid) -> String {
+    var oid = oid
+    return String(String(cString: git_oid_tostr_s(&oid)).prefix(7))
+}
+
+/// Whether moving a ref from `old` to `new` is a fast-forward: `new`
+/// descends from `old` in `repository`.
+private func isFastForward(from old: git_oid, to new: git_oid, in repository: OpaquePointer?) -> Bool {
+    guard let repository else { return false }
+    var old = old
+    var new = new
+    return git_graph_descendant_of(repository, &new, &old) == 1
 }
 
 private func humanBytes(_ bytes: Int) -> String {
@@ -482,18 +509,43 @@ private let combinedPushRefTrampoline: git_push_update_reference_cb = {
     guard box.reporter != nil else { return 0 }
     let refname = String(cString: refnamePtr)
     let status = statusPtr.map { String(cString: $0) } ?? ""
-    let short = stripHeadsPrefix(refname)
+    let update = box.reporter!.pushUpdates[refname]
+    let destination = stripHeadsPrefix(refname)
+    let source = update.map { stripHeadsPrefix($0.source) } ?? destination
+    let refs = source.isEmpty ? destination : "\(source) -> \(destination)"
 
     let line: String
-    if status.isEmpty {
-        // Real git's push summary doesn't pad the ref column when
-        // there's only one ref — keep it tight to match.
-        line = " * [new branch]      \(short) -> \(short)"
+    if !status.isEmpty {
+        line = pushSummaryLine("!", "[rejected]", "\(refs) (\(status))")
+    } else if let update, update.newID == nil {
+        line = pushSummaryLine("-", "[deleted]", destination)
+    } else if var old = update?.oldID, var new = update?.newID {
+        // A ref already up to date gets no line (git shows those only
+        // with `-v`); with nothing else, the push says `Everything
+        // up-to-date`.
+        if git_oid_equal(&old, &new) == 1 { return 0 }
+        if isFastForward(from: old, to: new, in: box.reporter!.repository) {
+            line = pushSummaryLine(" ", "\(shortHex(old))..\(shortHex(new))", refs)
+        } else {
+            line = pushSummaryLine(
+                "+", "\(shortHex(old))...\(shortHex(new))", "\(refs) (forced update)")
+        }
     } else {
-        line = " ! [rejected]        \(short) -> \(short) (\(status))"
+        let kind = refname.hasPrefix("refs/tags/") ? "[new tag]" : "[new branch]"
+        line = pushSummaryLine("*", kind, refs)
     }
     box.reporter!.refLines.append(line)
     return status.isEmpty ? 0 : -1
+}
+
+/// One line of git's push summary: ` <flag> <summary> <refs>`, the
+/// summary padded to 17 columns (`TRANSPORT_SUMMARY_WIDTH`) so the refs
+/// line up.
+private func pushSummaryLine(_ flag: Character, _ summary: String, _ refs: String) -> String {
+    let padded = summary.count >= 17
+        ? summary
+        : summary + String(repeating: " ", count: 17 - summary.count)
+    return " \(flag) \(padded) \(refs)"
 }
 
 // MARK: Credential builder (extracted from CredentialsBridge so the

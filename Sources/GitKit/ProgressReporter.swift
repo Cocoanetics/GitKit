@@ -54,6 +54,23 @@ struct ProgressReporter {
     /// progress. Real git does the same.
     var refLines: [String] = []
 
+    /// What a push is about to do to each remote ref, keyed by the
+    /// destination ref name — recorded at push negotiation, so the
+    /// summary can print `old..new` like git.
+    var pushUpdates: [String: PushUpdate] = [:]
+    /// The pushing repository, to tell a forced update from a
+    /// fast-forward.
+    var repository: OpaquePointer?
+
+    struct PushUpdate {
+        /// The local ref being pushed, e.g. `refs/heads/main`.
+        let source: String
+        /// The remote ref's current and new object IDs; `nil` for a ref
+        /// being created or deleted.
+        let oldID: git_oid?
+        let newID: git_oid?
+    }
+
     /// `Receiving objects:` / `Writing objects:` last printed percent.
     /// Only re-emit when the integer percent advances, to match real
     /// git's roughly-100-updates-per-phase pacing.
