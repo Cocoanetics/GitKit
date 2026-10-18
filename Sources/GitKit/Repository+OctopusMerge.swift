@@ -73,6 +73,9 @@ public enum OctopusMergeFailure: Sendable, Equatable {
     case notUpToDate(path: String)
     /// `error: Untracked working tree file '<path>' would be overwritten by merge.`
     case untrackedWouldBeOverwritten(path: String)
+    /// `error: Updating '<path>' would lose untracked files in it`: the
+    /// merge puts a file where untracked files sit in a directory.
+    case untrackedFilesInDirectory(path: String)
     /// `Unable to find common commit with <head>`.
     case noCommonCommit(head: String)
     /// `Automated merge did not work.` / `Should not be doing an
@@ -223,7 +226,7 @@ extension Repository {
             let theirTree = try treeOID(ofCommit: oid)
             if !nonFastForward, bases.count == 1, mergedCommits.count == 1, sameOID(base, mergedCommits[0]) {
                 steps.append(OctopusMergeStep(head: name, kind: .fastForward, automatic: nil))
-                if let failure = overwrites(try diffEntries(mergedTree, theirTree).keys, worktree: worktree) {
+                if let failure = overwrites(try diffEntries(mergedTree, theirTree), worktree: worktree) {
                     return OctopusMergeResult(steps: steps, outcome: .failed(failure))
                 }
                 mergedCommits = [oid]
@@ -232,10 +235,15 @@ extension Repository {
             }
 
             nonFastForward = true
-            let baseTree = try treeOID(ofCommit: base)
-            let ours = try diffEntries(baseTree, mergedTree)
-            let theirs = try diffEntries(baseTree, theirTree)
-            if let failure = overwrites(theirs.keys, worktree: worktree) {
+            // With several best common ancestors (criss-cross history),
+            // a side changed a path only if it differs from all of them,
+            // as read-tree takes them; the content merge runs against
+            // their virtual merge, as git's recursive strategy builds it.
+            let baseTrees = try bases.map { try treeOID(ofCommit: $0) }
+            let baseTree = try virtualBase(bases, trees: baseTrees)
+            let ours = try changes(from: baseTrees, virtual: baseTree, to: mergedTree)
+            let theirs = try changes(from: baseTrees, virtual: baseTree, to: theirTree)
+            if let failure = overwrites(theirs, worktree: worktree) {
                 steps.append(OctopusMergeStep(head: name, kind: .merge, automatic: nil))
                 return OctopusMergeResult(steps: steps, outcome: .failed(failure))
             }
@@ -393,11 +401,40 @@ extension Repository {
         }
     }
 
-    private func mergeTrees(base: git_oid, ours: git_oid, theirs: git_oid) throws -> OpaquePointer? {
+    /// The paths `to` changed relative to every tree of `bases`, each
+    /// change taken relative to `virtual`.
+    private func changes(from bases: [git_oid], virtual: git_oid, to tree: git_oid) throws -> [String: Change] {
+        var changes = try diffEntries(virtual, tree)
+        guard bases.count > 1 else { return changes }
+        for base in bases {
+            let changed = try diffEntries(base, tree)
+            changes = changes.filter { changed[$0.key] != nil }
+        }
+        return changes
+    }
+
+    /// The tree to merge against: the one base's, else the merge of all
+    /// of them, conflicts kept as markers (libgit2's virtual base).
+    private func virtualBase(_ bases: [git_oid], trees: [git_oid]) throws -> git_oid {
+        var virtual = trees[0]
+        for (base, tree) in zip(bases.dropFirst(), trees.dropFirst()) {
+            let ancestor = try mergeBases(bases[0], [base]).first.map { try treeOID(ofCommit: $0) }
+            let index = try mergeTrees(base: ancestor, ours: virtual, theirs: tree, virtualBase: true)
+            defer { git_index_free(index) }
+            var oid = git_oid()
+            try check(git_index_write_tree_to(&oid, index, repo))
+            virtual = oid
+        }
+        return virtual
+    }
+
+    private func mergeTrees(base: git_oid?, ours: git_oid, theirs: git_oid, virtualBase: Bool = false) throws
+        -> OpaquePointer? {
         var options = git_merge_options()
         try check(git_merge_options_init(&options, UInt32(GIT_MERGE_OPTIONS_VERSION)))
-        options.flags = 0 // no rename detection, as read-tree and merge-one-file
-        return try withTree(base) { base in
+        // No rename detection, as read-tree and merge-one-file.
+        options.flags = virtualBase ? UInt32(GIT_MERGE_VIRTUAL_BASE.rawValue) : 0
+        func merge(_ base: OpaquePointer?) throws -> OpaquePointer? {
             try withTree(ours) { ours in
                 try withTree(theirs) { theirs in
                     var index: OpaquePointer?
@@ -406,6 +443,8 @@ extension Repository {
                 }
             }
         }
+        guard let base else { return try merge(nil) }
+        return try withTree(base) { try merge($0) }
     }
 
     /// git's index order: byte-wise by path.
@@ -451,7 +490,7 @@ extension Repository {
         guard git_repository_is_bare(repo) == 0 else { return [:] }
         var options = git_diff_options()
         try check(git_diff_options_init(&options, UInt32(GIT_DIFF_OPTIONS_VERSION)))
-        options.flags = GIT_DIFF_INCLUDE_UNTRACKED.rawValue | GIT_DIFF_RECURSE_UNTRACKED_DIRS.rawValue
+        options.flags = UInt32(GIT_DIFF_INCLUDE_UNTRACKED.rawValue) | UInt32(GIT_DIFF_RECURSE_UNTRACKED_DIRS.rawValue)
         var diff: OpaquePointer?
         try check(git_diff_index_to_workdir(&diff, repo, index, &options))
         defer { git_diff_free(diff) }
@@ -467,12 +506,22 @@ extension Repository {
     /// merge step would overwrite, as `read-tree -u -m` refuses it.
     /// Earlier steps would have stopped at any path they changed, so the
     /// working tree as the merge found it is what counts.
-    private func overwrites<S: Sequence>(
-        _ paths: S, worktree: [String: Bool]
-    ) -> OctopusMergeFailure? where S.Element == String {
-        for path in paths.sorted(by: Self.indexOrder) {
-            guard let untracked = worktree[path] else { continue }
-            return untracked ? .untrackedWouldBeOverwritten(path: path) : .notUpToDate(path: path)
+    /// A path the step writes a file to also collides with untracked
+    /// files below it, or with an untracked file where one of its
+    /// directories goes.
+    private func overwrites(_ changes: [String: Change], worktree: [String: Bool]) -> OctopusMergeFailure? {
+        let untracked = worktree.filter(\.value).keys.sorted(by: Self.indexOrder)
+        for (path, change) in changes.sorted(by: { Self.indexOrder($0.key, $1.key) }) {
+            if let isUntracked = worktree[path] {
+                return isUntracked ? .untrackedWouldBeOverwritten(path: path) : .notUpToDate(path: path)
+            }
+            guard change.oid != nil else { continue }
+            if untracked.contains(where: { $0.hasPrefix(path + "/") }) {
+                return .untrackedFilesInDirectory(path: path)
+            }
+            if let file = untracked.first(where: { path.hasPrefix($0 + "/") }) {
+                return .untrackedWouldBeOverwritten(path: file)
+            }
         }
         return nil
     }
