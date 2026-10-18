@@ -136,7 +136,9 @@ extension Repository {
         let (remoteHandle, isConfigured) = try lookupRemote(remote)
         defer { git_remote_free(remoteHandle) }
 
-        let remoteURL = git_remote_url(remoteHandle).map { String(cString: $0) }
+        // git names the push URL, when the remote has one.
+        let remoteURL = (git_remote_pushurl(remoteHandle) ?? git_remote_url(remoteHandle))
+            .map { String(cString: $0) }
         var reporter = ProgressReporter(
             headerURL: remoteURL, direction: .push, output: progress)
         reporter.suppressTransferProgress =

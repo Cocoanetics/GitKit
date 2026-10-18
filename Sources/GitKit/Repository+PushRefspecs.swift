@@ -249,14 +249,14 @@ extension Repository {
         return (refspecs, refusals)
     }
 
-    /// How git names `remote` in its output: a configured remote's URL,
-    /// or the URL or path as given, without the credentials it may carry
-    /// (`https://user:token@host/r` reads `https://host/r`, `git@host:r`
-    /// reads `host:r`).
+    /// How git names `remote` in a push's output: a configured remote's
+    /// push URL (else its URL), or the URL or path as given, without the
+    /// credentials it may carry (`https://user:token@host/r` reads
+    /// `https://host/r`, `git@host:r` reads `host:r`).
     public func displayName(ofRemote remote: String) -> String {
         var url = remote
         if let (handle, _) = try? lookupRemote(remote) {
-            url = git_remote_url(handle).map { String(cString: $0) } ?? remote
+            url = (git_remote_pushurl(handle) ?? git_remote_url(handle)).map { String(cString: $0) } ?? remote
             git_remote_free(handle)
         }
         return ProgressReporter.anonymizedURL(url)

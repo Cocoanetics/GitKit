@@ -81,6 +81,19 @@ struct PushRejectionTests {
         }
     }
 
+    @Test("a push names the remote's push URL, when it has one")
+    func pushURL() throws {
+        let (remote, mine, theirs) = try makeRemoteAndClones()
+        let elsewhere = tmp("pushurl")
+        defer { [remote, mine, theirs, elsewhere].forEach { try? FileManager.default.removeItem(at: $0) } }
+        try runGit(["clone", "-q", "--bare", remote.path, elsewhere.path], in: mine)
+        try runGit(["config", "remote.origin.pushurl", elsewhere.path], in: mine)
+        try runGit(["commit", "-q", "--allow-empty", "-m", "ahead"], in: mine)
+        let (output, _) = try push(mine, ["main"])
+        #expect(output.hasPrefix("To \(elsewhere.path)\n"))
+        #expect(try Repository.open(at: mine).displayName(ofRemote: "origin") == elsewhere.path)
+    }
+
     @Test("work the remote has and this repository doesn't: fetch first")
     func fetchFirst() throws {
         let (remote, mine, theirs) = try makeRemoteAndClones()
