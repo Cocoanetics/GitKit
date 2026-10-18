@@ -135,6 +135,24 @@ struct FetchTagsTests {
         #expect(try tagNames(plain) == ["v1", "v2", "vside"])
     }
 
+    @Test("a tag on nothing fetched isn't followed, lightweight or annotated")
+    func unreachableTagsStayBehind() throws {
+        let (upstream, clone) = try makeUpstreamAndClone()
+        defer { [upstream, clone].forEach { try? FileManager.default.removeItem(at: $0) } }
+        // Tags on a branch the clone doesn't fetch.
+        try runGit(["checkout", "-q", "-b", "hidden"], in: upstream)
+        try runGit(["commit", "-q", "--allow-empty", "-m", "h"], in: upstream)
+        try runGit(["tag", "vhidden"], in: upstream)
+        try runGit(["commit", "-q", "--allow-empty", "-m", "h2"], in: upstream)
+        try runGit(["tag", "-a", "vhidden2", "-m", "h2"], in: upstream)
+        try runGit(["checkout", "-q", "main"], in: upstream)
+        try runGit(["config", "remote.origin.fetch", "+refs/heads/main:refs/remotes/origin/main"], in: clone)
+        let (output, _) = try fetch(clone, tags: nil)
+        #expect(try tagNames(clone) == ["v1", "v2", "v3", "vside"])
+        #expect(!output.contains("vhidden"))
+        #expect(!(try fetchHead(clone)).contains { $0.contains("vhidden") })
+    }
+
     @Test("--no-tags follows none, and overrides tagOpt")
     func noTags() throws {
         let (upstream, clone) = try makeUpstreamAndClone()

@@ -352,6 +352,12 @@ extension Repository {
         if location != nil, let remoteURL {
             try relabelFetchHead(as: ProgressReporter.fetchDisplayURL(remoteURL))
         }
+        // git follows only the tags pointing into what it has once the
+        // fetch is in; libgit2 fetched every tag's objects for that.
+        if tags == nil, !allTags, git_remote_autotag(remoteHandle) == GIT_REMOTE_DOWNLOAD_TAGS_AUTO,
+           effectiveRefspecs.contains(where: Self.storesFetchedRef) {
+            _ = try dropUnfollowableTags(refspecs: effectiveRefspecs, lines: &reporter.fetchLines)
+        }
         var refusedTags: [String] = []
         if !tagsBefore.isEmpty || allTags {
             let remoteRefs = try advertisedRefs(remoteHandle)

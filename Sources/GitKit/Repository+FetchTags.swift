@@ -124,6 +124,89 @@ extension Repository {
         return (refused, excluded)
     }
 
+    /// Drop the tags libgit2 followed that git wouldn't have. git follows
+    /// a tag when what it points at is in the repository once the fetch
+    /// is in (`find_non_local_tags`, then `backfill_tags`); libgit2 asks
+    /// the remote for every tag's objects, so it ends up with, and
+    /// follows, all of them. A followed tag — a `[new tag]` no refspec
+    /// asked for — is kept here only if a ref that isn't a tag, or what
+    /// FETCH_HEAD holds, reaches what it points at. Returns the tags
+    /// dropped.
+    func dropUnfollowableTags(refspecs: [String], lines: inout [FetchSummaryLine]) throws -> [String] {
+        let specs: [OpaquePointer] = refspecs.filter { !$0.hasPrefix("^") }.compactMap { text in
+            var spec: OpaquePointer?
+            return git_refspec_parse(&spec, text, 1) == 0 ? spec : nil
+        }
+        defer { specs.forEach { git_refspec_free($0) } }
+        let followed = lines.filter { line in
+            line.kind == .update && line.summary == "[new tag]"
+                && !specs.contains { git_refspec_src_matches($0, line.remoteRef) == 1 }
+        }
+        guard !followed.isEmpty else { return [] }
+
+        // The tips that count: every ref but the tags, and what FETCH_HEAD
+        // holds but tags.
+        var tips: [git_oid] = []
+        var iterator: UnsafeMutablePointer<git_reference_iterator>?
+        try check(git_reference_iterator_new(&iterator, repo))
+        defer { git_reference_iterator_free(iterator) }
+        while true {
+            var ref: OpaquePointer?
+            let rc = git_reference_next(&ref, iterator)
+            if rc == GIT_ITEROVER.rawValue { break }
+            try check(rc)
+            defer { git_reference_free(ref) }
+            guard let name = git_reference_name(ref), !String(cString: name).hasPrefix("refs/tags/"),
+                  let target = git_reference_target(ref)
+            else { continue }
+            tips.append(target.pointee)
+        }
+        final class Heads { var oids: [git_oid] = [] }
+        let heads = Heads()
+        _ = git_repository_fetchhead_foreach(repo, { name, _, oid, _, payload in
+            // A tag's own entry doesn't vouch for it.
+            guard let payload, let oid,
+                  !(name.map { String(cString: $0).hasPrefix("refs/tags/") } ?? false)
+            else { return 0 }
+            Unmanaged<Heads>.fromOpaque(payload).takeUnretainedValue().oids.append(oid.pointee)
+            return 0
+        }, Unmanaged.passUnretained(heads).toOpaque())
+        tips += heads.oids
+
+        var dropped: [String] = []
+        for line in followed {
+            // A tag of something other than a commit is left as followed.
+            var object: OpaquePointer?
+            guard git_revparse_single(&object, repo, line.localRef + "^{commit}") == 0,
+                  var target = git_object_id(object)?.pointee
+            else { git_object_free(object); continue }
+            git_object_free(object)
+            let reached = tips.contains { tip in var tip = tip; return git_oid_equal(&tip, &target) == 1 }
+                || git_graph_reachable_from_any(repo, &target, tips, tips.count) == 1
+            guard !reached else { continue }
+            try check(git_reference_remove(repo, line.localRef))
+            dropped.append(line.localRef)
+        }
+        lines.removeAll { line in dropped.contains { $0.utf8.elementsEqual(line.localRef.utf8) } }
+        try removeFetchHeadTags(dropped)
+        return dropped
+    }
+
+    /// Take `tags`' not-for-merge lines out of FETCH_HEAD.
+    private func removeFetchHeadTags(_ tags: [String]) throws {
+        guard !tags.isEmpty, let gitDir = git_repository_path(repo) else { return }
+        let url = URL(fileURLWithPath: String(cString: gitDir)).appendingPathComponent("FETCH_HEAD")
+        guard let data = try? Data(contentsOf: url) else { return }
+        let marks = tags.map { Array("\tnot-for-merge\ttag '\(shortRefName($0))' of ".utf8) }
+        var output = Data()
+        for line in data.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: true)
+        where !marks.contains(where: { Array(line).firstRange(of: $0) != nil }) {
+            output.append(contentsOf: line)
+            output.append(UInt8(ascii: "\n"))
+        }
+        try output.write(to: url)
+    }
+
     /// FETCH_HEAD as git writes it for a fetch of all tags: the tags
     /// after what the other refspecs fetched, once each, in the remote's
     /// order (`tags`), and none a negative refspec excludes. libgit2
