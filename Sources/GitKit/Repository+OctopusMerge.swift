@@ -180,8 +180,11 @@ extension Repository {
                 conflictedPaths = try unmergedPaths(merged)
                 keepOurs = automatic.compactMap { path in
                     switch path {
-                    case .addedInBoth(let path, _), .notHandled(let path, _, _, _), .symlink(let path),
-                         .submodule(let path), .addedWithDifferentModes(let path, _, _): return path
+                    // git-merge-one-file's merge of an add/add path, with the
+                    // empty blob there to read, leaves conflict markers.
+                    case .addedInBoth(let path, true), .notHandled(let path, _, _, _), .symlink(let path),
+                         .submodule(let path), .addedWithDifferentModes(let path, _, _),
+                         .deletedWithModeChange(let path): return path
                     default: return nil
                     }
                 }

@@ -10,18 +10,18 @@ import Testing
 @Suite("Repository.octopusMerge")
 struct RepositoryOctopusMergeTests {
 
-    private struct Failure: Error, CustomStringConvertible {
+    struct Failure: Error, CustomStringConvertible {
         let description: String
     }
 
-    private static let identity = [
+    static let identity = [
         "GIT_AUTHOR_NAME": "T", "GIT_AUTHOR_EMAIL": "t@e.com", "GIT_AUTHOR_DATE": "2020-01-01T00:00:00Z",
         "GIT_COMMITTER_NAME": "T", "GIT_COMMITTER_EMAIL": "t@e.com", "GIT_COMMITTER_DATE": "2020-01-01T00:00:00Z"
     ]
 
     /// `git <args>` in `dir`: its exit status and output.
     @discardableResult
-    private func git(
+    func git(
         _ args: [String], in dir: URL, check: Bool = true, date: String? = nil
     ) throws -> (status: Int32, stdout: String) {
         let process = Process()
@@ -44,14 +44,14 @@ struct RepositoryOctopusMergeTests {
         return (process.terminationStatus, stdout.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
-    private func write(_ text: String, to name: String, in dir: URL) throws {
+    func write(_ text: String, to name: String, in dir: URL) throws {
         try Data(text.utf8).write(to: dir.appendingPathComponent(name))
     }
 
     /// `main` one commit past `base`, and branches off `base`: `a` and
     /// `b` change the first and last line of `f`, `x` the first line as
     /// `a` does, but differently, `c` adds `c`.
-    private func makeRepository() throws -> URL {
+    func makeRepository() throws -> URL {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("OctopusMergeTests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -83,7 +83,7 @@ struct RepositoryOctopusMergeTests {
     /// After a merge that gave up: `dir` as it was `before`, and, with a
     /// git that restores what a failed octopus touched (2.54; Linux CI
     /// has 2.34), as the system `git` left `other`.
-    private func expectGaveUp(
+    func expectGaveUp(
         _ dir: URL, before: [String], like other: URL, sourceLocation: SourceLocation = #_sourceLocation
     ) throws {
         #expect(try state(of: dir) == before, sourceLocation: sourceLocation)
@@ -93,7 +93,7 @@ struct RepositoryOctopusMergeTests {
     }
 
     /// Whether the system `git` is at least `major.minor`.
-    private func gitIsAtLeast(_ major: Int, _ minor: Int) throws -> Bool {
+    func gitIsAtLeast(_ major: Int, _ minor: Int) throws -> Bool {
         let version = try git(["--version"], in: FileManager.default.temporaryDirectory).stdout
         let numbers = version.split(separator: " ").dropFirst(2).first?
             .split(separator: ".").prefix(2).compactMap { Int($0) } ?? []
@@ -101,14 +101,14 @@ struct RepositoryOctopusMergeTests {
         return numbers[0] > major || (numbers[0] == major && numbers[1] >= minor)
     }
 
-    private func twin(of dir: URL) throws -> URL {
+    func twin(of dir: URL) throws -> URL {
         let copy = FileManager.default.temporaryDirectory
             .appendingPathComponent("OctopusMergeTwin-\(UUID().uuidString)")
         try FileManager.default.copyItem(at: dir, to: copy)
         return copy
     }
 
-    private func merge(_ heads: [String], in dir: URL, noFastForward: Bool = false) throws -> OctopusMergeResult {
+    func merge(_ heads: [String], in dir: URL, noFastForward: Bool = false) throws -> OctopusMergeResult {
         let repository = try Repository.open(at: dir)
         let reduced = try repository.mergeHeads(reducing: heads)
         return try repository.octopusMerge(
@@ -118,7 +118,7 @@ struct RepositoryOctopusMergeTests {
 
     /// What a merge leaves to compare: HEAD's tree and parents, the
     /// status, and the merge state files.
-    private func state(of dir: URL) throws -> [String] {
+    func state(of dir: URL) throws -> [String] {
         let gitDir = dir.appendingPathComponent(".git")
         var state = [
             try git(["log", "-1", "--format=%T %P"], in: dir).stdout,
@@ -368,7 +368,7 @@ struct RepositoryOctopusMergeTests {
     /// `main` and `side` each merged the other's first commit, `side`
     /// keeping `f` as `base` has it, so they have two best common
     /// ancestors, and each has `f` as one of them has it.
-    private func makeEachSideAsABase() throws -> URL {
+    func makeEachSideAsABase() throws -> URL {
         let dir = try makeRepository()
         try git(["checkout", "-q", "-b", "side", "base"], in: dir)
         try write("s\n", to: "s", in: dir)
@@ -512,163 +512,6 @@ struct RepositoryOctopusMergeTests {
         #expect(throws: Libgit2Error.self) {
             try Repository.open(at: dir).mergeHeads(reducing: ["a", "nope"])
         }
-    }
-}
-
-// Directory/file cases over a file the base has, permissions, and bare
-// repositories.
-extension RepositoryOctopusMergeTests {
-
-    /// Branches off `base` for directory/file cases over a file the base
-    /// has: `modd` changes `f`, `df` replaces it with `f/x`; `m1` and
-    /// `m2` add the same `s`, `m2` executable.
-    private func makeFileOverDirectory() throws -> URL {
-        let dir = try makeRepository()
-        try git(["checkout", "-q", "-b", "modd", "base"], in: dir)
-        try write("changed\n", to: "f", in: dir)
-        try git(["commit", "-q", "-am", "modd"], in: dir)
-        try git(["checkout", "-q", "-b", "df", "base"], in: dir)
-        try git(["rm", "-q", "f"], in: dir)
-        try FileManager.default.createDirectory(at: dir.appendingPathComponent("f"), withIntermediateDirectories: true)
-        try write("x\n", to: "f/x", in: dir)
-        try git(["add", "f"], in: dir)
-        try git(["commit", "-q", "-m", "df"], in: dir)
-        for (branch, executable) in [("m1", false), ("m2", true)] {
-            try git(["checkout", "-q", "-b", branch, "base"], in: dir)
-            try write("same\n", to: "s", in: dir)
-            if executable {
-                try FileManager.default.setAttributes([.posixPermissions: 0o755],
-                                                      ofItemAtPath: dir.appendingPathComponent("s").path)
-            }
-            try git(["add", "s"], in: dir)
-            try git(["commit", "-q", "-m", branch], in: dir)
-        }
-        try git(["checkout", "-q", "-f", "main"], in: dir)
-        try git(["clean", "-qfd"], in: dir)
-        return dir
-    }
-
-    @Test("a file replaced by a directory, as git-merge-one-file takes it", arguments: [
-        (["c", "modd", "df"], [OctopusPathMerge.notHandled(
-            path: "f", base: "", ours: "", theirs: ""), .addedOverDirectory(path: "f/x", files: [])]),
-        (["df", "c"], [OctopusPathMerge.removed(path: "f")])
-    ])
-    func fileReplacedByDirectory(heads: [String], last: [OctopusPathMerge]) throws {
-        let dir = try makeFileOverDirectory()
-        let other = try twin(of: dir)
-        let result = try merge(heads, in: dir)
-        _ = try git(["merge", "-q", "-m", "Merge branches"] + heads, in: other, check: false)
-        // Object names aside, the paths and what became of them.
-        let automatic = result.steps.last?.automatic?.map { path -> OctopusPathMerge in
-            guard case .notHandled(let path, _, _, _) = path else { return path }
-            return .notHandled(path: path, base: "", ours: "", theirs: "")
-        }
-        #expect(automatic == last)
-        #expect(try state(of: dir) == state(of: other))
-        #expect(!FileManager.default.fileExists(atPath: dir.appendingPathComponent("f~HEAD").path))
-    }
-
-    @Test("the same content added with different modes is a permissions conflict")
-    func addedWithDifferentModes() throws {
-        let dir = try makeFileOverDirectory()
-        let other = try twin(of: dir)
-        let result = try merge(["c", "m1", "m2"], in: dir)
-        #expect(try git(["merge", "-q", "-m", "Merge branches", "c", "m1", "m2"], in: other, check: false).status == 1)
-        #expect(result.steps.last?.automatic == [.addedWithDifferentModes(path: "s", ours: "100644", theirs: "100755")])
-        #expect(try state(of: dir) == state(of: other))
-    }
-
-    @Test("a file deleted from the work tree is up to date: the merge deletes or writes it",
-          arguments: [["c", "df"], ["c", "modd"], ["c", "modd", "df"], ["c", "df", "modd"]])
-    func fileDeletedFromWorkTree(heads: [String]) throws {
-        let dir = try makeFileOverDirectory()
-        try FileManager.default.removeItem(at: dir.appendingPathComponent("f"))
-        let other = try twin(of: dir)
-        let result = try merge(heads, in: dir)
-        _ = try git(["merge", "-q", "-m", "Merge branches"] + heads, in: other, check: false)
-        if case .failed = result.outcome { Issue.record("expected the merge to go on, got \(result.outcome)") }
-        #expect(try state(of: dir) == state(of: other))
-    }
-
-    @Test("merges through a revert or a bisect, as git does", arguments: ["REVERT_HEAD", "BISECT_LOG"])
-    func mergesThroughOtherOperations(file: String) throws {
-        let dir = try makeRepository()
-        try Data((try git(["rev-parse", "c"], in: dir).stdout + "\n").utf8)
-            .write(to: dir.appendingPathComponent(".git/" + file))
-        let other = try twin(of: dir)
-        let result = try merge(["a", "b"], in: dir)
-        try git(["merge", "-q", "-m", "Merge branches", "a", "b"], in: other)
-        guard case .mergeCommit = result.outcome else {
-            Issue.record("expected a merge commit, got \(result.outcome)"); return
-        }
-        #expect(try state(of: dir) == state(of: other))
-    }
-
-    @Test("removes a symbolic link the merge deletes, even one pointing nowhere")
-    func removesDanglingSymlink() throws {
-        let dir = try makeRepository()
-        try git(["checkout", "-q", "-b", "link", "base"], in: dir)
-        try FileManager.default.createSymbolicLink(
-            atPath: dir.appendingPathComponent("dl").path, withDestinationPath: "nowhere")
-        try git(["add", "dl"], in: dir)
-        try git(["commit", "-q", "-m", "link"], in: dir)
-        try git(["checkout", "-q", "-b", "unlink"], in: dir)
-        try git(["rm", "-q", "dl"], in: dir)
-        try git(["commit", "-q", "-m", "unlink"], in: dir)
-        try git(["checkout", "-q", "link"], in: dir)
-        let other = try twin(of: dir)
-        _ = try merge(["unlink", "c"], in: dir)
-        try git(["merge", "-q", "-m", "Merge branches", "unlink", "c"], in: other)
-        #expect(try state(of: dir) == state(of: other))
-        let link = dir.appendingPathComponent("dl").path
-        #expect((try? FileManager.default.destinationOfSymbolicLink(atPath: link)) == nil)
-    }
-
-    @Test("a mode only one side changed fails the content merge, as git-merge-one-file does",
-          arguments: [(false, false), (true, false), (false, true)])
-    func permissionsConflict(executableOurs: Bool, conflictingContent: Bool) throws {
-        let dir = try makeRepository()
-        func branch(_ name: String, _ text: String, executable: Bool) throws {
-            try git(["checkout", "-q", "-b", name, "base"], in: dir)
-            try write(text, to: "f", in: dir)
-            try FileManager.default.setAttributes([.posixPermissions: executable ? 0o755 : 0o644],
-                                                  ofItemAtPath: dir.appendingPathComponent("f").path)
-            try git(["commit", "-q", "-am", name], in: dir)
-        }
-        try branch("p1", "1p\n2\n3\n4\n5\n6\n7\n", executable: executableOurs)
-        try branch("p2", conflictingContent ? "1q\n2\n3\n4\n5\n6\n7\n" : "1\n2\n3\n4\n5\n6\n7p\n",
-                   executable: !executableOurs)
-        try git(["checkout", "-q", "main"], in: dir)
-        let heads = executableOurs ? ["c", "p2", "p1"] : ["c", "p1", "p2"]
-        let other = try twin(of: dir)
-        let result = try merge(heads, in: dir)
-        #expect(try git(["merge", "-q", "-m", "Merge branches"] + heads, in: other, check: false).status == 1)
-        guard case .permissionsConflict(let path, _, _, _, let content)? = result.steps.last?.automatic?.first else {
-            Issue.record("expected a permissions conflict, got \(String(describing: result.steps.last))"); return
-        }
-        #expect(path == "f" && content == conflictingContent)
-        #expect(try state(of: dir) == state(of: other))
-        if !conflictingContent {
-            #expect(try String(contentsOf: dir.appendingPathComponent("f"), encoding: .utf8)
-                    == String(contentsOf: other.appendingPathComponent("f"), encoding: .utf8))
-        }
-        let mode = { (url: URL) in
-            try FileManager.default.attributesOfItem(atPath: url.appendingPathComponent("f").path)[.posixPermissions]
-                as? Int
-        }
-        #expect(try mode(dir) == mode(other))
-    }
-
-    @Test("refuses a bare repository before anything changes")
-    func refusesBare() throws {
-        let dir = try makeRepository()
-        let bare = FileManager.default.temporaryDirectory.appendingPathComponent("OctopusBare-\(UUID().uuidString)")
-        try git(["clone", "-q", "--bare", dir.path, bare.path], in: dir)
-        let repository = try Repository.open(at: bare)
-        #expect(throws: Libgit2Error.self) {
-            try repository.octopusMerge(heads: ["a", "b"], message: "Merge", env: Self.identity)
-        }
-        #expect(!FileManager.default.fileExists(atPath: bare.appendingPathComponent("ORIG_HEAD").path))
     }
 }
 #endif

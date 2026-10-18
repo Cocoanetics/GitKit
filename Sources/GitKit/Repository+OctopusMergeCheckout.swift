@@ -96,6 +96,15 @@ extension Repository {
         // git-merge-one-file leaves these with our side's content.
         // A merge that failed only on modes leaves its content.
         for (path, oid) in mergedContent { try write(oid, to: path) }
+        // An unmerged path our side deleted stays deleted in the work
+        // tree, as read-tree -u left it (a directory there stays).
+        for path in try unmergedPaths(merged) {
+            var ancestor, ours, theirs: UnsafePointer<git_index_entry>?
+            guard git_index_conflict_get(&ancestor, &ours, &theirs, merged, path) == 0, ours == nil else { continue }
+            let file = root.appendingPathComponent(path).path
+            let type = (try? FileManager.default.attributesOfItem(atPath: file))?[.type] as? FileAttributeType
+            if type == .typeRegular || type == .typeSymbolicLink { try FileManager.default.removeItem(atPath: file) }
+        }
         // An unmerged file keeps our side's mode, as read-tree -u wrote it.
         for path in try unmergedPaths(merged) {
             var ancestor, ours, theirs: UnsafePointer<git_index_entry>?

@@ -114,6 +114,9 @@ extension Repository {
                                                            theirs: String(their.mode, radix: 8)))
                 } else if our != nil, their != nil {
                     result.append(.addedInBoth(path: path, emptyBlobMissing: emptyBlobMissing))
+                } else if let ancestor, let kept = our ?? their, kept.hex == ancestor.hex {
+                    // Deleted on one side, only its mode changed on the other.
+                    result.append(.deletedWithModeChange(path: path))
                 } else {
                     result.append(.notHandled(path: path, base: ancestor?.hex ?? "",
                                               ours: our?.hex ?? "", theirs: their?.hex ?? ""))
