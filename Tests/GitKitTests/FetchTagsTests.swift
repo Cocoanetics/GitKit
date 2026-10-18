@@ -288,6 +288,32 @@ struct FetchTagsTests {
         }
     }
 
+    @Test("a negative refspec keeps --tags off a tag an explicit refspec still stores")
+    func excludedButExplicit() throws {
+        let (upstream, clone) = try makeUpstreamAndClone()
+        defer { [upstream, clone].forEach { try? FileManager.default.removeItem(at: $0) } }
+        let (output, error) = try fetch(
+            clone, ["+refs/heads/main:refs/tags/v1", "^refs/tags/v1"], tags: .all)
+        #expect(error == nil)
+        #expect(try runGit(["rev-parse", "v1"], in: clone) == runGit(["rev-parse", "main"], in: upstream))
+        #expect(output.components(separatedBy: " -> v1\n").count == 2)
+    }
+
+    @Test("a short source is the ref git picks for it: a tag before a branch")
+    func shortSourcePrefersTag() throws {
+        let (upstream, clone) = try makeUpstreamAndClone()
+        defer { [upstream, clone].forEach { try? FileManager.default.removeItem(at: $0) } }
+        try runGit(["tag", "foo", "main"], in: upstream)
+        try runGit(["branch", "foo", "main"], in: upstream)
+        _ = try fetch(clone, ["refs/tags/foo:refs/tags/x"], tags: .off)
+        try runGit(["checkout", "-q", "foo"], in: upstream)
+        try runGit(["commit", "-q", "--allow-empty", "-m", "f"], in: upstream)
+        try runGit(["checkout", "-q", "main"], in: upstream)
+        let (_, error) = try fetch(clone, ["foo:refs/tags/x"], tags: .off)
+        #expect(error == nil)
+        #expect(try runGit(["rev-parse", "x"], in: clone) == runGit(["rev-parse", "refs/tags/foo"], in: upstream))
+    }
+
     @Test("a negative refspec keeps a tag out of --tags")
     func negativeRefspec() throws {
         let (upstream, clone) = try makeUpstreamAndClone()

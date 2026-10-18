@@ -138,12 +138,11 @@ extension Repository {
         }
         /// The local tags the fetch's refspecs map remote ref `name`
         /// onto, each with whether a forced refspec does.
-        func tags(for name: String) -> [(tag: String, forced: Bool)] {
+        func tags(for name: String, explicitOnly: Bool = false) -> [(tag: String, forced: Bool)] {
             specs.compactMap { spec in
-                // A short source (`main:refs/tags/x`) fetches the ref git
-                // expands it to.
-                guard !spec.text.hasPrefix("^"), let dst = git_refspec_dst(spec.spec), dst.pointee != 0,
-                      Self.refspec(spec.spec, fetches: name)
+                guard !spec.text.hasPrefix("^"), !(explicitOnly && spec.text == Self.allTagsRefspec),
+                      let dst = git_refspec_dst(spec.spec), dst.pointee != 0,
+                      fetches(spec.spec, name)
                 else { return nil }
                 let tag: String
                 if let source = git_refspec_src(spec.spec), String(cString: source).contains("*") {
@@ -159,6 +158,19 @@ extension Repository {
                 return tag.hasPrefix("refs/tags/") ? (tag, git_refspec_force(spec.spec) == 1) : nil
             }
         }
+        /// Whether `spec` fetches remote ref `name`. A short source
+        /// (`main:refs/tags/x`) fetches the one ref git expands it to,
+        /// the first of its spellings the remote has (`refs/tags/foo`
+        /// before `refs/heads/foo`, as `ref_rev_parse_rules` orders them).
+        func fetches(_ spec: OpaquePointer, _ name: String) -> Bool {
+            guard let source = git_refspec_src(spec).map({ String(cString: $0) }),
+                  !source.contains("*"), !source.hasPrefix("refs/")
+            else { return Self.refspec(spec, fetches: name) }
+            let resolved = [source, "refs/\(source)", "refs/tags/\(source)", "refs/heads/\(source)",
+                            "refs/remotes/\(source)", "refs/remotes/\(source)/HEAD"]
+                .first { remoteRefs.object(of: $0) != nil }
+            return resolved.map { $0.utf8.elementsEqual(name.utf8) } ?? false
+        }
         /// Put `tag` back as `before` had it, or gone if it had none.
         func restore(_ tag: String) throws {
             var now = git_oid()
@@ -173,13 +185,35 @@ extension Repository {
             }
         }
 
+        // The local tags the explicit refspecs store into, from any ref.
+        let explicitTags = Set(remoteRefs.names.flatMap { name in
+            tags(for: name, explicitOnly: true).map { Array($0.tag.utf8) }
+        })
         var refused: [String] = []
         var excluded: [String] = []
         for name in remoteRefs.names {
             guard var remote = remoteRefs.object(of: name) else { continue }
             if allTags, name.hasPrefix("refs/tags/"), isExcluded(name) {
-                try restore(name)
-                lines.removeAll { $0.localRef.utf8.elementsEqual(name.utf8) }
+                // Only `--tags`' own mapping is excluded: what an explicit
+                // refspec stores there stays.
+                if !explicitTags.contains(Array(name.utf8)) {
+                    try restore(name)
+                    lines.removeAll { $0.localRef.utf8.elementsEqual(name.utf8) }
+                } else if let source = remoteRefs.names.first(where: { source in
+                    tags(for: source, explicitOnly: true).contains { $0.tag.utf8.elementsEqual(name.utf8) }
+                }), var value = remoteRefs.object(of: source) {
+                    // libgit2 ran the tag itself over it too: the explicit
+                    // source's value goes back, with one line for it.
+                    var ref: OpaquePointer?
+                    try check(git_reference_create(&ref, repo, name, &value, 1, nil))
+                    git_reference_free(ref)
+                    var seen = false
+                    lines.removeAll { line in
+                        guard line.localRef.utf8.elementsEqual(name.utf8) else { return false }
+                        defer { seen = true }
+                        return seen || !line.remoteRef.utf8.elementsEqual(source.utf8)
+                    }
+                }
                 excluded.append(name)
                 continue
             }
@@ -187,9 +221,17 @@ extension Repository {
             // Each tag the ref goes to is settled on its own; a forced
             // refspec to that same tag lets it move.
             for tag in mapped.map(\.tag) where !mapped.contains(where: { $0.tag == tag && $0.forced }) {
-                guard var old = before[Array(tag.utf8)], git_oid_equal(&old, &remote) == 0,
-                      !refused.contains(tag)
-                else { continue }
+                guard var old = before[Array(tag.utf8)], !refused.contains(tag) else { continue }
+                guard git_oid_equal(&old, &remote) == 0 else {
+                    // Up to date, as git sees it; libgit2 may have read a
+                    // short source as another ref and moved the tag.
+                    var now = git_oid()
+                    if git_reference_name_to_id(&now, repo, tag) == 0, git_oid_equal(&now, &old) == 0 {
+                        try restore(tag)
+                        lines.removeAll { $0.localRef.utf8.elementsEqual(tag.utf8) }
+                    }
+                    continue
+                }
                 try restore(tag)
                 lines.removeAll { $0.localRef.utf8.elementsEqual(tag.utf8) }
                 lines.append(.init(
