@@ -159,6 +159,28 @@ struct PushRejectionTests {
                 == "https://example.com/r.git")
     }
 
+    @Test("a deletion names the remote ref as git finds it")
+    func shortDeletions() throws {
+        let (remote, mine, theirs) = try makeRemoteAndClones()
+        defer { [remote, mine, theirs].forEach { try? FileManager.default.removeItem(at: $0) } }
+        try runGit(["push", "-q", "origin", "main:dev", "main:keep"], in: mine)
+        let repo = try Repository.open(at: mine)
+
+        let log = PushLog()
+        try repo.push(remote: "origin", refspecs: [":dev"], setUpstream: false,
+                      progress: { log.append($0) })
+        #expect(log.text.hasSuffix(" - [deleted]         dev\n"))
+        #expect(throws: Failure.self) { try runGit(["rev-parse", "--verify", "dev"], in: remote) }
+
+        // Nothing to delete, or two sources for one ref: refused up front.
+        for refspecs in [[":nope"], [":keep", "main:refs/heads/keep"]] {
+            #expect(throws: Libgit2Error.self, "\(refspecs)") {
+                try repo.push(remote: "origin", refspecs: refspecs, setUpstream: false, progress: { _ in })
+            }
+        }
+        #expect(try runGit(["rev-parse", "keep"], in: remote) == runGit(["rev-parse", "main"], in: remote))
+    }
+
     @Test("the refs git accepts still go, and get their upstream")
     func partialPush() throws {
         let (remote, mine, theirs) = try makeRemoteAndClones()

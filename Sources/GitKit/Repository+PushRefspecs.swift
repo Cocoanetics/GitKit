@@ -176,6 +176,31 @@ extension Repository {
         return refs
     }
 
+    /// A deletion (`:dst`) with its destination spelled out the way git
+    /// finds it among the remote's refs (`ref_rev_parse_rules`): `:dev`
+    /// deletes `refs/heads/dev`. Like git, this refuses a name that
+    /// matches no remote ref, or both a branch and a tag.
+    func qualifiedDeletion(_ refspec: String, remoteRefs: RemoteRefs) throws -> String {
+        let body = Self.unforced(refspec)
+        guard body.hasPrefix(":"), body.count > 1 else { return refspec }
+        let name = String(body.dropFirst())
+        guard !name.hasPrefix("refs/") else { return refspec }
+        let matches = [name, "refs/\(name)", "refs/tags/\(name)", "refs/heads/\(name)",
+                       "refs/remotes/\(name)", "refs/remotes/\(name)/HEAD"]
+            .filter { remoteRefs.object(of: $0) != nil }
+        guard let full = matches.first else {
+            throw Libgit2Error(
+                code: GIT_ENOTFOUND.rawValue, klass: Int32(GIT_ERROR_REFERENCE.rawValue),
+                message: "unable to delete '\(name)': remote ref does not exist")
+        }
+        guard matches.count == 1 else {
+            throw Libgit2Error(
+                code: GIT_EAMBIGUOUS.rawValue, klass: Int32(GIT_ERROR_REFERENCE.rawValue),
+                message: "dst refspec \(name) matches more than one")
+        }
+        return (refspec.hasPrefix("+") ? "+:" : ":") + full
+    }
+
     /// `refspec` without its `+`.
     static func unforced(_ refspec: String) -> String {
         refspec.hasPrefix("+") ? String(refspec.dropFirst()) : refspec

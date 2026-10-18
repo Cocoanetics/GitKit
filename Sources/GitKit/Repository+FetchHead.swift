@@ -76,8 +76,8 @@ extension Repository {
         // A ref a source-only refspec fetched gets its FETCH_HEAD line,
         // whatever else fetched it too (FETCH_HEAD lists it once per
         // refspec; git shows it once).
-        var shown = Set<String>()
-        for entry in entries where shown.insert(entry.name).inserted {
+        var shown = Set<[UInt8]>()  // ref names as bytes, as git compares them
+        for entry in entries where shown.insert(Array(entry.name.utf8)).inserted {
             guard let refspec = fetcher(of: entry.name, mapped: false) else { continue }
             let (kind, what) = Self.fetchHeadDescription(of: entry.name)
             ranked.append(.init(rank: entry.merge ? 1 : 2, refspec: refspec, key: entry.name, line: FetchSummaryLine(
