@@ -154,7 +154,9 @@ struct PushRejectionTests {
         for (refspecs, destination) in [
             (["main:refs/heads/main", "dev:refs/heads/main"], "refs/heads/main"),
             (["main:refs/heads/x", "dev:refs/heads/x"], "refs/heads/x"),
-            (["HEAD:refs/heads/y", "main:refs/heads/y"], "refs/heads/y")
+            (["HEAD:refs/heads/y", "main:refs/heads/y"], "refs/heads/y"),
+            // Even when a negative refspec drops both, and the rest would go.
+            (["main:refs/heads/q", "dev:refs/heads/q", "^refs/heads/q", "dev:refs/heads/side"], "refs/heads/q")
         ] {
             #expect {
                 try repo.push(remote: "origin", refspecs: refspecs, setUpstream: false, progress: { _ in })
@@ -164,7 +166,8 @@ struct PushRejectionTests {
         }
         #expect(try runGit(["rev-parse", "main"], in: remote) == before)
         #expect(try runGit(["for-each-ref", "--format=%(refname)"], in: remote)
-                .split(separator: "\n").allSatisfy { !["refs/heads/x", "refs/heads/y"].contains(String($0)) })
+                .split(separator: "\n")
+                .allSatisfy { !["refs/heads/x", "refs/heads/y", "refs/heads/side"].contains(String($0)) })
         #expect(repo.displayName(ofRemote: "origin") == remote.path)
         #expect(repo.displayName(ofRemote: "https://me:secret@example.com/r.git")
                 == "https://example.com/r.git")

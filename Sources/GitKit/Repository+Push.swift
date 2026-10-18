@@ -190,6 +190,16 @@ extension Repository {
                 // A deletion names the remote ref as git finds it among
                 // the remote's refs: `:dev` deletes `refs/heads/dev`.
                 plan.explicit = try plan.explicit.map { try qualifiedDeletion($0, remoteRefs: remoteRefs) }
+                // git refuses two explicit refspecs to one ref before
+                // sending anything (`match_explicit`), even when a
+                // negative refspec would drop both; patterns never collide.
+                if let duplicate = duplicatedDestination(in: plan.explicit) {
+                    git_remote_disconnect(remoteHandle)
+                    throw Libgit2Error(
+                        code: GIT_EINVALIDSPEC.rawValue,
+                        klass: Int32(GIT_ERROR_REFERENCE.rawValue),
+                        message: "dst ref \(duplicate) receives from more than one src")
+                }
                 let pushRefspecs = try expandedPushRefspecs(plan, remoteRefs: remoteRefs.names)
                 guard !pushRefspecs.isEmpty else {
                     git_remote_disconnect(remoteHandle)
@@ -197,15 +207,6 @@ extension Repository {
                     // of the remote's refs either.
                     let common = remoteRefs.names.contains { !plan.excludes($0) }
                     return common ? .nothingToSend : .noRefsInCommon
-                }
-                // git refuses two updates to one ref before sending
-                // anything (`match_explicit`).
-                if let duplicate = duplicatedDestination(in: pushRefspecs) {
-                    git_remote_disconnect(remoteHandle)
-                    throw Libgit2Error(
-                        code: GIT_EINVALIDSPEC.rawValue,
-                        klass: Int32(GIT_ERROR_REFERENCE.rawValue),
-                        message: "dst ref \(duplicate) receives from more than one src")
                 }
                 // As git does, leave out the updates its rules refuse and
                 // push the rest; libgit2 would fail the whole push.
