@@ -93,6 +93,9 @@ struct ProgressReporter {
     /// The updates the remote refused, with its reasons.
     var remoteRejections: [PushRejectedError.Rejection] = []
 
+    /// Whether a fetch tells forced updates from fast-forwards
+    /// (`fetch.showForcedUpdates`, on unless configured off).
+    var showForcedUpdates = true
     /// The fetch's lines, in the order to print them once ordered.
     var fetchLines: [FetchSummaryLine] = []
 

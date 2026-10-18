@@ -47,6 +47,21 @@ struct FetchSummaryTests {
         return text
     }
 
+    /// The system `git` without this suite's `-c` options, so a
+    /// repository's own config decides.
+    private func runGitIgnoringOptions(_ args: [String], in dir: URL) throws -> String {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        p.arguments = ["git"] + args
+        p.currentDirectoryURL = dir
+        let out = Pipe()
+        p.standardOutput = out; p.standardError = out
+        try p.run()
+        let data = (try? out.fileHandleForReading.readToEnd()) ?? Data()
+        p.waitUntilExit()
+        return String(decoding: data, as: UTF8.self)
+    }
+
     private struct Failure: Error, CustomStringConvertible {
         let message: String
         init(_ m: String) { self.message = m }
@@ -115,9 +130,22 @@ struct FetchSummaryTests {
         try runGit(["push", "-q", "--force", "origin", "main", "dev", "a-much-longer-branch-name",
                     "v1", ":gone"], in: work)
 
+        // Both clones keep a copy to fetch into once more, with forced
+        // updates not told apart (fetch.showForcedUpdates=false).
+        let gitCopy = tmp("git-copy"), kitCopy = tmp("kit-copy")
+        defer { [gitCopy, kitCopy].forEach { try? FileManager.default.removeItem(at: $0) } }
+        try FileManager.default.copyItem(at: git, to: gitCopy)
+        try FileManager.default.copyItem(at: kit, to: kitCopy)
+
         let expected = try runGit(["fetch", "--prune", "origin"], in: git)
         let output = try gitKitFetch(kit, prune: true)
         #expect(output == expected)
+
+        for clone in [gitCopy, kitCopy] {
+            try runGit(["config", "fetch.showForcedUpdates", "false"], in: clone)
+        }
+        let unforced = try runGitIgnoringOptions(["fetch", "origin"], in: gitCopy)
+        #expect(try gitKitFetch(kitCopy) == unforced)
     }
 
     @Test("a ref fetched to FETCH_HEAD alone, with its tracking ref updated")

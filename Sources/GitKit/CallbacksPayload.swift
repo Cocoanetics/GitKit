@@ -402,7 +402,9 @@ private func fetchLine(
     }
     let oldID = abbreviated(old, minimum: reporter.abbreviation, in: reporter.repository)
     let newID = abbreviated(new, minimum: reporter.abbreviation, in: reporter.repository)
-    if isFastForward(from: old, to: new, in: reporter.repository) {
+    // With fetch.showForcedUpdates off, git skips the ancestry walk and
+    // shows every update as a fast-forward.
+    if !reporter.showForcedUpdates || isFastForward(from: old, to: new, in: reporter.repository) {
         return .init(kind: .update, flag: " ", summary: "\(oldID)..\(newID)",
                      remoteRef: remoteRef, remote: remote, localRef: refname, local: local)
     }

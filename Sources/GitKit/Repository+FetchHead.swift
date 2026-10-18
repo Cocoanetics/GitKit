@@ -72,6 +72,15 @@ extension Repository {
         return refspec.index(after: colon) < refspec.endIndex
     }
 
+    /// A boolean config value as git reads one (`true`/`yes`/`on`/`1`,
+    /// `false`/`no`/`off`/`0`), or `nil` when unset or not a boolean.
+    func configFlag(_ name: String) -> Bool? {
+        guard let value = try? configGet(name)?.lowercased() else { return nil }
+        if ["true", "yes", "on", "1", ""].contains(value) { return true }
+        if ["false", "no", "off", "0"].contains(value) { return false }
+        return nil
+    }
+
     /// What the remote is configured to fetch (`remote.<name>.fetch`).
     func configuredFetchRefspecs(_ remote: OpaquePointer?) throws -> [String] {
         var array = git_strarray()

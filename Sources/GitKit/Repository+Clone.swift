@@ -254,6 +254,15 @@ extension Repository {
             ProgressReporter.isLocalURL(remoteURL)
         reporter.repository = repo
         reporter.abbreviation = summaryAbbreviation()
+        reporter.showForcedUpdates = configFlag("fetch.showForcedUpdates") ?? true
+        if !reporter.showForcedUpdates, configFlag("advice.fetchShowForcedUpdates") ?? true {
+            reporter.write("""
+                warning: fetch normally indicates which branches had a forced update,
+                but that check has been disabled; to re-enable, use '--show-forced-updates'
+                flag or run 'git config fetch.showForcedUpdates true'
+
+                """)
+        }
         let effectiveRefspecs = refspecs.isEmpty
             ? try configuredFetchRefspecs(remoteHandle) : refspecs
 
