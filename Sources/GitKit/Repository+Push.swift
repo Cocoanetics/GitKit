@@ -188,18 +188,15 @@ extension Repository {
                     remoteHandle, GIT_DIRECTION_PUSH, &callbacks, nil, nil))
                 let remoteRefs = try advertisedRefs(remoteHandle)
                 // A deletion names the remote ref as git finds it among
-                // the remote's refs: `:dev` deletes `refs/heads/dev`.
-                plan.explicit = try plan.explicit.map { try qualifiedDeletion($0, remoteRefs: remoteRefs) }
-                // git refuses two explicit refspecs to one ref before
-                // sending anything (`match_explicit`), even when a
-                // negative refspec would drop both; patterns never collide.
-                if let duplicate = duplicatedDestination(in: plan.explicit) {
+                // the remote's refs (`:dev` deletes `refs/heads/dev`). git
+                // refuses a deletion of nothing, and two explicit refspecs
+                // to one ref, before sending anything, listing every one.
+                let matched = matchedExplicitRefspecs(plan.explicit, remoteRefs: remoteRefs)
+                if let error = Libgit2Error(listing: matched.refusals) {
                     git_remote_disconnect(remoteHandle)
-                    throw Libgit2Error(
-                        code: GIT_EINVALIDSPEC.rawValue,
-                        klass: Int32(GIT_ERROR_REFERENCE.rawValue),
-                        message: "dst ref \(duplicate) receives from more than one src")
+                    throw error
                 }
+                plan.explicit = matched.refspecs
                 let pushRefspecs = try expandedPushRefspecs(plan, remoteRefs: remoteRefs.names)
                 guard !pushRefspecs.isEmpty else {
                     git_remote_disconnect(remoteHandle)

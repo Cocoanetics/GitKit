@@ -88,6 +88,9 @@ extension Repository {
     /// a ref the way the CLI accepts them (`main`, `HEAD:review`).
     func pushPlan(for refspecs: [String]) throws -> PushPlan {
         var plan = PushPlan()
+        // git reports every source that matches nothing (or more than
+        // one ref) once all refspecs have parsed (check_push_refs).
+        var unmatched: [Libgit2Error] = []
         for refspec in refspecs {
             if refspec.hasPrefix("^") {
                 // As in git: a ref name or a pattern, without a
@@ -105,7 +108,13 @@ extension Repository {
             } else if body.contains("*") {
                 plan.patterns.append(try pushPattern(body, force: force))
             } else {
-                let qualified = try qualifiedPushRefspec(refspec)
+                let qualified: String
+                do {
+                    qualified = try qualifiedPushRefspec(refspec)
+                } catch let error as Libgit2Error where error.message.hasPrefix("src refspec ") {
+                    unmatched.append(error)
+                    continue
+                }
                 plan.explicit.append(qualified)
                 if let typed = typedPushSource(refspec) {
                     plan.typedSourcesByRefspec[Array(Self.unforced(qualified).utf8)] = typed
@@ -118,6 +127,7 @@ extension Repository {
                 }
             }
         }
+        if let error = Libgit2Error(listing: unmatched) { throw error }
         return plan
     }
 
@@ -125,9 +135,9 @@ extension Repository {
     /// ref a pattern matches, then the branches the matching refspec
     /// pairs up with `remoteRefs`. As in git, a pattern or the matching
     /// refspec leaves alone a destination something else is already
-    /// being pushed to, while two explicit refspecs to one ref stay, for
-    /// ``duplicatedDestination(in:)`` to refuse. A negative refspec drops
-    /// every update to a ref it names.
+    /// being pushed to (two explicit refspecs to one ref never get here:
+    /// ``matchedExplicitRefspecs(_:remoteRefs:)`` refuses them). A
+    /// negative refspec drops every update to a ref it names.
     func expandedPushRefspecs(_ plan: PushPlan, remoteRefs: [String]?) throws -> [String] {
         var refspecs = plan.explicit
         // Ref names as bytes, as git compares them.
@@ -206,16 +216,37 @@ extension Repository {
         refspec.hasPrefix("+") ? String(refspec.dropFirst()) : refspec
     }
 
-    /// A destination two of `refspecs` push to, which git refuses before
-    /// sending anything (`match_explicit`), whether or not the remote has
-    /// the ref and whether or not the sources differ.
-    func duplicatedDestination(in refspecs: [String]) -> String? {
-        var seen = Set<[UInt8]>()  // ref names as bytes, as git compares them
-        for refspec in refspecs {
-            guard let destination = destinationRefName(fromPushRefspec: refspec) else { continue }
-            if !seen.insert(Array(destination.utf8)).inserted { return destination }
+    /// The explicit refspecs as the remote's refs settle them, the way
+    /// git matches them before sending anything (`match_explicit_refs`):
+    /// a deletion spelled out (``qualifiedDeletion(_:remoteRefs:)``), and
+    /// every refusal in refspec order — a deletion of nothing or of an
+    /// ambiguous name, and a second refspec to a destination one already
+    /// takes, new or not, whatever its source and whatever a negative
+    /// refspec makes of it.
+    func matchedExplicitRefspecs(
+        _ explicit: [String], remoteRefs: RemoteRefs
+    ) -> (refspecs: [String], refusals: [Libgit2Error]) {
+        var refspecs: [String] = []
+        var refusals: [Libgit2Error] = []
+        var taken = Set<[UInt8]>()  // ref names as bytes, as git compares them
+        for refspec in explicit {
+            let qualified: String
+            do {
+                qualified = try qualifiedDeletion(refspec, remoteRefs: remoteRefs)
+            } catch {
+                refusals.append(error as? Libgit2Error ?? Libgit2Error(
+                    code: GIT_ERROR.rawValue, klass: 0, message: "\(error)"))
+                continue
+            }
+            if let destination = destinationRefName(fromPushRefspec: qualified),
+               !taken.insert(Array(destination.utf8)).inserted {
+                refusals.append(Libgit2Error(
+                    code: GIT_EINVALIDSPEC.rawValue, klass: Int32(GIT_ERROR_REFERENCE.rawValue),
+                    message: "dst ref \(destination) receives from more than one src"))
+            }
+            refspecs.append(qualified)
         }
-        return nil
+        return (refspecs, refusals)
     }
 
     /// How git names `remote` in its output: a configured remote's URL,

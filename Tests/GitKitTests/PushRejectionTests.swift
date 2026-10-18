@@ -173,6 +173,30 @@ struct PushRejectionTests {
                 == "https://example.com/r.git")
     }
 
+    @Test("every refspec git refuses up front is listed, as git lists them")
+    func everyRefusalListed() throws {
+        let (remote, mine, theirs) = try makeRemoteAndClones()
+        defer { [remote, mine, theirs].forEach { try? FileManager.default.removeItem(at: $0) } }
+        try runGit(["branch", "dev"], in: mine)
+        let repo = try Repository.open(at: mine)
+        for (refspecs, lines) in [
+            // Sources, before connecting.
+            (["mian", "mian2"], ["src refspec mian does not match any", "src refspec mian2 does not match any"]),
+            // Destinations, in refspec order.
+            ([":nope", "main:refs/heads/w", "dev:refs/heads/w", ":nope2"], [
+                "unable to delete 'nope': remote ref does not exist",
+                "dst ref refs/heads/w receives from more than one src",
+                "unable to delete 'nope2': remote ref does not exist"
+            ])
+        ] {
+            #expect {
+                try repo.push(remote: "origin", refspecs: refspecs, setUpstream: false, progress: { _ in })
+            } throws: { error in
+                (error as? Libgit2Error)?.message == lines.joined(separator: "\n")
+            }
+        }
+    }
+
     @Test("a deletion names the remote ref as git finds it")
     func shortDeletions() throws {
         let (remote, mine, theirs) = try makeRemoteAndClones()
