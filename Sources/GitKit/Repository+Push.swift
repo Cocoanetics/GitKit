@@ -144,12 +144,13 @@ extension Repository {
     }
 
     /// The source of `refspec` as typed — `HEAD` in `HEAD:refs/heads/x`,
-    /// `main` in `+main` — or `nil` for a deletion (`:dst`).
+    /// `main` in `+main` — or `nil` for a deletion (`:dst`) or a pattern
+    /// (`refs/heads/*`), whose updates each name their own source.
     private func typedPushSource(_ refspec: String) -> String? {
         let body = refspec.hasPrefix("+") ? refspec.dropFirst() : Substring(refspec)
         let source = body.split(separator: ":", maxSplits: 1,
                                 omittingEmptySubsequences: false).first ?? ""
-        return source.isEmpty ? nil : String(source)
+        return source.isEmpty || source.contains("*") ? nil : String(source)
     }
 
     /// `core.abbrev` as git applies it to the push summary: a number of

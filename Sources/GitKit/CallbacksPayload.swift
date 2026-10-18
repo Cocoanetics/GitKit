@@ -477,9 +477,25 @@ private let combinedPushNegotiationTrampoline: git_push_negotiation = {
     return pushLease.verify(updates: updates, count: Int(len))
 }
 
-private func shortHex(_ oid: git_oid, _ length: Int) -> String {
+/// `oid` abbreviated the way git abbreviates it: at least `minimum` hex
+/// digits, lengthened while another object in `repository` shares the
+/// prefix (`git_object_short_id`). An object the repository doesn't
+/// have, like a remote's old tip, stays at `minimum`.
+func abbreviated(_ oid: git_oid, minimum: Int, in repository: OpaquePointer?) -> String {
     var oid = oid
-    return String(String(cString: git_oid_tostr_s(&oid)).prefix(length))
+    let full = String(cString: git_oid_tostr_s(&oid))
+    var object: OpaquePointer?
+    guard let repository,
+          git_object_lookup(&object, repository, &oid, GIT_OBJECT_ANY) == 0
+    else { return String(full.prefix(minimum)) }
+    defer { git_object_free(object) }
+    var buffer = git_buf()
+    defer { git_buf_dispose(&buffer) }
+    guard git_object_short_id(&buffer, object) == 0, let pointer = buffer.ptr else {
+        return String(full.prefix(minimum))
+    }
+    let unique = String(cString: pointer)
+    return unique.count >= minimum ? unique : String(full.prefix(minimum))
 }
 
 /// Whether moving a ref from `old` to `new` is a fast-forward: `new`
@@ -527,14 +543,15 @@ private let combinedPushRefTrampoline: git_push_update_reference_cb = {
         // with `-v`); with nothing else, the push says `Everything
         // up-to-date`.
         if git_oid_equal(&old, &new) == 1 { return 0 }
+        let repository = box.reporter!.repository
         let abbrev = box.reporter!.abbreviation
-        if isFastForward(from: old, to: new, in: box.reporter!.repository) {
-            line = pushSummaryLine(
-                " ", "\(shortHex(old, abbrev))..\(shortHex(new, abbrev))", refs, width: width)
+        let oldID = abbreviated(old, minimum: abbrev, in: repository)
+        let newID = abbreviated(new, minimum: abbrev, in: repository)
+        if isFastForward(from: old, to: new, in: repository) {
+            line = pushSummaryLine(" ", "\(oldID)..\(newID)", refs, width: width)
         } else {
             line = pushSummaryLine(
-                "+", "\(shortHex(old, abbrev))...\(shortHex(new, abbrev))",
-                "\(refs) (forced update)", width: width)
+                "+", "\(oldID)...\(newID)", "\(refs) (forced update)", width: width)
         }
     } else {
         let kind = refname.hasPrefix("refs/heads/") ? "[new branch]"
