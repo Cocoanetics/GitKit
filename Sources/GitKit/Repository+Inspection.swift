@@ -121,7 +121,7 @@ extension Repository {
     /// Update an existing remote's URL.
     public func remoteSetURL(name: String, url: URL) throws {
         try check(name.withCString { n in
-            url.absoluteString.withCString { u in
+            url.gitRemote.withCString { u in
                 git_remote_set_url(repo, n, u)
             }
         })

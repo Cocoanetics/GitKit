@@ -211,7 +211,7 @@ public final class Repository {
     /// refspec. Mirrors `git remote add <name> <url>`.
     public func addRemote(name: String, url: URL) throws {
         var remote: OpaquePointer?
-        try check(git_remote_create(&remote, repo, name, url.absoluteString))
+        try check(git_remote_create(&remote, repo, name, url.gitRemote))
         git_remote_free(remote)
     }
 

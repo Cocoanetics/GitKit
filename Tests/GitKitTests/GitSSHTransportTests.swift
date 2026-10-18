@@ -107,12 +107,15 @@ struct FakeSSHChannelError: Error, LocalizedError {
 /// practice despite not being statically checked.
 final class FakeSSHProvider: GitSSHTransportProvider, @unchecked Sendable {
     private(set) var openedCommands: [GitSSHCommand] = []
+    /// The `user@host` each channel was opened for.
+    private(set) var openedDestinations: [String] = []
     var failureMessage: String?
 
     func openChannel(
         host: String, port: Int?, user: String?, command: GitSSHCommand
     ) throws -> GitSSHChannel {
         openedCommands.append(command)
+        openedDestinations.append(user.map { "\($0)@\(host)" } ?? host)
         if let failureMessage {
             throw FakeSSHProviderError(message: failureMessage)
         }
@@ -261,6 +264,35 @@ struct GitSSHTransportTests {
             let remoteSHA = try runGit(["rev-parse", "main"], in: destBare)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             #expect(localSHA == remoteSHA)
+        }
+    }
+
+    @Test("a scp-style IPv6 remote reaches the provider unmangled")
+    func scpStyleIPv6RemoteReachesTheProvider() throws {
+        try SSHTransportTestLock.shared.withLock {
+            let provider = FakeSSHProvider()
+            try GitSSHTransport.register(provider)
+            defer { GitSSHTransport.unregister() }
+
+            let bare = try makeBareSource()
+            // Built the way a CLI builds it from argv: Foundation
+            // percent-encodes the brackets and colons.
+            let remote = URL(string: "git@[::1]:\(bare.path)")!
+
+            let dest = tmp("GitSSHScpCloneDest")
+            _ = try Repository.clone(from: remote, to: dest, progress: { _ in })
+            #expect(provider.openedDestinations == ["git@::1"])
+            #expect(FileManager.default.fileExists(
+                atPath: dest.appendingPathComponent("file.txt").path))
+
+            let work = try makeWorkRepo()
+            let repo = try Repository.open(at: work)
+            try repo.addRemote(name: "origin", url: remote)
+            let configured = try runGit(["config", "--get", "remote.origin.url"], in: work)
+            #expect(configured == "git@[::1]:\(bare.path)\n")
+            try repo.remoteSetURL(name: "origin", url: URL(string: "git@[::2]:r.git")!)
+            let updated = try runGit(["config", "--get", "remote.origin.url"], in: work)
+            #expect(updated == "git@[::2]:r.git\n")
         }
     }
 

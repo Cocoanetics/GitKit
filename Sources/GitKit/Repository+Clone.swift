@@ -40,12 +40,12 @@ extension Repository {
             opts.fetch_opts.depth = depth
         }
 
+        let remote = url.gitRemote
         var reporter = ProgressReporter(
-            headerURL: url.absoluteString, direction: .fetch, output: progress)
+            headerURL: remote, direction: .fetch, output: progress)
         // Real git's local clone (file:// or bare path) skips the
         // `remote: …` / `Receiving objects: …` lines — match it.
-        reporter.suppressTransferProgress =
-            ProgressReporter.isLocalURL(url.absoluteString)
+        reporter.suppressTransferProgress = ProgressReporter.isLocalURL(remote)
 
         // Single-branch installs a `remote_cb` whose payload must outlive
         // the `git_clone` call; retain it here and release on the way out.
@@ -75,7 +75,7 @@ extension Repository {
                     opts.fetch_opts.callbacks.transfer_progress = transferCB
                     opts.fetch_opts.callbacks.payload = payload
 
-                    try check(git_clone(&out, url.absoluteString, directory.path, &opts))
+                    try check(git_clone(&out, remote, directory.path, &opts))
                 },
                 outReporter: { reporter = $0 })
         }
