@@ -53,7 +53,10 @@ Operations are synchronous, `throws` (typed ``Libgit2Error``), and return
   `-u` upstream wiring and git's per-ref summary; refs git refuses —
   `fetch first`, `non-fast-forward`, a tag that `already exists` — are
   left out and reported through `PushRejectedError` while the rest go
-  through), `addRemote`,
+  through; what git refuses before sending anything — a source that
+  matches nothing, two refspecs to one ref, a deletion of nothing, a short
+  destination it can't complete — throws `PushRefusedError`, every
+  refusal listed with git's message and hint), `addRemote`,
   `remoteList`, `remoteURL`, real-git-style progress output (fetch's per-ref
   summary included, and remotes shown without their credentials). Remotes go in
   as git spells them (`clone(fromRemote:)`, `addRemote(name:remote:)`),
