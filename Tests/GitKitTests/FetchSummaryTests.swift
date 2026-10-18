@@ -165,6 +165,34 @@ struct FetchSummaryTests {
         #expect(ordered.map { Array($0.remote.utf8) } == [Array(composed.utf8), Array(decomposed.utf8)])
     }
 
+    @Test("fetch.showForcedUpdates takes every boolean spelling git takes")
+    func showForcedUpdatesSpellings() throws {
+        let fixture = try makeFixture()
+        defer { fixture.remove() }
+        let kit = fixture.kit
+        // Nothing to fetch: what's printed is the warning, or nothing.
+        let warning = "warning: fetch normally indicates which branches had a forced update,"
+        for (value, warns) in [("00", true), ("-0", true), ("0x0", true), ("", true), ("1k", false)] {
+            try runGit(["config", "fetch.showForcedUpdates", value], in: kit)
+            #expect(try gitKitFetch(kit).hasPrefix(warning) == warns, "\(value)")
+        }
+        // A key without a value is true.
+        try runGit(["config", "--unset", "fetch.showForcedUpdates"], in: kit)
+        let config = kit.appendingPathComponent(".git/config")
+        try (String(decoding: Data(contentsOf: config), as: UTF8.self) + "[fetch]\n\tshowForcedUpdates\n")
+            .write(to: config, atomically: true, encoding: .utf8)
+        #expect(try gitKitFetch(kit) == "")
+
+        try runGit(["config", "--unset", "fetch.showForcedUpdates"], in: kit)
+        try runGit(["config", "fetch.showForcedUpdates", "bogus"], in: kit)
+        #expect {
+            try gitKitFetch(kit)
+        } throws: { error in
+            (error as? Libgit2Error)?.message
+                == "bad boolean config value 'bogus' for 'fetch.showforcedupdates'"
+        }
+    }
+
     @Test("display widths count as git's utf8_strwidth does")
     func displayWidths() {
         #expect(DisplayWidth.of("main") == 4)

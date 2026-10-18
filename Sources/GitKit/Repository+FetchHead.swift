@@ -111,13 +111,40 @@ extension Repository {
         return refspec.index(after: colon) < refspec.endIndex
     }
 
-    /// A boolean config value as git reads one (`true`/`yes`/`on`/`1`,
-    /// `false`/`no`/`off`/`0`), or `nil` when unset or not a boolean.
-    func configFlag(_ name: String) -> Bool? {
-        guard let value = try? configGet(name)?.lowercased() else { return nil }
-        if ["true", "yes", "on", "1", ""].contains(value) { return true }
-        if ["false", "no", "off", "0"].contains(value) { return false }
-        return nil
+    /// A boolean config value as git reads one (`git_config_bool`):
+    /// `true`/`yes`/`on`, `false`/`no`/`off`, any integer (`00` and `-0`
+    /// are false), a key without a value (true) or an empty one (false).
+    /// `nil` when unset; anything else throws git's "bad boolean config
+    /// value".
+    func configFlag(_ name: String) throws -> Bool? {
+        var config: OpaquePointer?
+        try check(git_repository_config_snapshot(&config, repo))
+        defer { git_config_free(config) }
+        var entry: UnsafeMutablePointer<git_config_entry>?
+        let result = git_config_get_entry(&entry, config, name)
+        if result == GIT_ENOTFOUND.rawValue { return nil }
+        try check(result)
+        defer { git_config_entry_free(entry) }
+        // The entry keeps a missing value apart from an empty one, which
+        // configGet can't; libgit2's parser reads it as git does.
+        var flag: Int32 = 0
+        guard git_config_parse_bool(&flag, entry?.pointee.value) == 0 else {
+            let value = entry?.pointee.value.map { String(cString: $0) } ?? ""
+            throw Libgit2Error(
+                code: GIT_ERROR.rawValue, klass: Int32(GIT_ERROR_CONFIG.rawValue),
+                message: "bad boolean config value '\(value)' for '\(Self.canonicalConfigKey(name))'")
+        }
+        return flag != 0
+    }
+
+    /// A config key as git spells it in messages: section and variable
+    /// lowercased, a subsection as written (`fetch.showforcedupdates`,
+    /// `remote.Origin.url`).
+    static func canonicalConfigKey(_ name: String) -> String {
+        guard let first = name.firstIndex(of: "."), let last = name.lastIndex(of: "."), first < last else {
+            return name.lowercased()
+        }
+        return name[..<first].lowercased() + name[first..<last] + name[last...].lowercased()
     }
 
     /// What the remote is configured to fetch (`remote.<name>.fetch`).
