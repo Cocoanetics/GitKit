@@ -360,7 +360,9 @@ extension Repository {
         for refspec in objectIDTags where !refspec.forced {
             let (tag, oid, source) = (refspec.tag, refspec.oid, refspec.source)
             var new = oid
-            guard var old = before[Array(tag.utf8)], git_oid_equal(&old, &new) == 0,
+            // A symbolic tag holds what it names.
+            guard var old = before[Array(tag.utf8)] ?? symbolicBefore[Array(tag.utf8)]?.oid,
+                  git_oid_equal(&old, &new) == 0,
                   !refusedNames.contains(Array(tag.utf8))
             else { continue }
             try restore(tag)
