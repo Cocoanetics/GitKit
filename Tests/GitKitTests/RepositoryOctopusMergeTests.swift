@@ -80,6 +80,18 @@ struct RepositoryOctopusMergeTests {
         return dir
     }
 
+    /// After a merge that gave up: `dir` as it was `before`, and, with a
+    /// git that restores what a failed octopus touched (2.54; Linux CI
+    /// has 2.34), as the system `git` left `other`.
+    private func expectGaveUp(
+        _ dir: URL, before: [String], like other: URL, sourceLocation: SourceLocation = #_sourceLocation
+    ) throws {
+        #expect(try state(of: dir) == before, sourceLocation: sourceLocation)
+        if try gitIsAtLeast(2, 54) {
+            #expect(try state(of: dir) == state(of: other), sourceLocation: sourceLocation)
+        }
+    }
+
     /// Whether the system `git` is at least `major.minor`.
     private func gitIsAtLeast(_ major: Int, _ minor: Int) throws -> Bool {
         let version = try git(["--version"], in: FileManager.default.temporaryDirectory).stdout
@@ -189,9 +201,7 @@ struct RepositoryOctopusMergeTests {
 
         #expect(result.outcome == .failed(.conflictsBeforeLastHead))
         #expect(result.steps.map(\.head) == ["a", "x"])
-        #expect(try state(of: dir) == before)
-        // git before 2.36 or so leaves the tree half-merged; 2.54 restores it.
-        if try gitIsAtLeast(2, 54) { #expect(try state(of: dir) == state(of: other)) }
+        try expectGaveUp(dir, before: before, like: other)
     }
 
     @Test("refuses an index that differs from HEAD")
@@ -200,12 +210,13 @@ struct RepositoryOctopusMergeTests {
         try write("changed\n", to: "m", in: dir)
         try git(["add", "m"], in: dir)
         let other = try twin(of: dir)
+        let before = try state(of: dir)
         let result = try merge(["a", "b"], in: dir)
         #expect(try git(["merge", "-q", "a", "b"], in: other, check: false).status == 2)
 
         #expect(result.outcome == .failed(.localChanges(paths: ["m"])))
         #expect(result.steps.isEmpty)
-        #expect(try state(of: dir) == state(of: other))
+        try expectGaveUp(dir, before: before, like: other)
     }
 
     @Test("refuses to overwrite a change in the working tree, keeping it")
@@ -213,12 +224,13 @@ struct RepositoryOctopusMergeTests {
         let dir = try makeRepository()
         try write("1\n2\n3\n4\n5\n6\n7\ndirty\n", to: "f", in: dir)
         let other = try twin(of: dir)
+        let before = try state(of: dir)
         let result = try merge(["a", "b"], in: dir)
         #expect(try git(["merge", "-q", "a", "b"], in: other, check: false).status == 2)
 
         #expect(result.outcome == .failed(.notUpToDate(path: "f")))
         #expect(result.steps.map(\.kind) == [.merge])
-        #expect(try state(of: dir) == state(of: other))
+        try expectGaveUp(dir, before: before, like: other)
     }
 
     @Test("refuses untracked files a head's file or directory would replace")
@@ -239,19 +251,98 @@ struct RepositoryOctopusMergeTests {
         try FileManager.default.createDirectory(at: dir.appendingPathComponent("d"), withIntermediateDirectories: true)
         try write("x\n", to: "d/file", in: dir)
         var other = try twin(of: dir)
+        var before = try state(of: dir)
         var result = try merge(["a", "d"], in: dir)
         #expect(try git(["merge", "-q", "a", "d"], in: other, check: false).status == 2)
         #expect(result.outcome == .failed(.untrackedFilesInDirectory(path: "d")))
-        #expect(try state(of: dir) == state(of: other))
+        try expectGaveUp(dir, before: before, like: other)
         try FileManager.default.removeItem(at: dir.appendingPathComponent("d"))
 
         // An untracked file `e` where `e/file` goes.
         try write("x\n", to: "e", in: dir)
         other = try twin(of: dir)
+        before = try state(of: dir)
         result = try merge(["a", "e"], in: dir)
         #expect(try git(["merge", "-q", "a", "e"], in: other, check: false).status == 2)
         #expect(result.outcome == .failed(.untrackedWouldBeOverwritten(path: "e")))
+        try expectGaveUp(dir, before: before, like: other)
+        try FileManager.default.removeItem(at: dir.appendingPathComponent("e"))
+
+        // `d` against `d/file`: git's simple merge fails, and its
+        // automatic one reports their side's path.
+        let head = try git(["rev-parse", "HEAD"], in: dir).stdout
+        try git(["checkout", "-q", "-b", "dd", "base"], in: dir)
+        try FileManager.default.createDirectory(at: dir.appendingPathComponent("d"), withIntermediateDirectories: true)
+        try write("dd\n", to: "d/file", in: dir)
+        try git(["add", "d"], in: dir)
+        try git(["commit", "-q", "-m", "dd"], in: dir)
+        try git(["checkout", "-q", "main"], in: dir)
+        // The file stays merged, `d/file` unmerged on the side that has it.
+        for (heads, theirPath) in [(["a", "d", "dd"], "d/file"), (["a", "dd", "d"], "d")] {
+            try git(["reset", "-q", "--hard", head], in: dir)
+            try git(["clean", "-qfd"], in: dir)
+            other = try twin(of: dir)
+            result = try merge(heads, in: dir)
+            #expect(try git(["merge", "-q", "-m", "Merge branches"] + heads, in: other, check: false).status == 1)
+            #expect(result.steps.last?.automatic == [.addedOverDirectory(path: theirPath, file: "d/file")])
+            #expect(result.outcome == .conflicts(paths: ["d/file"]))
+            #expect(try state(of: dir) == state(of: other))
+            #expect(try String(contentsOf: dir.appendingPathComponent("d"), encoding: .utf8) == "d\n")
+        }
+    }
+
+    /// `main` and `side` each merged the other's first commit, `side`
+    /// keeping `f` as `base` has it, so they have two best common
+    /// ancestors, and each has `f` as one of them has it.
+    private func makeEachSideAsABase() throws -> URL {
+        let dir = try makeRepository()
+        try git(["checkout", "-q", "-b", "side", "base"], in: dir)
+        try write("s\n", to: "s", in: dir)
+        try git(["add", "s"], in: dir)
+        try git(["commit", "-q", "-m", "s"], in: dir, date: "2020-01-02T00:00:00Z")
+        try git(["checkout", "-q", "main"], in: dir)
+        try write("changed\n", to: "f", in: dir)
+        try git(["commit", "-q", "-am", "changed"], in: dir, date: "2020-01-03T00:00:00Z")
+        try git(["merge", "-q", "--no-edit", "side"], in: dir)
+        try git(["checkout", "-q", "side"], in: dir)
+        try git(["merge", "-q", "--no-commit", "main~1"], in: dir)
+        try git(["checkout", "base", "--", "f"], in: dir)
+        try git(["commit", "-q", "--no-edit"], in: dir)
+        try git(["checkout", "-q", "main"], in: dir)
+        return dir
+    }
+
+    @Test("a path each side has as a different base has it is unmerged, as git leaves it")
+    func eachSideAsADifferentBase() throws {
+        let dir = try makeEachSideAsABase()
+        // The last head: an add/add conflict, our content kept.
+        var other = try twin(of: dir)
+        var result = try merge(["c", "side"], in: dir)
+        #expect(try git(["merge", "-q", "-m", "Merge branches", "c", "side"], in: other, check: false).status == 1)
+        #expect(result.steps.last?.automatic == [.addedInBoth(path: "f", emptyBlobMissing: true)])
+        #expect(result.outcome == .conflicts(paths: ["f"]))
         #expect(try state(of: dir) == state(of: other))
+        #expect(try String(contentsOf: dir.appendingPathComponent("f"), encoding: .utf8)
+                == String(contentsOf: other.appendingPathComponent("f"), encoding: .utf8))
+        try git(["reset", "-q", "--hard", "main"], in: dir)
+
+        // An earlier head: the octopus gives up.
+        other = try twin(of: dir)
+        var before = try state(of: dir)
+        result = try merge(["side", "c"], in: dir)
+        #expect(try git(["merge", "-q", "side", "c"], in: other, check: false).status == 2)
+        #expect(result.outcome == .failed(.conflictsBeforeLastHead))
+        try expectGaveUp(dir, before: before, like: other)
+
+        // A change to `f` in the working tree stops it first.
+        try write("dirty\n", to: "f", in: dir)
+        other = try twin(of: dir)
+        before = try state(of: dir)
+        result = try merge(["side", "c"], in: dir)
+        #expect(try git(["merge", "-q", "side", "c"], in: other, check: false).status == 2)
+        #expect(result.outcome == .failed(.notUpToDate(path: "f")))
+        #expect(result.steps.last?.automatic == nil)
+        try expectGaveUp(dir, before: before, like: other)
     }
 
     @Test("takes a criss-cross history's every best common ancestor, as git does", arguments: [false, true])
