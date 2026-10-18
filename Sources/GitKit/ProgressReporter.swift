@@ -68,6 +68,8 @@ struct ProgressReporter {
     /// `main`), keyed by the destination ref; git shows it instead of
     /// the ref it resolves to.
     var typedSources: [String: String] = [:]
+    /// The updates the remote refused, with its reasons.
+    var remoteRejections: [PushRejectedError.Rejection] = []
 
     struct PushUpdate {
         /// The local ref being pushed, e.g. `refs/heads/main`.
@@ -132,6 +134,15 @@ struct ProgressReporter {
         if url.contains("@") && url.contains(":") { return false } // ssh shorthand
         if url.hasPrefix("/") { return true }
         return FileManager.default.fileExists(atPath: url)
+    }
+
+    /// The `From`/`To` header and the pending per-ref summary lines, as
+    /// ``flushRefLines()`` writes them.
+    var refSummary: String {
+        guard !refLines.isEmpty else { return "" }
+        let verb = direction == .fetch ? "From" : "To"
+        let header = headerURL.map { "\(verb) \($0)\n" } ?? ""
+        return header + refLines.map { $0 + "\n" }.joined()
     }
 
     /// Flush any pending per-ref summary lines. Caller invokes this

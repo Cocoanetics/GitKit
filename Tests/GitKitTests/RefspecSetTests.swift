@@ -280,7 +280,7 @@ struct RefspecSetTests {
         try runGit(["commit", "-q", "--allow-empty", "-m", "two"], in: work)
         let claimed = try makeBare()
         defer { removing(claimed)() }
-        #expect(throws: Libgit2Error.self) {
+        #expect(throws: PushRejectedError.self) {
             try repo.push(remote: claimed.path,
                           refspecs: ["main:refs/heads/x", "dev:refs/heads/x"],
                           setUpstream: false, progress: { _ in })

@@ -112,8 +112,9 @@ extension Repository {
 
     /// What a push came to: refs sent, or nothing to send.
     private enum PushOutcome {
-        /// Pushed these refspecs (some may have been up to date already).
-        case pushed([String])
+        /// Pushed `accepted` (some may have been up to date already) and
+        /// left alone the `rejected` ones git's rules refuse.
+        case pushed(accepted: [String], rejected: [(refspec: String, reason: PushRejectedError.Reason)])
         /// Nothing to send to a remote that has refs.
         case nothingToSend
         /// Nothing to send to a remote without any refs, which git refuses.
@@ -175,26 +176,31 @@ extension Repository {
                 opts.callbacks.push_negotiation = pushNegotiationCB
                 opts.callbacks.payload = payload
 
-                var pushRefspecs = try expandedPushRefspecs(plan, remoteRefs: nil)
-                if plan.matching != nil || pushRefspecs.isEmpty {
-                    // The matching refspec needs to know which branches
-                    // the remote has, and so does git's answer to a push
-                    // with nothing to send: connect and ask. The push
-                    // then reuses the connection.
-                    var callbacks = opts.callbacks
-                    try check(git_remote_connect(
-                        remoteHandle, GIT_DIRECTION_PUSH, &callbacks, nil, nil))
-                    let remoteRefs = try advertisedRefs(remoteHandle)
-                    pushRefspecs = try expandedPushRefspecs(plan, remoteRefs: remoteRefs)
-                    if pushRefspecs.isEmpty {
-                        git_remote_disconnect(remoteHandle)
-                        // git refuses when the negative refspecs leave
-                        // none of the remote's refs either.
-                        let common = remoteRefs.contains { !plan.excludes($0) }
-                        return common ? .nothingToSend : .noRefsInCommon
-                    }
+                // The matching refspec, git's fast-forward rules and its
+                // answer to a push with nothing to send all need the
+                // remote's refs: connect and ask. The push then reuses
+                // the connection.
+                var callbacks = opts.callbacks
+                try check(git_remote_connect(
+                    remoteHandle, GIT_DIRECTION_PUSH, &callbacks, nil, nil))
+                let remoteRefs = try advertisedRefs(remoteHandle)
+                let pushRefspecs = try expandedPushRefspecs(plan, remoteRefs: Set(remoteRefs.keys))
+                guard !pushRefspecs.isEmpty else {
+                    git_remote_disconnect(remoteHandle)
+                    // git refuses when the negative refspecs leave none
+                    // of the remote's refs either.
+                    let common = remoteRefs.keys.contains { !plan.excludes($0) }
+                    return common ? .nothingToSend : .noRefsInCommon
                 }
-                try withCStringArray(pushRefspecs) { copies in
+                // As git does, leave out the updates its rules refuse and
+                // push the rest; libgit2 would fail the whole push.
+                let (accepted, rejected) = try partitionedPushRefspecs(
+                    pushRefspecs, remoteRefs: remoteRefs)
+                guard !accepted.isEmpty else {
+                    git_remote_disconnect(remoteHandle)
+                    return .pushed(accepted: [], rejected: rejected)
+                }
+                try withCStringArray(accepted) { copies in
                     try copies.withUnsafeMutableBufferPointer { buffer in
                         var arr = git_strarray(strings: buffer.baseAddress, count: buffer.count)
                         let rc = git_remote_push(remoteHandle, &arr, &opts)
@@ -204,7 +210,7 @@ extension Repository {
                         try check(rc)
                     }
                 }
-                return .pushed(pushRefspecs)
+                return .pushed(accepted: accepted, rejected: rejected)
             },
             outReporter: { reporter = $0 })
 
@@ -217,23 +223,72 @@ extension Repository {
                 message: "failed to push some refs to '\(remoteURL ?? remote)'")
         }
 
+        var pushed: [String] = []
+        var rejections: [PushRejectedError.Rejection] = []
+        if case .pushed(let accepted, let rejected) = outcome {
+            (pushed, rejections) = settle(accepted, rejected: rejected, reporter: &reporter)
+        }
+
         // Nothing to send: git says so instead of printing a summary.
         if reporter.refLines.isEmpty {
             reporter.write("Everything up-to-date\n")
         }
+        let summary = reporter.refSummary
         reporter.flushRefLines()
 
-        guard case .pushed(let pushed) = outcome else { return [] }
-        // libgit2 doesn't have a one-shot "push -u": after a successful
-        // push, write the upstream config ourselves to mirror the CLI's
-        // `--set-upstream` semantics.
+        // libgit2 doesn't have a one-shot "push -u": after a push, write
+        // the upstream config ourselves for every branch that went
+        // through, as `git push --set-upstream` does.
         if setUpstream {
             for refspec in pushed {
                 try setUpstreamForRefspec(
                     remote: remote, refspec: refspec, isConfigured: isConfigured)
             }
         }
+        guard rejections.isEmpty else {
+            throw PushRejectedError(
+                url: remoteURL ?? remote, rejections: rejections, pushed: pushed, summary: summary)
+        }
         return pushed
+    }
+
+    /// What came of a push's updates: the refspecs that went through
+    /// (`accepted` but those the remote refused) and every rejection,
+    /// git's rules' and the remote's. The rules' rejections get their
+    /// summary lines in `reporter`; the remote's already have them.
+    private func settle(
+        _ accepted: [String],
+        rejected: [(refspec: String, reason: PushRejectedError.Reason)],
+        reporter: inout ProgressReporter
+    ) -> (pushed: [String], rejections: [PushRejectedError.Rejection]) {
+        var rejections: [PushRejectedError.Rejection] = []
+        for (refspec, reason) in rejected {
+            guard let destination = destinationRefName(fromPushRefspec: refspec) else { continue }
+            reporter.refLines.append(rejectedSummaryLine(
+                refspec, destination: destination, reason: reason,
+                abbreviation: reporter.abbreviation))
+            rejections.append(.init(remoteRef: destination, reason: reason))
+        }
+        let refusedByRemote = Set(reporter.remoteRejections.map(\.remoteRef))
+        rejections += reporter.remoteRejections
+        let pushed = accepted.filter {
+            destinationRefName(fromPushRefspec: $0).map { !refusedByRemote.contains($0) } ?? true
+        }
+        return (pushed, rejections)
+    }
+
+    /// ` ! [rejected]        main -> main (fetch first)`: git's summary
+    /// line for an update its rules refuse.
+    private func rejectedSummaryLine(
+        _ refspec: String, destination: String,
+        reason: PushRejectedError.Reason, abbreviation: Int
+    ) -> String {
+        let body = refspec.hasPrefix("+") ? refspec.dropFirst() : Substring(refspec)
+        let source = String(body.split(separator: ":", maxSplits: 1,
+                                       omittingEmptySubsequences: false)[0])
+        let refs = "\(shortRefName(source)) -> \(shortRefName(destination))"
+        return pushSummaryLine("!", "[rejected]", "\(refs) (\(reason.summary))",
+                               width: 2 * abbreviation + 3)
     }
 
     /// What `remote` is configured to push (`remote.<name>.push`).

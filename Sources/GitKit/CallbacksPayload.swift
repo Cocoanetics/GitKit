@@ -535,7 +535,9 @@ private let combinedPushRefTrampoline: git_push_update_reference_cb = {
     let width = 2 * box.reporter!.abbreviation + 3
     let line: String
     if !status.isEmpty {
-        line = pushSummaryLine("!", "[rejected]", "\(refs) (\(status))", width: width)
+        line = pushSummaryLine("!", "[remote rejected]", "\(refs) (\(status))", width: width)
+        box.reporter!.remoteRejections.append(
+            .init(remoteRef: refname, reason: .remoteRejected(status)))
     } else if let update, update.newID == nil {
         line = pushSummaryLine("-", "[deleted]", destination, width: width)
     } else if var old = update?.oldID, var new = update?.newID {
@@ -559,14 +561,16 @@ private let combinedPushRefTrampoline: git_push_update_reference_cb = {
         line = pushSummaryLine("*", kind, refs, width: width)
     }
     box.reporter!.refLines.append(line)
-    return status.isEmpty ? 0 : -1
+    // A refused ref doesn't fail the push: libgit2 still updates the
+    // tracking refs of the others, and the caller reports the refusal.
+    return 0
 }
 
 /// A ref name as git's push summary shows it (`prettify_refname`):
 /// `refs/heads/main` → `main`, `refs/tags/v1` → `v1`,
 /// `refs/remotes/upstream/topic` → `upstream/topic`. Other namespaces
 /// stay fully qualified.
-private func shortRefName(_ refname: String) -> String {
+func shortRefName(_ refname: String) -> String {
     for prefix in ["refs/heads/", "refs/tags/", "refs/remotes/"]
     where refname.hasPrefix(prefix) {
         return String(refname.dropFirst(prefix.count))
@@ -577,7 +581,7 @@ private func shortRefName(_ refname: String) -> String {
 /// One line of git's push summary: ` <flag> <summary> <refs>`, the
 /// summary padded to `width` columns (`TRANSPORT_SUMMARY_WIDTH`, 17 at
 /// the default abbreviation) so the refs line up.
-private func pushSummaryLine(
+func pushSummaryLine(
     _ flag: Character, _ summary: String, _ refs: String, width: Int
 ) -> String {
     let padded = summary.count >= width

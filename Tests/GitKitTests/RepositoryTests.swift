@@ -346,11 +346,13 @@ struct RepositoryTests {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         try repo.checkout(ref: headSHA)
 
-        #expect(throws: Libgit2Error.self) {
+        let error = #expect(throws: PushRejectedError.self) {
             try repo.push(
                 remote: "origin", refspec: "HEAD:refs/heads/review-fixes",
                 setUpstream: false, progress: { _ in })
         }
+        #expect(error?.rejections == [.init(remoteRef: "refs/heads/review-fixes",
+                                            reason: .nonFastForward)])
         let protectedSHA = try runGit(["rev-parse", "refs/heads/review-fixes"], in: origin)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         #expect(protectedSHA == advancedSHA)

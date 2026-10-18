@@ -90,20 +90,20 @@ extension Repository {
     }
 
     /// The refspecs to hand libgit2: the explicit ones, then each local
-    /// ref a pattern matches, then, once the remote's refs are known,
-    /// the branches the matching refspec pairs up. As in git, a pattern
+    /// ref a pattern matches, then the branches the matching refspec
+    /// pairs up with `remoteRefs`. As in git, a pattern
     /// or the matching refspec leaves alone a destination something else
     /// is already being pushed to, while explicit refspecs all go out
     /// (two to one ref, and the remote refuses both). A negative refspec
     /// drops every update to a ref it names.
-    func expandedPushRefspecs(_ plan: PushPlan, remoteRefs: Set<String>?) throws -> [String] {
+    func expandedPushRefspecs(_ plan: PushPlan, remoteRefs: Set<String>) throws -> [String] {
         var refspecs = plan.explicit
         var claimed = Set(plan.explicit.compactMap { destinationRefName(fromPushRefspec: $0) })
         func expand(_ force: Bool, _ source: String, _ destination: String) {
             guard claimed.insert(destination).inserted else { return }
             refspecs.append("\(force ? "+" : "")\(source):\(destination)")
         }
-        let needsLocalRefs = !plan.patterns.isEmpty || (plan.matching != nil && remoteRefs != nil)
+        let needsLocalRefs = !plan.patterns.isEmpty || plan.matching != nil
         let localRefs = needsLocalRefs ? try localReferenceNames() : []
         for pattern in plan.patterns {
             for name in localRefs {
@@ -111,7 +111,7 @@ extension Repository {
                 expand(pattern.force, name, destination)
             }
         }
-        if let force = plan.matching, let remoteRefs {
+        if let force = plan.matching {
             for name in localRefs where name.hasPrefix("refs/heads/") && remoteRefs.contains(name) {
                 expand(force, name, name)
             }
@@ -123,18 +123,82 @@ extension Repository {
     }
 
     /// The refs a connected remote advertises (`refs/…` only, without
-    /// the peeled `^{}` entries of annotated tags, as git lists them).
-    func advertisedRefs(_ remote: OpaquePointer?) throws -> Set<String> {
+    /// the peeled `^{}` entries of annotated tags, as git lists them),
+    /// with the object each points at.
+    func advertisedRefs(_ remote: OpaquePointer?) throws -> [String: git_oid] {
         var heads: UnsafeMutablePointer<UnsafePointer<git_remote_head>?>?
         var count = 0
         try check(git_remote_ls(&heads, &count, remote))
-        var names = Set<String>()
+        var refs: [String: git_oid] = [:]
         for index in 0..<count {
-            guard let name = heads?[index]?.pointee.name else { continue }
+            guard let head = heads?[index]?.pointee, let name = head.name else { continue }
             let refname = String(cString: name)
-            if refname.hasPrefix("refs/"), !refname.hasSuffix("^{}") { names.insert(refname) }
+            if refname.hasPrefix("refs/"), !refname.hasSuffix("^{}") { refs[refname] = head.oid }
         }
-        return names
+        return refs
+    }
+
+    /// `refspecs` split by git's rules for an update without force: the
+    /// ones to push, and the ones it refuses, with why.
+    func partitionedPushRefspecs(
+        _ refspecs: [String], remoteRefs: [String: git_oid]
+    ) throws -> (accepted: [String], rejected: [(refspec: String, reason: PushRejectedError.Reason)]) {
+        var accepted: [String] = []
+        var rejected: [(refspec: String, reason: PushRejectedError.Reason)] = []
+        for refspec in refspecs {
+            if let reason = try pushRejection(for: refspec, remoteRefs: remoteRefs) {
+                rejected.append((refspec, reason))
+            } else {
+                accepted.append(refspec)
+            }
+        }
+        return (accepted, rejected)
+    }
+
+    /// Why git would refuse `refspec` without force, given the remote's
+    /// refs, or `nil` to push it. A new ref, a deletion, a forced update
+    /// and a ref already up to date always go; otherwise a tag can't
+    /// move, the remote's tip has to be here, both sides have to be
+    /// commits, and the new commit has to descend from the old one.
+    func pushRejection(
+        for refspec: String, remoteRefs: [String: git_oid]
+    ) throws -> PushRejectedError.Reason? {
+        guard !refspec.hasPrefix("+"),
+              let destination = destinationRefName(fromPushRefspec: refspec),
+              var old = remoteRefs[destination]
+        else { return nil }
+        let source = refspec.split(separator: ":", maxSplits: 1,
+                                   omittingEmptySubsequences: false)[0]
+        guard !source.isEmpty else { return nil }
+        var object: OpaquePointer?
+        try check(git_revparse_single(&object, repo, String(source)))
+        defer { git_object_free(object) }
+        guard var new = git_object_id(object)?.pointee else { return nil }
+        if git_oid_equal(&old, &new) == 1 { return nil }
+        if destination.hasPrefix("refs/tags/") { return .alreadyExists }
+
+        var odb: OpaquePointer?
+        try check(git_repository_odb(&odb, repo))
+        defer { git_odb_free(odb) }
+        guard git_odb_exists(odb, &old) == 1 else { return .fetchFirst }
+
+        guard var oldCommit = peeledCommit(old), var newCommit = peeledCommit(new) else {
+            return .needsForce
+        }
+        if git_oid_equal(&oldCommit, &newCommit) == 1 { return nil }
+        return git_graph_descendant_of(repo, &newCommit, &oldCommit) == 1 ? nil : .nonFastForward
+    }
+
+    /// The commit `oid` is or, as a tag, points at; `nil` for anything else.
+    private func peeledCommit(_ oid: git_oid) -> git_oid? {
+        var oid = oid
+        var object: OpaquePointer?
+        guard git_object_lookup(&object, repo, &oid, GIT_OBJECT_ANY) == 0 else { return nil }
+        defer { git_object_free(object) }
+        var commit: OpaquePointer?
+        guard git_object_peel(&commit, object, GIT_OBJECT_COMMIT) == 0 else { return nil }
+        defer { git_object_free(commit) }
+        return git_object_id(commit)?.pointee
     }
 
     /// `<src>:<dst>`, or `<src>` for both, each side a ref name with

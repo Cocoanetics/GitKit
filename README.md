@@ -50,7 +50,10 @@ Operations are synchronous, `throws` (typed ``Libgit2Error``), and return
   (continue/skip/abort), `cherryPick`, `stash`
   (save/apply/pop/list/show/branch), `apply` (patches).
 - **Remotes** — `fetch` (with shallow `depth`), `unshallow`, `push` (incl.
-  `-u` upstream wiring and git's per-ref summary), `addRemote`,
+  `-u` upstream wiring and git's per-ref summary; refs git refuses —
+  `fetch first`, `non-fast-forward`, a tag that `already exists` — are
+  left out and reported through `PushRejectedError` while the rest go
+  through), `addRemote`,
   `remoteList`, `remoteURL`, real-git-style progress output. Remotes go in
   as git spells them (`clone(fromRemote:)`, `addRemote(name:remote:)`),
   and `fetch` / `push` take a URL or path as well as a remote's name, and
