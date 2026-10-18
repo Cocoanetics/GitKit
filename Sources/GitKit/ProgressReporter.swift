@@ -107,14 +107,18 @@ struct ProgressReporter {
 
     /// `fetchLines` as git prints them (`format_display`). The ref column
     /// is at least 10 wide, widened for an update's remote ref when its
-    /// line still fits 80 columns.
+    /// line still fits 80 columns. git measures those in terminal
+    /// columns but pads with printf's `%-*s`, which counts bytes, so a
+    /// non-ASCII name gets fewer spaces than its columns would suggest.
     var formattedFetchLines: [String] {
         let refWidth = fetchLines
-            .filter { $0.kind == .update && 21 + $0.remote.count + 4 + $0.local.count < 80 }
-            .map(\.remote.count).reduce(10, max)
+            .filter { $0.kind == .update
+                && 21 + DisplayWidth.of($0.remote) + 4 + DisplayWidth.of($0.local) < 80 }
+            .map { DisplayWidth.of($0.remote) }.reduce(10, max)
         let summaryWidth = 2 * abbreviation + 3
         func padded(_ text: String, _ width: Int) -> String {
-            text.count >= width ? text : text + String(repeating: " ", count: width - text.count)
+            let bytes = text.utf8.count
+            return bytes >= width ? text : text + String(repeating: " ", count: width - bytes)
         }
         return fetchLines.map { line in
             let note = line.note.map { "  (\($0))" } ?? ""

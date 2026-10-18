@@ -118,6 +118,39 @@ struct FetchSummaryTests {
         #expect(output == expected)
     }
 
+    @Test("the ref column is sized in terminal columns but padded in bytes, as git does")
+    func wideRefNames() throws {
+        let fixture = try makeFixture()
+        defer { fixture.remove() }
+        let (work, git, kit) = (fixture.work, fixture.git, fixture.kit)
+        // Two columns and three bytes: seven spaces in a 10-wide column.
+        try runGit(["branch", "中"], in: work)
+        try runGit(["push", "-q", "origin", "中"], in: work)
+        let narrow = try runGit(["fetch", "origin"], in: git)
+        #expect(narrow.contains(" 中        -> origin/中\n"))
+        #expect(try gitKitFetch(kit) == narrow)
+
+        // Fourteen columns widen the column to 14, not to its 7 characters.
+        try runGit(["branch", "中中中中中中中"], in: work)
+        try runGit(["branch", "dev-two"], in: work)
+        try runGit(["push", "-q", "origin", "中中中中中中中", "dev-two"], in: work)
+        let wide = try runGit(["fetch", "origin"], in: git)
+        #expect(wide.contains(" dev-two        -> origin/dev-two\n"))
+        #expect(try gitKitFetch(kit) == wide)
+    }
+
+    @Test("display widths count as git's utf8_strwidth does")
+    func displayWidths() {
+        #expect(DisplayWidth.of("main") == 4)
+        #expect(DisplayWidth.of("中文") == 4)
+        // Per code point: a combining accent adds nothing, a zero-width
+        // joiner nothing, each emoji two; a control character nothing.
+        #expect(DisplayWidth.of("e\u{301}") == 1)
+        #expect(DisplayWidth.of("👩\u{200D}💻") == 4)
+        #expect(DisplayWidth.of("a\u{7}b") == 2)
+        #expect(DisplayWidth.of("\u{AD}") == 1)
+    }
+
     @Test("an annotated tag moved forward is a fast-forward, peeled to its commit")
     func annotatedTagFastForward() throws {
         let fixture = try makeFixture()
