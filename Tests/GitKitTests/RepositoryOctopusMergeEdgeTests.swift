@@ -235,6 +235,25 @@ extension RepositoryOctopusMergeTests {
         #expect(try String(contentsOf: dir.appendingPathComponent("sub/s"), encoding: .utf8) == "dirty\n")
     }
 
+    @Test("on a work tree that folds case, an untracked file of another case still collides")
+    func untrackedOfAnotherCase() throws {
+        let dir = try makeRepository()
+        // Only where git found the file system folding case.
+        guard try git(["config", "core.ignorecase"], in: dir, check: false).stdout == "true" else { return }
+        try git(["checkout", "-q", "-b", "c2", "base"], in: dir)
+        try write("c2\n", to: "c2", in: dir)
+        try git(["add", "c2"], in: dir)
+        try git(["commit", "-q", "-m", "c2"], in: dir)
+        try git(["checkout", "-q", "main"], in: dir)
+        try write("junk\n", to: "C", in: dir)
+        let other = try twin(of: dir)
+        let before = try state(of: dir)
+        let result = try merge(["c2", "c"], in: dir)
+        #expect(try git(["merge", "-q", "c2", "c"], in: other, check: false).status == 2)
+        #expect(result.outcome == .failed(.untrackedWouldBeOverwritten(path: "c")))
+        try expectGaveUp(dir, before: before, like: other)
+    }
+
     @Test("refuses a bare repository before anything changes")
     func refusesBare() throws {
         let dir = try makeRepository()

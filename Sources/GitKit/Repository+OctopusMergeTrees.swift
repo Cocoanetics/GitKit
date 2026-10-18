@@ -418,20 +418,39 @@ extension Repository {
     /// A path the step writes a file to also collides with untracked
     /// files below it, or with an untracked file where one of its
     /// directories goes.
-    func overwrites(_ changes: [String: Change], worktree: [String: Bool]) -> OctopusMergeFailure? {
-        let untracked = worktree.filter(\.value).keys.sorted(by: Self.indexOrder)
+    /// With `ignoreCase` (core.ignorecase), paths compare with ASCII case
+    /// folded, as git's fspathcmp does; the failure names the path as
+    /// the merge writes it.
+    func overwrites(_ changes: [String: Change], worktree: [String: Bool], ignoreCase: Bool) -> OctopusMergeFailure? {
+        func fold(_ path: String) -> String {
+            ignoreCase ? String(decoding: path.utf8.map { (65...90).contains($0) ? $0 + 32 : $0 }, as: UTF8.self)
+                : path
+        }
+        var folded: [String: Bool] = [:]
+        for (path, untracked) in worktree { folded[fold(path)] = untracked }
+        let untracked = folded.filter(\.value).keys.sorted(by: Self.indexOrder)
         for (path, change) in changes.sorted(by: { Self.indexOrder($0.key, $1.key) }) {
-            if let isUntracked = worktree[path] {
+            let key = fold(path)
+            if let isUntracked = folded[key] {
                 return isUntracked ? .untrackedWouldBeOverwritten(path: path) : .notUpToDate(path: path)
             }
             guard change.oid != nil else { continue }
-            if untracked.contains(where: { $0.hasPrefix(path + "/") }) {
+            if untracked.contains(where: { $0.hasPrefix(key + "/") }) {
                 return .untrackedFilesInDirectory(path: path)
             }
-            if let file = untracked.first(where: { path.hasPrefix($0 + "/") }) {
-                return .untrackedWouldBeOverwritten(path: file)
+            if let file = untracked.first(where: { key.hasPrefix($0 + "/") }) {
+                return .untrackedWouldBeOverwritten(path: String(path.utf8.prefix(file.utf8.count))!)
             }
         }
         return nil
+    }
+
+    /// Whether the work tree folds case (core.ignorecase).
+    func ignoresCase() throws -> Bool {
+        var config: OpaquePointer?
+        try check(git_repository_config_snapshot(&config, repo))
+        defer { git_config_free(config) }
+        var value: Int32 = 0
+        return git_config_get_bool(&value, config, "core.ignorecase") == 0 && value != 0
     }
 }

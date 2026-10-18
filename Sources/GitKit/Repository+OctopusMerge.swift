@@ -82,21 +82,7 @@ extension Repository {
         author: Signature? = nil,
         env: [String: String] = ProcessInfo.processInfo.environment
     ) throws -> OctopusMergeResult {
-        // A merge needs a work tree.
-        if git_repository_is_bare(repo) != 0 {
-            throw Libgit2Error(code: -1, klass: 0, message: "this operation must be run in a work tree")
-        }
-        // git refuses to start a merge while another operation waits.
-        let state = git_repository_state(repo)
-        if state == Int32(GIT_REPOSITORY_STATE_MERGE.rawValue) {
-            throw Libgit2Error(code: -1, klass: 0, message: "You have not concluded your merge (MERGE_HEAD exists).")
-        }
-        if state == Int32(GIT_REPOSITORY_STATE_CHERRYPICK.rawValue)
-            || state == Int32(GIT_REPOSITORY_STATE_CHERRYPICK_SEQUENCE.rawValue) {
-            throw Libgit2Error(code: -1, klass: 0,
-                message: "You have not concluded your cherry-pick (CHERRY_PICK_HEAD exists).")
-        }
-        // Anything else (a bisect, a revert, a rebase) git merges through.
+        try refuseWhereGitWontMerge()
         guard let head = try headOID() else {
             throw Libgit2Error(code: -1, klass: 0,
                 message: "Can merge only exactly one commit into empty head")
@@ -115,6 +101,7 @@ extension Repository {
             return OctopusMergeResult(steps: [], outcome: .failed(.localChanges(paths: staged)))
         }
         let worktree = try workingTreeChanges(index: index)
+        let ignoreCase = try ignoresCase()
 
         var steps: [OctopusMergeStep] = []
         var mergedCommits = [head]   // git-merge-octopus' MRC
@@ -143,7 +130,8 @@ extension Repository {
             let theirTree = try treeOID(ofCommit: oid)
             if !nonFastForward, bases.count == 1, mergedCommits.count == 1, sameOID(base, mergedCommits[0]) {
                 steps.append(OctopusMergeStep(head: name, kind: .fastForward, automatic: nil))
-                if let failure = overwrites(try diffEntries(mergedTree, theirTree), worktree: worktree) {
+                if let failure = overwrites(try diffEntries(mergedTree, theirTree), worktree: worktree,
+                                            ignoreCase: ignoreCase) {
                     return OctopusMergeResult(steps: steps, outcome: .failed(failure))
                 }
                 mergedCommits = [oid]
@@ -168,7 +156,8 @@ extension Repository {
             }
             // The step changes every path its index differs from the
             // merge so far at, conflicts included.
-            if let failure = overwrites(try changes(from: mergedTree, to: merged), worktree: worktree) {
+            if let failure = overwrites(try changes(from: mergedTree, to: merged), worktree: worktree,
+                                        ignoreCase: ignoreCase) {
                 git_index_free(merged)
                 steps.append(OctopusMergeStep(head: name, kind: .merge, automatic: nil))
                 return OctopusMergeResult(steps: steps, outcome: .failed(failure))
@@ -214,6 +203,26 @@ extension Repository {
         let stats = try mergeStats(from: headTree, to: mergedTree)
         return OctopusMergeResult(steps: steps, outcome: .mergeCommit(
             sha: sha, statSummary: stats.summary, addedFiles: stats.added, deletedFiles: stats.deleted))
+    }
+
+    /// Refuse as git does before merging at all: a bare repository, and
+    /// a merge or cherry-pick that waits to be concluded.
+    func refuseWhereGitWontMerge() throws {
+        // A merge needs a work tree.
+        if git_repository_is_bare(repo) != 0 {
+            throw Libgit2Error(code: -1, klass: 0, message: "this operation must be run in a work tree")
+        }
+        // git refuses to start a merge while another operation waits.
+        let state = git_repository_state(repo)
+        if state == Int32(GIT_REPOSITORY_STATE_MERGE.rawValue) {
+            throw Libgit2Error(code: -1, klass: 0, message: "You have not concluded your merge (MERGE_HEAD exists).")
+        }
+        if state == Int32(GIT_REPOSITORY_STATE_CHERRYPICK.rawValue)
+            || state == Int32(GIT_REPOSITORY_STATE_CHERRYPICK_SEQUENCE.rawValue) {
+            throw Libgit2Error(code: -1, klass: 0,
+                message: "You have not concluded your cherry-pick (CHERRY_PICK_HEAD exists).")
+        }
+        // Anything else (a bisect, a revert, a rebase) git merges through.
     }
 
     // MARK: Commits
