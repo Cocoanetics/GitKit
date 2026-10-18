@@ -425,17 +425,21 @@ extension Repository {
         try check(git_diff_index_to_workdir(&diff, repo, index, &options))
         defer { git_diff_free(diff) }
         var changes: [String: Bool] = [:]
-        // A skip-worktree entry's file is one diff no longer looks at, but
-        // read-tree does: changed content there is a local change.
+        // A skip-worktree or assume-unchanged entry's file is one diff no
+        // longer looks at, but read-tree does: changed content there, or
+        // a changed executable bit where core.filemode holds, is a local
+        // change. A submodule's directory is the submodule's business.
         let workdir = git_repository_workdir(repo).map { String(cString: $0) } ?? ""
+        let fileMode = try honorsFileMode()
         for i in 0..<git_index_entrycount(index) {
-            guard let entry = git_index_get_byindex(index, i)?.pointee,
-                  entry.flags_extended & UInt16(GIT_INDEX_ENTRY_SKIP_WORKTREE.rawValue) != 0 else { continue }
+            guard let entry = git_index_get_byindex(index, i)?.pointee, entry.mode != 0o160000,
+                  entry.flags_extended & UInt16(GIT_INDEX_ENTRY_SKIP_WORKTREE.rawValue) != 0
+                    || entry.flags & UInt16(GIT_INDEX_ENTRY_VALID.rawValue) != 0 else { continue }
             let path = String(cString: entry.path)
             // Gone is up to date; otherwise what's there must be what
             // the entry records: a link's target, or a file's content.
-            guard let type = (try? FileManager.default.attributesOfItem(atPath: workdir + path))?[.type]
-                    as? FileAttributeType else { continue }
+            guard let attributes = try? FileManager.default.attributesOfItem(atPath: workdir + path),
+                  let type = attributes[.type] as? FileAttributeType else { continue }
             var actual = git_oid(), expected = entry.id
             if entry.mode == 0o120000 {
                 guard type == .typeSymbolicLink,
@@ -446,6 +450,8 @@ extension Repository {
             } else {
                 guard type == .typeRegular, git_odb_hashfile(&actual, workdir + path, GIT_OBJECT_BLOB) == 0
                 else { changes[path] = false; continue }
+                let executable = ((attributes[.posixPermissions] as? Int) ?? 0) & 0o100 != 0
+                if fileMode, executable != (entry.mode == 0o100755) { changes[path] = false; continue }
             }
             if git_oid_equal(&actual, &expected) == 0 { changes[path] = false }
         }
@@ -490,6 +496,15 @@ extension Repository {
             }
         }
         return nil
+    }
+
+    /// Whether the executable bit counts (core.filemode, true unless set).
+    func honorsFileMode() throws -> Bool {
+        var config: OpaquePointer?
+        try check(git_repository_config_snapshot(&config, repo))
+        defer { git_config_free(config) }
+        var value: Int32 = 1
+        return git_config_get_bool(&value, config, "core.filemode") != 0 || value != 0
     }
 
     /// Whether the work tree folds case (core.ignorecase).

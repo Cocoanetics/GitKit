@@ -102,6 +102,7 @@ extension Repository {
         }
         let worktree = try workingTreeChanges(index: index)
         let ignoreCase = try ignoresCase()
+        let skipWorktree = skipWorktreePaths(index)
 
         var steps: [OctopusMergeStep] = []
         var mergedCommits = [head]   // git-merge-octopus' MRC
@@ -194,6 +195,7 @@ extension Repository {
         if let conflicted {
             try checkOutConflicts(conflicted, from: headTree, theirLabel: heads.last ?? "", keepingOurs: keepOurs,
                                   mergedContent: mergedContent)
+            try keepSkipWorktree(skipWorktree)
             try writeMergeState(oids: oids, message: message, conflicts: conflictedPaths,
                                 noFastForward: noFastForward)
             return OctopusMergeResult(steps: steps, outcome: .conflicts(paths: conflictedPaths))
@@ -205,6 +207,7 @@ extension Repository {
         let text = message.hasSuffix("\n") ? message : message + "\n"
         let sha = try commitMerge(tree: mergedTree, from: headTree, parents: parents, message: text,
                                   author: author, env: env)
+        try keepSkipWorktree(skipWorktree)
         let stats = try mergeStats(from: headTree, to: mergedTree)
         return OctopusMergeResult(steps: steps, outcome: .mergeCommit(
             sha: sha, statSummary: stats.summary, addedFiles: stats.added, deletedFiles: stats.deleted))

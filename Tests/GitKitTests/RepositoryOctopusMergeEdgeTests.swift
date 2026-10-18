@@ -450,6 +450,54 @@ extension RepositoryOctopusMergeTests {
         #expect(try state(of: dir) == state(of: other))
     }
 
+    @Test("an assume-unchanged or skip-worktree file edited, or made executable, stops the merge",
+          arguments: [("--assume-unchanged", false), ("--assume-unchanged", true), ("--skip-worktree", true)])
+    func hiddenLocalChanges(flag: String, chmod: Bool) throws {
+        let dir = try makeRepository()
+        try git(["update-index", flag, "f"], in: dir)
+        let f = dir.appendingPathComponent("f").path
+        if chmod {
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: f)
+        } else {
+            try write("local\n", to: "f", in: dir)
+        }
+        let result = try merge(["a", "b"], in: dir)
+        #expect(result.outcome == .failed(.notUpToDate(path: "f")))
+    }
+
+    @Test("a skip-worktree gitlink moves, keeping its bit, as git does")
+    func skipWorktreeGitlink() throws {
+        let sub = FileManager.default.temporaryDirectory.appendingPathComponent("OctopusSub-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: sub, withIntermediateDirectories: true)
+        try git(["init", "-q", "-b", "main"], in: sub)
+        try write("1\n", to: "s", in: sub)
+        try git(["add", "s"], in: sub)
+        try git(["commit", "-q", "-m", "s1"], in: sub)
+        try write("2\n", to: "s", in: sub)
+        try git(["commit", "-q", "-am", "s2"], in: sub)
+        let dir = try makeRepository()
+        try git(["-c", "protocol.file.allow=always", "submodule", "-q", "add", sub.path, "sub"], in: dir)
+        try git(["-C", "sub", "checkout", "-q", "HEAD~1"], in: dir)
+        try git(["add", "sub"], in: dir)
+        try git(["commit", "-q", "-m", "sub"], in: dir)
+        try git(["checkout", "-q", "-b", "up"], in: dir)
+        try git(["-C", "sub", "checkout", "-q", "main"], in: dir)
+        try git(["add", "sub"], in: dir)
+        try git(["commit", "-q", "-m", "up"], in: dir)
+        try git(["checkout", "-q", "main"], in: dir)
+        try git(["-C", "sub", "checkout", "-q", "HEAD~1"], in: dir)
+        try git(["update-index", "--skip-worktree", "sub"], in: dir)
+
+        let other = try twin(of: dir)
+        let result = try merge(["c", "up"], in: dir)
+        try git(["merge", "-q", "-m", "Merge branches", "c", "up"], in: other)
+        guard case .mergeCommit = result.outcome else {
+            Issue.record("expected a merge commit, got \(result.outcome)"); return
+        }
+        #expect(try state(of: dir) == state(of: other))
+        #expect(try git(["ls-files", "-v", "sub"], in: dir).stdout == git(["ls-files", "-v", "sub"], in: other).stdout)
+    }
+
     @Test("refuses a bare repository before anything changes")
     func refusesBare() throws {
         let dir = try makeRepository()

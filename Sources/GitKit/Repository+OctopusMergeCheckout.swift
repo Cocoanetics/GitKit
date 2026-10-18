@@ -5,6 +5,31 @@ import CGitKit
 // (`Repository+OctopusMerge.swift`).
 extension Repository {
 
+    /// The paths `index` marks skip-worktree, which git keeps so when a
+    /// merge updates them.
+    func skipWorktreePaths(_ index: OpaquePointer?) -> [String] {
+        (0..<git_index_entrycount(index)).compactMap { i -> String? in
+            guard let entry = git_index_get_byindex(index, i)?.pointee,
+                  entry.flags_extended & UInt16(GIT_INDEX_ENTRY_SKIP_WORKTREE.rawValue) != 0 else { return nil }
+            return String(cString: entry.path)
+        }
+    }
+
+    /// Set the skip-worktree bit again on those of `paths` whose entry
+    /// the checkout rewrote without it.
+    func keepSkipWorktree(_ paths: [String]) throws {
+        var index: OpaquePointer?
+        try check(git_repository_index(&index, repo))
+        defer { git_index_free(index) }
+        try check(git_index_read(index, 1))
+        let bit = UInt16(GIT_INDEX_ENTRY_SKIP_WORKTREE.rawValue)
+        let lost = paths.filter { path in
+            guard let entry = git_index_get_bypath(index, path, 0) else { return false }
+            return entry.pointee.flags_extended & bit == 0
+        }
+        for path in lost { try setSkipWorktree(true, path: path) }
+    }
+
     /// Whether anything is at `path`, a symbolic link counted as itself
     /// even when what it points to is missing (lstat, not stat).
     static func exists(_ path: String) -> Bool {
