@@ -117,6 +117,45 @@ struct RepositoryTests {
         #expect(remoteSHA == localSHA)
     }
 
+    @Test("fetch and push take a path, like git's <repository>")
+    func fetchAndPushAPath() throws {
+        let source = try makeFixtureRepo()
+        defer { try? FileManager.default.removeItem(at: source) }
+        let origin = try makeBareOrigin()
+        defer { try? FileManager.default.removeItem(at: origin) }
+
+        // push <path> main, with -u: no remote is configured.
+        let repo = try Repository.open(at: source)
+        try repo.push(remote: origin.path, refspec: "main", setUpstream: true, progress: { _ in })
+        let head = try runGit(["rev-parse", "HEAD"], in: source)
+        #expect(try runGit(["rev-parse", "main"], in: origin) == head)
+        #expect(try runGit(["remote"], in: source).isEmpty)
+        #expect(try runGit(["config", "branch.main.remote"], in: source)
+                == origin.path + "\n")
+        #expect(try runGit(["config", "branch.main.merge"], in: source) == "refs/heads/main\n")
+
+        // fetch <path> <refspec>, and fetch <path> main into FETCH_HEAD.
+        let dest = try makeFixtureRepo(withCommit: false)
+        defer { try? FileManager.default.removeItem(at: dest) }
+        let fetcher = try Repository.open(at: dest)
+        try fetcher.fetch(remote: origin.path, refspec: "refs/heads/main:refs/heads/fetched",
+                          progress: { _ in })
+        #expect(try runGit(["rev-parse", "fetched"], in: dest) == head)
+        try fetcher.fetch(remote: origin.path, refspec: "main", progress: { _ in })
+        #expect(try runGit(["rev-parse", "FETCH_HEAD"], in: dest) == head)
+        #expect(try runGit(["remote"], in: dest).isEmpty)
+    }
+
+    @Test("a remote that is neither configured nor a repository fails")
+    func unknownRemoteFails() throws {
+        let dir = try makeFixtureRepo()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let repo = try Repository.open(at: dir)
+        #expect(throws: Libgit2Error.self) {
+            try repo.fetch(remote: "orign", refspec: "main", progress: { _ in })
+        }
+    }
+
     @Test("push accepts a short nested branch refspec")
     func pushShortNestedBranch() throws {
         let dir = try makeFixtureRepo()
