@@ -254,6 +254,37 @@ extension RepositoryOctopusMergeTests {
         try expectGaveUp(dir, before: before, like: other)
     }
 
+    @Test("a criss-cross base that has a path is its ancestor, though the other base lacks it")
+    func baseWithThePath() throws {
+        let dir = try makeRepository()
+        try git(["checkout", "-q", "-b", "py", "base"], in: dir)
+        try write("y\n", to: "y", in: dir)
+        try git(["add", "y"], in: dir)
+        try git(["commit", "-q", "-m", "py"], in: dir, date: "2020-01-02T00:00:00Z")
+        try git(["checkout", "-q", "-b", "px", "base"], in: dir)
+        try write("1\n2\n3\n4\n5\n6\n7\n", to: "p", in: dir)
+        try git(["add", "p"], in: dir)
+        try git(["commit", "-q", "-m", "px"], in: dir, date: "2020-01-03T00:00:00Z")
+        // `ours` and `side` each merged px and py, then changed `p` apart.
+        try git(["checkout", "-q", "-b", "ours", "px"], in: dir)
+        try git(["merge", "-q", "--no-edit", "py"], in: dir)
+        try write("1m\n2\n3\n4\n5\n6\n7\n", to: "p", in: dir)
+        try git(["commit", "-q", "-am", "ours"], in: dir)
+        try git(["checkout", "-q", "-b", "side", "py"], in: dir)
+        try git(["merge", "-q", "--no-edit", "px"], in: dir)
+        try write("1\n2\n3\n4\n5\n6\n7s\n", to: "p", in: dir)
+        try git(["commit", "-q", "-am", "side"], in: dir)
+        try git(["checkout", "-q", "ours"], in: dir)
+        #expect(try git(["merge-base", "--all", "ours", "side"], in: dir).stdout.split(separator: "\n").count == 2)
+
+        let other = try twin(of: dir)
+        let result = try merge(["c", "side"], in: dir)
+        try git(["merge", "-q", "-m", "Merge branches", "c", "side"], in: other)
+        #expect(result.steps.last?.automatic == [.merged(path: "p")])
+        #expect(try state(of: dir) == state(of: other))
+        #expect(try String(contentsOf: dir.appendingPathComponent("p"), encoding: .utf8) == "1m\n2\n3\n4\n5\n6\n7s\n")
+    }
+
     @Test("refuses a bare repository before anything changes")
     func refusesBare() throws {
         let dir = try makeRepository()

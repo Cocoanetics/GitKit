@@ -79,8 +79,9 @@ extension Repository {
                 let baseEntries = try trees.dropFirst(2).map { try entry($0, path) }
                 let oursKept = baseEntries.contains(our), theirsKept = baseEntries.contains(their)
                 if oursKept != theirsKept { continue }
-                var ancestor = oursKept ? nil : baseEntries.first ?? nil
-                if baseEntries.contains(where: { $0 == nil }) { ancestor = nil }
+                // read-tree keeps a base's entry as the ancestor even where
+                // another base lacks the path.
+                let ancestor = oursKept ? nil : baseEntries.compactMap { $0 }.first
                 let modes: [UInt32] = [our?.mode, their?.mode].compactMap { $0 }
                 let special = modes.contains(0o120000) || modes.contains(0o160000)
                 if our != nil, their != nil, ancestor != nil, !special {
