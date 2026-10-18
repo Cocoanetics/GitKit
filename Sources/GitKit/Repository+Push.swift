@@ -64,13 +64,17 @@ extension Repository {
     ///   - credentials: Invoked by the transport on auth challenges.
     ///   - progress: Sink for real-git-style progress lines (defaults to
     ///     the process's stderr).
+    /// - Returns: The refspecs pushed, one per ref and fully qualified
+    ///   (`+refs/heads/main:refs/heads/main`), including refs that were
+    ///   already up to date; empty when there was nothing to send.
+    @discardableResult
     public func push(
         remote: String,
         refspecs: [String],
         setUpstream: Bool,
         credentials: CredentialProvider? = nil,
         progress: @escaping @Sendable (String) -> Void = GitProgress.standardError
-    ) throws {
+    ) throws -> [String] {
         try pushImpl(
             remote: remote, refspecs: refspecs, setUpstream: setUpstream,
             forceWithLease: nil, credentials: credentials, progress: progress)
@@ -116,6 +120,7 @@ extension Repository {
         case noRefsInCommon
     }
 
+    @discardableResult
     private func pushImpl(
         remote: String,
         refspecs requested: [String],
@@ -123,7 +128,7 @@ extension Repository {
         forceWithLease lease: PushLease?,
         credentials: CredentialProvider?,
         progress: @escaping @Sendable (String) -> Void
-    ) throws {
+    ) throws -> [String] {
         let (remoteHandle, isConfigured) = try lookupRemote(remote)
         defer { git_remote_free(remoteHandle) }
 
@@ -215,15 +220,17 @@ extension Repository {
         }
         reporter.flushRefLines()
 
+        guard case .pushed(let pushed) = outcome else { return [] }
         // libgit2 doesn't have a one-shot "push -u": after a successful
         // push, write the upstream config ourselves to mirror the CLI's
         // `--set-upstream` semantics.
-        if setUpstream, case .pushed(let pushed) = outcome {
+        if setUpstream {
             for refspec in pushed {
                 try setUpstreamForRefspec(
                     remote: remote, refspec: refspec, isConfigured: isConfigured)
             }
         }
+        return pushed
     }
 
     /// What `remote` is configured to push (`remote.<name>.push`).

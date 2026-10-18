@@ -167,8 +167,9 @@ struct RefspecSetTests {
 
         let repo = try Repository.open(at: work)
         let log = OutputLog()
-        try repo.push(remote: "origin", refspecs: [":"], setUpstream: false,
-                      progress: { log.append($0) })
+        let pushed = try repo.push(remote: "origin", refspecs: [":"], setUpstream: false,
+                                   progress: { log.append($0) })
+        #expect(pushed == ["refs/heads/dev:refs/heads/dev", "refs/heads/main:refs/heads/main"])
         let lines = summary(log.text)
         #expect(lines.count == 2)
         #expect(lines.allSatisfy { $0.hasSuffix(" dev -> dev") || $0.hasSuffix(" main -> main") })
