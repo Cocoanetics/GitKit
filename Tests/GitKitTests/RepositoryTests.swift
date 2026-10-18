@@ -185,8 +185,23 @@ struct RepositoryTests {
         try runGit(["update-ref", "refs/remotes/upstream/topic", "HEAD"], in: dir)
         #expect(try push("refs/remotes/upstream/topic:refs/heads/topic").hasSuffix(
             " * [new branch]      upstream/topic -> topic\n"))
+        #expect(try push("main:refs/custom/foo").hasSuffix(
+            " * [new reference]   main -> refs/custom/foo\n"))
+        try runGit(["update-ref", "refs/custom/local", "HEAD"], in: dir)
+        #expect(try push("refs/custom/local:refs/custom/remote").hasSuffix(
+            " * [new reference]   refs/custom/local -> refs/custom/remote\n"))
+
         try runGit(["switch", "-c", "local"], in: dir)
         #expect(try push("local:remote").hasSuffix(" * [new branch]      local -> remote\n"))
+
+        // core.abbrev widens the IDs and the column.
+        try runGit(["switch", "-q", "main"], in: dir)
+        try runGit(["config", "core.abbrev", "12"], in: dir)
+        let before = try head()
+        try runGit(["commit", "--allow-empty", "-m", "abbrev"], in: dir)
+        let after = try head()
+        #expect(try push().hasSuffix(
+            "   \(before.prefix(12))..\(after.prefix(12))  main -> main\n"))
     }
 
     @Test("push accepts a short nested branch refspec")

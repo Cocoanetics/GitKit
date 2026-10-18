@@ -61,6 +61,9 @@ struct ProgressReporter {
     /// The pushing repository, to tell a forced update from a
     /// fast-forward.
     var repository: OpaquePointer?
+    /// How many hex digits object IDs show in the push summary
+    /// (`core.abbrev`).
+    var abbreviation = 7
 
     struct PushUpdate {
         /// The local ref being pushed, e.g. `refs/heads/main`.

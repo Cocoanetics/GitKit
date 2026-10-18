@@ -477,9 +477,9 @@ private let combinedPushNegotiationTrampoline: git_push_negotiation = {
     return pushLease.verify(updates: updates, count: Int(len))
 }
 
-private func shortHex(_ oid: git_oid) -> String {
+private func shortHex(_ oid: git_oid, _ length: Int) -> String {
     var oid = oid
-    return String(String(cString: git_oid_tostr_s(&oid)).prefix(7))
+    return String(String(cString: git_oid_tostr_s(&oid)).prefix(length))
 }
 
 /// Whether moving a ref from `old` to `new` is a fast-forward: `new`
@@ -514,35 +514,42 @@ private let combinedPushRefTrampoline: git_push_update_reference_cb = {
     let source = update.map { shortRefName($0.source) } ?? destination
     let refs = source.isEmpty ? destination : "\(source) -> \(destination)"
 
+    // git's TRANSPORT_SUMMARY_WIDTH: room for `old...new`.
+    let width = 2 * box.reporter!.abbreviation + 3
     let line: String
     if !status.isEmpty {
-        line = pushSummaryLine("!", "[rejected]", "\(refs) (\(status))")
+        line = pushSummaryLine("!", "[rejected]", "\(refs) (\(status))", width: width)
     } else if let update, update.newID == nil {
-        line = pushSummaryLine("-", "[deleted]", destination)
+        line = pushSummaryLine("-", "[deleted]", destination, width: width)
     } else if var old = update?.oldID, var new = update?.newID {
         // A ref already up to date gets no line (git shows those only
         // with `-v`); with nothing else, the push says `Everything
         // up-to-date`.
         if git_oid_equal(&old, &new) == 1 { return 0 }
+        let abbrev = box.reporter!.abbreviation
         if isFastForward(from: old, to: new, in: box.reporter!.repository) {
-            line = pushSummaryLine(" ", "\(shortHex(old))..\(shortHex(new))", refs)
+            line = pushSummaryLine(
+                " ", "\(shortHex(old, abbrev))..\(shortHex(new, abbrev))", refs, width: width)
         } else {
             line = pushSummaryLine(
-                "+", "\(shortHex(old))...\(shortHex(new))", "\(refs) (forced update)")
+                "+", "\(shortHex(old, abbrev))...\(shortHex(new, abbrev))",
+                "\(refs) (forced update)", width: width)
         }
     } else {
-        let kind = refname.hasPrefix("refs/tags/") ? "[new tag]" : "[new branch]"
-        line = pushSummaryLine("*", kind, refs)
+        let kind = refname.hasPrefix("refs/heads/") ? "[new branch]"
+            : refname.hasPrefix("refs/tags/") ? "[new tag]" : "[new reference]"
+        line = pushSummaryLine("*", kind, refs, width: width)
     }
     box.reporter!.refLines.append(line)
     return status.isEmpty ? 0 : -1
 }
 
-/// A ref name as git's push summary shows it (`shorten_unambiguous_ref`):
+/// A ref name as git's push summary shows it (`prettify_refname`):
 /// `refs/heads/main` → `main`, `refs/tags/v1` → `v1`,
-/// `refs/remotes/upstream/topic` → `upstream/topic`, other `refs/x` → `x`.
+/// `refs/remotes/upstream/topic` → `upstream/topic`. Other namespaces
+/// stay fully qualified.
 private func shortRefName(_ refname: String) -> String {
-    for prefix in ["refs/heads/", "refs/tags/", "refs/remotes/", "refs/"]
+    for prefix in ["refs/heads/", "refs/tags/", "refs/remotes/"]
     where refname.hasPrefix(prefix) {
         return String(refname.dropFirst(prefix.count))
     }
@@ -550,12 +557,14 @@ private func shortRefName(_ refname: String) -> String {
 }
 
 /// One line of git's push summary: ` <flag> <summary> <refs>`, the
-/// summary padded to 17 columns (`TRANSPORT_SUMMARY_WIDTH`) so the refs
-/// line up.
-private func pushSummaryLine(_ flag: Character, _ summary: String, _ refs: String) -> String {
-    let padded = summary.count >= 17
+/// summary padded to `width` columns (`TRANSPORT_SUMMARY_WIDTH`, 17 at
+/// the default abbreviation) so the refs line up.
+private func pushSummaryLine(
+    _ flag: Character, _ summary: String, _ refs: String, width: Int
+) -> String {
+    let padded = summary.count >= width
         ? summary
-        : summary + String(repeating: " ", count: 17 - summary.count)
+        : summary + String(repeating: " ", count: width - summary.count)
     return " \(flag) \(padded) \(refs)"
 }
 

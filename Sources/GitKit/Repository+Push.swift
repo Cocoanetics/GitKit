@@ -91,6 +91,7 @@ extension Repository {
             ? qualifiedRefspec
             : forcePushRefspec(qualifiedRefspec)
         reporter.repository = repo
+        reporter.abbreviation = summaryAbbreviation()
         let pushLease = try lease.map {
             try pushLeaseCheck($0, remote: remote, refspec: pushRefspec)
         }
@@ -137,6 +138,15 @@ extension Repository {
         if setUpstream {
             try setUpstreamForRefspec(remote: remote, refspec: pushRefspec)
         }
+    }
+
+    /// `core.abbrev` as git applies it to the push summary: a number of
+    /// hex digits (4–40), `no` for full IDs, else (unset, `auto`) git's
+    /// default of 7.
+    private func summaryAbbreviation() -> Int {
+        guard let value = try? configGet("core.abbrev")?.lowercased() else { return 7 }
+        if let length = Int(value) { return min(max(length, 4), 40) }
+        return ["no", "false", "off"].contains(value) ? 40 : 7
     }
 
     /// libgit2's push parser expects fully-qualified refs where the CLI
