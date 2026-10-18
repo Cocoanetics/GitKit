@@ -15,8 +15,10 @@
  * gitkit_refspec_src_matches(): a negative refspec never selects a ref,
  * and a ref a negative refspec of the same set excludes doesn't match —
  * the set being the fetch's refspecs, or the configured ones for the
- * opportunistic updates of a fetch given its own. Every call site has
- * the remote in scope as `remote`.
+ * opportunistic updates of a fetch given its own. A refspec of neither
+ * set, like the tag auto-following probe, matches as before: as in git,
+ * negative refspecs don't stop a tag from being followed. Every call
+ * site has the remote in scope as `remote`.
  *
  * (The same gap exists in upstream libgit2; this fix is worth offering
  * there too.)
@@ -48,22 +50,35 @@ static int gitkit_refspec_src_matches(
 #include "remote.c"
 #undef git_refspec_src_matches
 
+static const git_vector *gitkit_refspec_set(const git_remote *remote, const git_refspec *spec)
+{
+	const git_refspec *member;
+	size_t i;
+
+	git_vector_foreach(&remote->passive_refspecs, i, member) {
+		if (member == spec)
+			return &remote->passive_refspecs;
+	}
+	git_vector_foreach(&remote->active_refspecs, i, member) {
+		if (member == spec)
+			return &remote->active_refspecs;
+	}
+	return NULL;
+}
+
 static int gitkit_refspec_src_matches(
 	const git_remote *remote, const git_refspec *spec, const char *refname)
 {
-	const git_vector *set = &remote->active_refspecs;
+	const git_vector *set;
 	const git_refspec *other;
 	size_t i;
 
 	if (git_refspec_is_negative(spec) || !git_refspec_src_matches(spec, refname))
 		return 0;
 
-	git_vector_foreach(&remote->passive_refspecs, i, other) {
-		if (other == spec) {
-			set = &remote->passive_refspecs;
-			break;
-		}
-	}
+	/* Not a refspec of the fetch's: the tag auto-following probe. */
+	if ((set = gitkit_refspec_set(remote, spec)) == NULL)
+		return 1;
 
 	git_vector_foreach(set, i, other) {
 		if (!other->push && git_refspec_src_matches_negative(other, refname))
