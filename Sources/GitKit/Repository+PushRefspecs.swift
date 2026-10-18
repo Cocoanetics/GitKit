@@ -57,7 +57,13 @@ extension Repository {
         var plan = PushPlan()
         for refspec in refspecs {
             if refspec.hasPrefix("^") {
-                plan.negatives.append(String(refspec.dropFirst()))
+                // As in git: a ref name or a pattern, without a
+                // destination; an empty one or an object ID won't do.
+                let name = String(refspec.dropFirst())
+                guard !name.contains(":"), !Self.isObjectID(name),
+                      isValidRefspecName(name, pattern: name.contains("*"))
+                else { throw invalidRefspec(refspec) }
+                plan.negatives.append(name)
                 continue
             }
             let force = refspec.hasPrefix("+")
@@ -126,21 +132,38 @@ extension Repository {
         return names
     }
 
-    /// `<src>:<dst>`, or `<src>` for both, with exactly one `*` on each
-    /// side, as git requires of a pattern.
+    /// `<src>:<dst>`, or `<src>` for both, each side a ref name with
+    /// exactly one `*`, as git requires of a pattern.
     private func pushPattern(_ body: String, force: Bool) throws -> PushPlan.Pattern {
         let sides = body.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
         let source = String(sides[0])
         let destination = sides.count > 1 ? String(sides[1]) : source
-        guard source.filter({ $0 == "*" }).count == 1,
-              destination.filter({ $0 == "*" }).count == 1
-        else {
-            throw Libgit2Error(
-                code: GIT_EINVALIDSPEC.rawValue,
-                klass: Int32(GIT_ERROR_INVALID.rawValue),
-                message: "invalid refspec '\(body)'")
-        }
+        guard [source, destination].allSatisfy({ side in
+            side.filter { $0 == "*" }.count == 1 && isValidRefspecName(side, pattern: true)
+        }) else { throw invalidRefspec(body) }
         return PushPlan.Pattern(force: force, source: source, destination: destination)
+    }
+
+    /// Whether `name` is a ref name as git takes one in a refspec: a
+    /// single level is fine, and with `pattern`, one `*`.
+    private func isValidRefspecName(_ name: String, pattern: Bool) -> Bool {
+        var flags = GIT_REFERENCE_FORMAT_ALLOW_ONELEVEL.rawValue
+        if pattern { flags |= GIT_REFERENCE_FORMAT_REFSPEC_PATTERN.rawValue }
+        // Normalizing only ever shortens the name.
+        var buffer = [CChar](repeating: 0, count: name.utf8.count + 1)
+        return git_reference_normalize_name(&buffer, buffer.count, name, flags) == 0
+    }
+
+    /// A full object ID in hex, SHA-1 or SHA-256.
+    private static func isObjectID(_ name: String) -> Bool {
+        [40, 64].contains(name.count) && name.allSatisfy(\.isHexDigit)
+    }
+
+    private func invalidRefspec(_ refspec: String) -> Libgit2Error {
+        Libgit2Error(
+            code: GIT_EINVALIDSPEC.rawValue,
+            klass: Int32(GIT_ERROR_INVALID.rawValue),
+            message: "invalid refspec '\(refspec)'")
     }
 
     /// Every local ref's full name, sorted.

@@ -222,10 +222,23 @@ struct RefspecSetTests {
             "refs/heads/dev", "refs/heads/x/dev", "refs/heads/x/main", "refs/heads/x/private"
         ])
 
-        #expect(throws: Libgit2Error.self) {
-            try repo.push(remote: mapped.path, refspecs: ["refs/heads/*:refs/heads/x"],
-                          setUpstream: false, progress: { _ in })
+        // Malformed patterns and negatives are refused before anything
+        // goes out, as in git.
+        let malformed = [
+            ["refs/heads/*:refs/heads/x"], ["refs/heads/**:refs/heads/**"],
+            ["refs/heads/*", "^refs/heads/**"], ["refs/heads/*", "^"],
+            ["refs/heads/*", "^refs/heads/wip:refs/heads/wip"],
+            ["refs/heads/*", "^" + String(repeating: "a", count: 40)]
+        ]
+        let untouched = try makeBare()
+        defer { removing(untouched)() }
+        for refspecs in malformed {
+            #expect(throws: Libgit2Error.self, "\(refspecs)") {
+                try repo.push(remote: untouched.path, refspecs: refspecs,
+                              setUpstream: false, progress: { _ in })
+            }
         }
+        #expect(try refs("refs/heads", in: untouched).isEmpty)
 
         // A pattern leaves alone a destination an explicit refspec claims,
         // while explicit refspecs all go out, as in git.
