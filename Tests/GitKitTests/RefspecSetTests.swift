@@ -306,6 +306,10 @@ struct RefspecSetTests {
         }
         #expect(try refs("refs/heads", in: untouched).isEmpty)
 
+        // Ref names compare as bytes: a decomposed `é` isn't a composed one.
+        #expect(PushPlan.wildcard("refs/heads/*\u{E9}", matching: "refs/heads/caf\u{65}\u{301}") == nil)
+        #expect(PushPlan.wildcard("refs/heads/*\u{E9}", matching: "refs/heads/caf\u{E9}") == "caf")
+
         // A `*` inside a component, as git allows.
         let archive = try makeBare()
         defer { removing(archive)() }
