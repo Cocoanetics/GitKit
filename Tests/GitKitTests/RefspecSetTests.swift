@@ -118,6 +118,20 @@ struct RefspecSetTests {
                 == ["refs/remotes/origin/dev", "refs/remotes/origin/private"])
     }
 
+    @Test("a negative refspec doesn't stop a tag from being followed, as in git")
+    func negativeRefspecAndFollowedTags() throws {
+        let source = try makeRepo()
+        let dest = try makeRepo()
+        defer { removing(source, dest)() }
+        try runGit(["remote", "add", "origin", source.path], in: dest)
+        try runGit(["config", "--add", "remote.origin.fetch", "^refs/tags/t"], in: dest)
+        try runGit(["commit", "-q", "--allow-empty", "-m", "two"], in: source)
+        try runGit(["tag", "t"], in: source)
+
+        try Repository.open(at: dest).fetch(remote: "origin", refspecs: [], progress: { _ in })
+        #expect(try refs("refs/tags", in: dest) == ["refs/tags/t"])
+    }
+
     @Test("a remote without a fetch refspec fetches only HEAD, into FETCH_HEAD")
     func fetchWithoutMapping() throws {
         let source = try makeRepo(branches: ["dev"])
@@ -274,6 +288,25 @@ struct RefspecSetTests {
             }
         }
         #expect(try refs("refs/heads", in: untouched).isEmpty)
+
+        // A `*` inside a component, as git allows.
+        let archive = try makeBare()
+        defer { removing(archive)() }
+        try runGit(["branch", "release-1"], in: work)
+        try runGit(["branch", "release-2"], in: work)
+        try repo.push(remote: archive.path,
+                      refspecs: ["refs/heads/release-*:refs/heads/archive-*", "^refs/heads/archive-*2"],
+                      setUpstream: false, progress: { _ in })
+        #expect(try refs("refs/heads", in: archive) == ["refs/heads/archive-1"])
+
+        // Any revision as the source, with a full destination.
+        try repo.push(remote: archive.path, refspecs: ["HEAD^{commit}:refs/heads/rev"],
+                      setUpstream: false, progress: { _ in })
+        #expect(try runGit(["rev-parse", "rev"], in: archive) == runGit(["rev-parse", "HEAD"], in: work))
+        #expect(throws: Libgit2Error.self) {
+            try repo.push(remote: archive.path, refspecs: ["HEAD^{commit}:rev2"],
+                          setUpstream: false, progress: { _ in })
+        }
 
         // A pattern leaves alone a destination an explicit refspec claims,
         // while explicit refspecs all go out, as in git.

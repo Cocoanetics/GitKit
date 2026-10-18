@@ -276,7 +276,24 @@ extension Repository {
         let src = colon.map { String(body[..<$0]) } ?? body
         guard !src.isEmpty, !src.hasPrefix("refs/") else { return refspec }
 
-        let (qualifiedSrc, dstPrefix) = try qualifiedPushSource(src)
+        let qualifiedSrc: String, dstPrefix: String
+        do {
+            (qualifiedSrc, dstPrefix) = try qualifiedPushSource(src)
+        } catch {
+            // Not a branch or tag, but maybe any other revision (`HEAD^`,
+            // an object ID), which git pushes to a destination given in
+            // full.
+            guard let colon, isRevision(src) else { throw error }
+            let dst = body[body.index(after: colon)...]
+            guard dst.hasPrefix("refs/") else {
+                throw Libgit2Error(
+                    code: GIT_EINVALIDSPEC.rawValue,
+                    klass: Int32(GIT_ERROR_INVALID.rawValue),
+                    message: "the destination you provided is not a full refname "
+                        + "(i.e., starting with \"refs/\")")
+            }
+            return refspec
+        }
         guard let colon else {
             return "\(prefix)\(qualifiedSrc):\(qualifiedSrc)"
         }
@@ -287,6 +304,13 @@ extension Repository {
             ? dst
             : "\(dstPrefix)\(dst)"
         return "\(prefix)\(qualifiedSrc):\(qualifiedDst)"
+    }
+
+    /// Whether `expression` names an object, as `git rev-parse` would.
+    private func isRevision(_ expression: String) -> Bool {
+        var object: OpaquePointer?
+        defer { git_object_free(object) }
+        return git_revparse_single(&object, repo, expression) == 0
     }
 
     private func forcePushRefspec(_ refspec: String) -> String {

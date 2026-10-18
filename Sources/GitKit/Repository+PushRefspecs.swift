@@ -65,8 +65,7 @@ extension Repository {
                 // As in git: a ref name or a pattern, without a
                 // destination; an empty one or an object ID won't do.
                 let name = String(refspec.dropFirst())
-                guard !name.contains(":"), !Self.isObjectID(name),
-                      isValidRefspecName(name, pattern: name.contains("*"))
+                guard !name.contains(":"), !Self.isObjectID(name), isValidRefspecName(name)
                 else { throw invalidRefspec(refspec) }
                 plan.negatives.append(name)
                 continue
@@ -144,23 +143,28 @@ extension Repository {
         let source = String(sides[0])
         let destination = sides.count > 1 ? String(sides[1]) : source
         guard [source, destination].allSatisfy({ side in
-            side.filter { $0 == "*" }.count == 1 && isValidRefspecName(side, pattern: true)
+            side.contains("*") && isValidRefspecName(side)
         }) else { throw invalidRefspec(body) }
         return PushPlan.Pattern(force: force, source: source, destination: destination)
     }
 
     /// Whether `name` is a ref name as git takes one in a refspec: a
-    /// single level is fine, and with `pattern`, one `*`. libgit2 accepts
-    /// a name it can tidy up (`refs/heads//x`); git doesn't, so the name
-    /// has to come back from normalizing unchanged.
-    private func isValidRefspecName(_ name: String, pattern: Bool) -> Bool {
+    /// single level is fine, and so is one `*`, anywhere (`release-*`).
+    /// libgit2's pattern flag wants the `*` to be a whole component, so
+    /// the name is checked with a plain character in its place. libgit2
+    /// also accepts a name it can tidy up (`refs/heads//x`), which git
+    /// doesn't: the name has to come back from normalizing unchanged.
+    private func isValidRefspecName(_ name: String) -> Bool {
+        guard name.filter({ $0 == "*" }).count <= 1 else { return false }
+        let plain = name.replacingOccurrences(of: "*", with: "x")
         // C enums import as Int32 on Windows, UInt32 elsewhere.
-        var flags = UInt32(GIT_REFERENCE_FORMAT_ALLOW_ONELEVEL.rawValue)
-        if pattern { flags |= UInt32(GIT_REFERENCE_FORMAT_REFSPEC_PATTERN.rawValue) }
+        let flags = UInt32(GIT_REFERENCE_FORMAT_ALLOW_ONELEVEL.rawValue)
         // Normalizing only ever shortens the name.
-        var buffer = [CChar](repeating: 0, count: name.utf8.count + 1)
-        guard git_reference_normalize_name(&buffer, buffer.count, name, flags) == 0 else { return false }
-        return String(cString: buffer) == name
+        var buffer = [CChar](repeating: 0, count: plain.utf8.count + 1)
+        guard git_reference_normalize_name(&buffer, buffer.count, plain, flags) == 0 else {
+            return false
+        }
+        return String(cString: buffer) == plain
     }
 
     /// A full object ID in hex, SHA-1 or SHA-256.
