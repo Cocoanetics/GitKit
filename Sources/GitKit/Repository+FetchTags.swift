@@ -88,6 +88,27 @@ extension Repository {
     /// The tag refspec git adds for `--tags` (`tag_refspec`).
     static let allTagsRefspec = "refs/tags/*:refs/tags/*"
 
+    /// Every local tag that is a symbolic ref (`refs/tags/x ->
+    /// refs/heads/main`), and its target, by name as bytes.
+    func localSymbolicTags() throws -> [[UInt8]: String] {
+        var iterator: UnsafeMutablePointer<git_reference_iterator>?
+        try check(git_reference_iterator_glob_new(&iterator, repo, "refs/tags/*"))
+        defer { git_reference_iterator_free(iterator) }
+        var tags: [[UInt8]: String] = [:]
+        while true {
+            var ref: OpaquePointer?
+            let rc = git_reference_next(&ref, iterator)
+            if rc == GIT_ITEROVER.rawValue { break }
+            try check(rc)
+            defer { git_reference_free(ref) }
+            guard let name = git_reference_name(ref), let target = git_reference_symbolic_target(ref) else {
+                continue
+            }
+            tags[Array(String(cString: name).utf8)] = String(cString: target)
+        }
+        return tags
+    }
+
     /// Every local tag and the object it points at, by name as bytes.
     func localTagObjects() throws -> [[UInt8]: git_oid] {
         var iterator: UnsafeMutablePointer<git_reference_iterator>?
@@ -122,7 +143,8 @@ extension Repository {
     /// Returns the tags refused, and the ones excluded, whose lines go
     /// from FETCH_HEAD.
     func settleFetchedTags(
-        before: [[UInt8]: git_oid], remoteRefs: RemoteRefs, refspecs: [String], allTags: Bool,
+        before: [[UInt8]: git_oid], symbolicBefore: [[UInt8]: String] = [:],
+        remoteRefs: RemoteRefs, refspecs: [String], allTags: Bool,
         lines: inout [FetchSummaryLine]
     ) throws -> (refused: [String], excluded: [String]) {
         let texts = refspecs + (allTags ? [Self.allTagsRefspec] : [])
@@ -171,8 +193,22 @@ extension Repository {
                 .first { remoteRefs.object(of: $0) != nil }
             return resolved.map { $0.utf8.elementsEqual(name.utf8) } ?? false
         }
-        /// Put `tag` back as `before` had it, or gone if it had none.
+        /// Put `tag` back as `before` had it, or gone if it had none; a
+        /// symbolic tag stays the symbolic ref it was.
         func restore(_ tag: String) throws {
+            if let target = symbolicBefore[Array(tag.utf8)] {
+                var ref: OpaquePointer?
+                if git_reference_lookup(&ref, repo, tag) == 0,
+                   let current = git_reference_symbolic_target(ref), String(cString: current) == target {
+                    git_reference_free(ref)
+                    return
+                }
+                git_reference_free(ref)
+                var created: OpaquePointer?
+                try check(git_reference_symbolic_create(&created, repo, tag, target, 1, nil))
+                git_reference_free(created)
+                return
+            }
             var now = git_oid()
             let exists = git_reference_name_to_id(&now, repo, tag) == 0
             if var old = before[Array(tag.utf8)] {
@@ -190,6 +226,8 @@ extension Repository {
             tags(for: name, explicitOnly: true).map { Array($0.tag.utf8) }
         })
         var refused: [String] = []
+        // Ref names as bytes, as git compares them.
+        var refusedNames = Set<[UInt8]>()
         var excluded: [String] = []
         for name in remoteRefs.names {
             guard var remote = remoteRefs.object(of: name) else { continue }
@@ -221,7 +259,9 @@ extension Repository {
             // Each tag the ref goes to is settled on its own; a forced
             // refspec to that same tag lets it move.
             for tag in mapped.map(\.tag) where !mapped.contains(where: { $0.tag == tag && $0.forced }) {
-                guard var old = before[Array(tag.utf8)], !refused.contains(tag) else { continue }
+                guard var old = before[Array(tag.utf8)], !refusedNames.contains(Array(tag.utf8)) else {
+                    continue
+                }
                 guard git_oid_equal(&old, &remote) == 0 else {
                     // Up to date, as git sees it; libgit2 may have read a
                     // short source as another ref and moved the tag.
@@ -239,6 +279,7 @@ extension Repository {
                     remoteRef: name, remote: shortRefName(name), localRef: tag, local: shortRefName(tag),
                     note: "would clobber existing tag"))
                 refused.append(tag)
+                refusedNames.insert(Array(tag.utf8))
             }
         }
         return (refused, excluded)

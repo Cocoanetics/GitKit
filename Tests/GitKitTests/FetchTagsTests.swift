@@ -314,6 +314,16 @@ struct FetchTagsTests {
         #expect(try runGit(["rev-parse", "x"], in: clone) == runGit(["rev-parse", "refs/tags/foo"], in: upstream))
     }
 
+    @Test("a symbolic tag a negative refspec excludes stays as it was")
+    func symbolicExcludedTag() throws {
+        let (upstream, clone) = try makeUpstreamAndClone()
+        defer { [upstream, clone].forEach { try? FileManager.default.removeItem(at: $0) } }
+        try runGit(["tag", "x", "main"], in: upstream)
+        try runGit(["symbolic-ref", "refs/tags/x", "refs/heads/main"], in: clone)
+        _ = try fetch(clone, ["refs/heads/*:refs/remotes/origin/*", "^refs/tags/x"], tags: .all)
+        #expect(try runGit(["symbolic-ref", "refs/tags/x"], in: clone) == "refs/heads/main")
+    }
+
     @Test("a negative refspec keeps a tag out of --tags")
     func negativeRefspec() throws {
         let (upstream, clone) = try makeUpstreamAndClone()

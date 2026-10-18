@@ -311,6 +311,7 @@ extension Repository {
         let tagsBefore = allTags || (effectiveRefspecs.contains {
             !$0.hasPrefix("+") && !$0.hasPrefix("^") && Self.storesFetchedRef($0)
         }) ? try localTagObjects() : [:]
+        let symbolicTagsBefore = allTags ? try localSymbolicTags() : [:]
 
         // One fetch for all of them, as git applies them; with none,
         // libgit2 takes the remote's configured refspecs, else `HEAD`.
@@ -368,7 +369,8 @@ extension Repository {
         if !tagsBefore.isEmpty || allTags {
             let remoteRefs = try advertisedRefs(remoteHandle)
             let settled = try settleFetchedTags(
-                before: tagsBefore, remoteRefs: remoteRefs, refspecs: effectiveRefspecs,
+                before: tagsBefore, symbolicBefore: symbolicTagsBefore,
+                remoteRefs: remoteRefs, refspecs: effectiveRefspecs,
                 allTags: allTags, lines: &reporter.fetchLines)
             refusedTags = settled.refused
             if allTags {
