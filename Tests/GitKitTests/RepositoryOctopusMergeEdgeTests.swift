@@ -195,6 +195,46 @@ extension RepositoryOctopusMergeTests {
         #expect(exists == FileManager.default.fileExists(atPath: path(other)))
     }
 
+    @Test("moves a gitlink past a submodule's own local changes, as git does")
+    func dirtySubmodule() throws {
+        let sub = FileManager.default.temporaryDirectory.appendingPathComponent("OctopusSub-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: sub, withIntermediateDirectories: true)
+        try git(["init", "-q", "-b", "main"], in: sub)
+        try write("1\n", to: "s", in: sub)
+        try git(["add", "s"], in: sub)
+        try git(["commit", "-q", "-m", "s1"], in: sub)
+        try write("2\n", to: "s", in: sub)
+        try git(["commit", "-q", "-am", "s2"], in: sub)
+
+        let dir = try makeRepository()
+        try git(["checkout", "-q", "base"], in: dir)
+        try git(["-c", "protocol.file.allow=always", "submodule", "-q", "add", sub.path, "sub"], in: dir)
+        try git(["-C", "sub", "checkout", "-q", "HEAD~1"], in: dir)
+        try git(["add", "sub"], in: dir)
+        try git(["commit", "-q", "-m", "sub"], in: dir)
+        try git(["branch", "-f", "withsub"], in: dir)
+        try git(["checkout", "-q", "-b", "up"], in: dir)
+        try git(["-C", "sub", "checkout", "-q", "main"], in: dir)
+        try git(["add", "sub"], in: dir)
+        try git(["commit", "-q", "-m", "up"], in: dir)
+        try git(["-C", "sub", "checkout", "-q", "HEAD~1"], in: dir)
+        try git(["checkout", "-q", "-b", "side", "withsub"], in: dir)
+        try write("side\n", to: "side", in: dir)
+        try git(["add", "side"], in: dir)
+        try git(["commit", "-q", "-m", "side"], in: dir)
+        try git(["checkout", "-q", "withsub"], in: dir)
+        try write("dirty\n", to: "sub/s", in: dir)
+
+        let other = try twin(of: dir)
+        let result = try merge(["side", "up"], in: dir)
+        try git(["merge", "-q", "-m", "Merge branches", "side", "up"], in: other)
+        guard case .mergeCommit = result.outcome else {
+            Issue.record("expected a merge commit, got \(result.outcome)"); return
+        }
+        #expect(try state(of: dir) == state(of: other))
+        #expect(try String(contentsOf: dir.appendingPathComponent("sub/s"), encoding: .utf8) == "dirty\n")
+    }
+
     @Test("refuses a bare repository before anything changes")
     func refusesBare() throws {
         let dir = try makeRepository()

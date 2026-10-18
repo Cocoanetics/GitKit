@@ -394,7 +394,10 @@ extension Repository {
         guard git_repository_is_bare(repo) == 0 else { return [:] }
         var options = git_diff_options()
         try check(git_diff_options_init(&options, UInt32(GIT_DIFF_OPTIONS_VERSION)))
+        // A submodule's own work tree is the submodule's business: the
+        // merge moves only the superproject's gitlink.
         options.flags = UInt32(GIT_DIFF_INCLUDE_UNTRACKED.rawValue) | UInt32(GIT_DIFF_RECURSE_UNTRACKED_DIRS.rawValue)
+            | UInt32(GIT_DIFF_IGNORE_SUBMODULES.rawValue)
         var diff: OpaquePointer?
         try check(git_diff_index_to_workdir(&diff, repo, index, &options))
         defer { git_diff_free(diff) }
