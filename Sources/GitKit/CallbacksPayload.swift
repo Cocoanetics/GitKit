@@ -385,10 +385,10 @@ private func fetchLine(
         return .init(kind: .deleted, flag: "-", summary: "[deleted]",
                      remoteRef: "", remote: "(none)", localRef: refname, local: local)
     }
-    // Tags map onto themselves; libgit2 hands an auto-followed tag over
-    // with whatever refspec it was working through.
-    let remoteRef = refname.hasPrefix("refs/tags/")
-        ? refname : remoteRefName(of: refname, through: spec) ?? refname
+    // The refspec maps the local ref back to the remote one. A tag libgit2
+    // followed comes with whatever refspec it was working through, which
+    // doesn't map it: such a tag maps onto itself.
+    let remoteRef = remoteRefName(of: refname, through: spec) ?? refname
     let remote = shortRefName(remoteRef)
     guard let old else {
         let kind = remoteRef.hasPrefix("refs/tags/") ? "[new tag]"

@@ -100,6 +100,24 @@ struct FetchSummaryTests {
         return log.text
     }
 
+    @Test("refspecs given together list in their order, a branch can go into a tag")
+    func severalRefspecs() throws {
+        let fixture = try makeFixture()
+        defer { fixture.remove() }
+        let (work, git, kit) = (fixture.work, fixture.git, fixture.kit)
+        try runGit(["commit", "-q", "--allow-empty", "-m", "two"], in: work)
+        try runGit(["tag", "v1"], in: work)
+        try runGit(["branch", "-f", "dev", "main"], in: work)
+        try runGit(["push", "-q", "origin", "main", "dev", "v1"], in: work)
+
+        // A branch into a local tag, a ref both source-only and stored:
+        // git names the branch, and shows both lines.
+        let refspecs = ["main:refs/tags/x", "main", "dev:refs/heads/copy"]
+        let expected = try runGit(["fetch", "origin"] + refspecs, in: git)
+        let output = try gitKitFetch(kit, refspecs: refspecs)
+        #expect(output == expected)
+    }
+
     @Test("headers show remotes as git does: without credentials, and fetch without .git")
     func displayURLs() {
         let cases: [(url: String, shown: String, from: String)] = [

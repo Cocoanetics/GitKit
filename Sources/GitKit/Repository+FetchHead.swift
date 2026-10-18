@@ -1,6 +1,16 @@
 import Foundation
 import CGitKit
 
+/// A fetch's summary line with where git prints it: by pass (`rank`),
+/// then by the refspec it came from, then by ref name.
+private struct RankedFetchLine {
+    let rank: Int
+    let refspec: Int
+    let key: String
+    let line: FetchSummaryLine
+
+}
+
 extension Repository {
 
     /// A fetch's `lines` in git's order, with a line added for each ref
@@ -24,13 +34,15 @@ extension Repository {
                 return (spec, git_refspec_dst(spec).map { $0.pointee != 0 } ?? false)
             }
         defer { parsed.forEach { git_refspec_free($0.spec) } }
-        func fetched(_ name: String, mapped: Bool) -> Bool {
-            parsed.contains { $0.mapped == mapped && Self.refspec($0.spec, fetches: name) }
+        // The refspec a line comes from, by position: git lists what
+        // refspecs given on the command line fetched in their order.
+        func fetcher(of name: String, mapped: Bool) -> Int? {
+            parsed.firstIndex { $0.mapped == mapped && Self.refspec($0.spec, fetches: name) }
         }
         // An update the refspecs asked for, as opposed to an
         // opportunistic one of another remote-tracking ref.
-        func stored(_ name: String, into local: String) -> Bool {
-            parsed.contains {
+        func storer(of name: String, into local: String) -> Int? {
+            parsed.firstIndex {
                 $0.mapped && Self.refspec($0.spec, fetches: name)
                     && Self.refspec($0.spec, maps: name, to: local)
             }
@@ -38,30 +50,45 @@ extension Repository {
 
         let entries = fetchHeadEntries()
         let toMerge = Set(entries.filter(\.merge).map(\.name))
-        var ranked: [(rank: Int, key: String, line: FetchSummaryLine)] = []
-        for line in lines {
+        var ranked: [RankedFetchLine] = []
+        for line in lines.map({ Self.qualified($0, by: entries.map(\.name)) }) {
             switch line.kind {
             case .deleted:
-                ranked.append((0, line.local, line))
+                ranked.append(.init(rank: 0, refspec: 0, key: line.local, line: line))
             case .update:
-                // Followed tags come after what the refspecs fetched.
-                let rank = stored(line.remoteRef, into: line.localRef)
-                    ? (toMerge.contains(line.remoteRef) ? 1 : 2)
-                    : line.remoteRef.hasPrefix("refs/tags/") ? 3 : 4
-                ranked.append((rank, line.remoteRef, line))
+                if let refspec = storer(of: line.remoteRef, into: line.localRef) {
+                    ranked.append(.init(rank: toMerge.contains(line.remoteRef) ? 1 : 2,
+                                        refspec: refspec, key: line.remoteRef, line: line))
+                } else if line.remoteRef.hasPrefix("refs/tags/") {
+                    // Followed tags come next…
+                    ranked.append(.init(rank: 3, refspec: 0, key: line.remoteRef, line: line))
+                } else {
+                    // …then the opportunistic updates, by the refspec
+                    // that fetched each ref.
+                    let refspec = parsed.firstIndex { Self.refspec($0.spec, fetches: line.remoteRef) }
+                    ranked.append(.init(rank: 4, refspec: refspec ?? parsed.count,
+                                        key: line.remoteRef, line: line))
+                }
             case .fetchHead:
                 continue
             }
         }
-        for entry in entries
-        where fetched(entry.name, mapped: false) && !fetched(entry.name, mapped: true) {
+        // A ref a source-only refspec fetched gets its FETCH_HEAD line,
+        // whatever else fetched it too (FETCH_HEAD lists it once per
+        // refspec; git shows it once).
+        var shown = Set<String>()
+        for entry in entries where shown.insert(entry.name).inserted {
+            guard let refspec = fetcher(of: entry.name, mapped: false) else { continue }
             let (kind, what) = Self.fetchHeadDescription(of: entry.name)
-            ranked.append((entry.merge ? 1 : 2, entry.name, FetchSummaryLine(
+            ranked.append(.init(rank: entry.merge ? 1 : 2, refspec: refspec, key: entry.name, line: FetchSummaryLine(
                 kind: .fetchHead, flag: "*", summary: kind,
                 remoteRef: entry.name, remote: what, localRef: "FETCH_HEAD", local: "FETCH_HEAD")))
         }
         return ranked.enumerated()
-            .sorted { ($0.element.rank, $0.element.key, $0.offset) < ($1.element.rank, $1.element.key, $1.offset) }
+            .sorted { lhs, rhs in
+                let (a, b) = (lhs.element, rhs.element)
+                return (a.rank, a.refspec, a.key, lhs.offset) < (b.rank, b.refspec, b.key, rhs.offset)
+            }
             .map(\.element.line)
     }
 
@@ -138,6 +165,25 @@ extension Repository {
         }
         return ["", "refs/", "refs/heads/", "refs/tags/", "refs/remotes/"]
             .contains { $0 + destination == local }
+    }
+
+    /// `line` with a remote ref given as typed in a refspec (`main`)
+    /// spelled out as FETCH_HEAD names it (`refs/heads/main`), which also
+    /// tells what kind of ref a new one is.
+    private static func qualified(_ line: FetchSummaryLine, by names: [String]) -> FetchSummaryLine {
+        guard line.kind == .update, !line.remoteRef.hasPrefix("refs/"),
+              let full = names.first(where: { name in
+                  ["refs/", "refs/tags/", "refs/heads/", "refs/remotes/"]
+                      .contains { $0 + line.remoteRef == name }
+              })
+        else { return line }
+        var line = line
+        line.remoteRef = full
+        if line.summary == "[new ref]" {
+            line.summary = full.hasPrefix("refs/heads/") ? "[new branch]"
+                : full.hasPrefix("refs/tags/") ? "[new tag]" : "[new ref]"
+        }
+        return line
     }
 
     /// The summary and name git shows for a FETCH_HEAD entry.

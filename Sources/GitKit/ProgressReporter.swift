@@ -22,11 +22,11 @@ struct FetchSummaryLine {
     /// `-` deleted.
     let flag: Character
     /// `[new branch]`, `abc1234..def5678`, `branch` (FETCH_HEAD), …
-    let summary: String
+    var summary: String
     /// The remote ref, e.g. `refs/heads/main` (empty when deleted).
-    let remoteRef: String
+    var remoteRef: String
     /// The remote ref as shown (`main`, `(none)`).
-    let remote: String
+    var remote: String
     /// The local ref, e.g. `refs/remotes/origin/main` (`FETCH_HEAD`).
     let localRef: String
     /// The local ref as shown (`origin/main`).
