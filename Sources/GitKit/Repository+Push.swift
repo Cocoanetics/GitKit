@@ -452,7 +452,17 @@ extension Repository {
 
         let colon = body.firstIndex(of: ":")
         let src = colon.map { String(body[..<$0]) } ?? body
-        guard !src.isEmpty, !src.hasPrefix("refs/") else { return refspec }
+        guard !src.isEmpty else { return refspec }
+        // A full ref name goes as written, if it names something.
+        if src.hasPrefix("refs/") {
+            guard isRevision(src) else {
+                throw Libgit2Error(
+                    code: GIT_ERROR.rawValue,
+                    klass: Int32(GIT_ERROR_REFERENCE.rawValue),
+                    message: "src refspec \(src) does not match any")
+            }
+            return refspec
+        }
 
         let qualifiedSrc: String
         do {

@@ -221,6 +221,11 @@ struct PushRejectionTests {
         for (refspecs, lines) in [
             // Sources, before connecting.
             (["mian", "mian2"], ["src refspec mian does not match any", "src refspec mian2 does not match any"]),
+            // Full ref names too.
+            (["refs/heads/nope", "refs/heads/nope2:refs/heads/main"], [
+                "src refspec refs/heads/nope does not match any",
+                "src refspec refs/heads/nope2 does not match any"
+            ]),
             // Destinations, in refspec order.
             ([":nope", "main:refs/heads/w", "dev:refs/heads/w", ":nope2"], [
                 "unable to delete 'nope': remote ref does not exist",
