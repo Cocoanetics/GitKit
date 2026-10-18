@@ -146,6 +146,27 @@ struct RepositoryTests {
         #expect(try runGit(["remote"], in: dest).isEmpty)
     }
 
+    @Test("a tracking lease on a URL or path expects the branch absent")
+    func trackingLeaseOnAPath() throws {
+        let source = try makeFixtureRepo()
+        defer { try? FileManager.default.removeItem(at: source) }
+        let origin = try makeBareOrigin()
+        defer { try? FileManager.default.removeItem(at: origin) }
+
+        let repo = try Repository.open(at: source)
+        // Absent on the remote: the leased push goes through.
+        try repo.push(remote: origin.path, refspec: "main", setUpstream: false,
+                      forceWithLease: .tracking, progress: { _ in })
+        #expect(try runGit(["rev-parse", "main"], in: origin)
+                == runGit(["rev-parse", "HEAD"], in: source))
+        // Present now, with no tracking ref to vouch for it: refused.
+        try runGit(["commit", "--allow-empty", "-m", "two"], in: source)
+        #expect(throws: Libgit2Error.self) {
+            try repo.push(remote: origin.path, refspec: "main", setUpstream: false,
+                          forceWithLease: .tracking, progress: { _ in })
+        }
+    }
+
     @Test("a remote that is neither configured nor a repository fails")
     func unknownRemoteFails() throws {
         let dir = try makeFixtureRepo()

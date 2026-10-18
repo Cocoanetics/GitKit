@@ -91,7 +91,8 @@ extension Repository {
             ? qualifiedRefspec
             : forcePushRefspec(qualifiedRefspec)
         let pushLease = try lease.map {
-            try pushLeaseCheck($0, remote: remote, refspec: pushRefspec)
+            try pushLeaseCheck(
+                $0, remote: remote, refspec: pushRefspec, isConfigured: isConfigured)
         }
 
         try pushRefspec.withCString { cstr in
@@ -166,7 +167,8 @@ extension Repository {
     private func pushLeaseCheck(
         _ lease: PushLease,
         remote: String,
-        refspec: String
+        refspec: String,
+        isConfigured: Bool
     ) throws -> PushLeaseCheck {
         guard let destination = destinationRefName(fromPushRefspec: refspec) else {
             throw Libgit2Error(
@@ -184,7 +186,11 @@ extension Repository {
                     klass: Int32(GIT_ERROR_INVALID.rawValue),
                     message: "force-with-lease tracking requires a branch destination")
             }
-            expectedOID = try oidForReference("refs/remotes/\(remote)/\(branch)")
+            // A URL or path has no remote-tracking refs, so the lease
+            // expects the destination to be absent.
+            expectedOID = isConfigured
+                ? try oidForReference("refs/remotes/\(remote)/\(branch)")
+                : nil
         case .expecting(let sha):
             expectedOID = try parseFullOID(sha, label: "force-with-lease expected oid")
         }
