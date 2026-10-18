@@ -537,7 +537,9 @@ extension Repository {
         func mark(_ tag: String) -> [UInt8] { Array("\tnot-for-merge\ttag '\(shortRefName(tag))' of ".utf8) }
         func isLine(_ line: [UInt8], of tag: String) -> Bool { line.firstRange(of: mark(tag)) != nil }
         let others = lines.filter { line in !tags.contains { isLine(line, of: $0) } }
-        let tagLines = tags.filter { !excluded.contains($0) }
+        // Ref names as bytes, as git compares them.
+        let excludedNames = Set(excluded.map { Array($0.utf8) })
+        let tagLines = tags.filter { !excludedNames.contains(Array($0.utf8)) }
             .compactMap { tag in lines.first { isLine($0, of: tag) } }
         var output = Data()
         for line in others + tagLines {
