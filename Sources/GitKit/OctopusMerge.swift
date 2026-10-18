@@ -49,13 +49,22 @@ public enum OctopusPathMerge: Sendable, Equatable {
     /// `ERROR: <path>: Not handling case <base> -> <ours> -> <theirs>`,
     /// each an object name or empty where that side has no such path.
     case notHandled(path: String, base: String, ours: String, theirs: String)
-    /// `Adding <path>`, a path their side adds where the other side has
-    /// a file over a directory (or a directory over a file), then git's
-    /// update-index refusing each of `files`, the paths below the file:
+    /// `Adding <path>`, a path their side adds where a file and a
+    /// directory meet (one side's file where the other has a directory,
+    /// or below a file the base had), then git's update-index refusing
+    /// each of `files`, the paths below a file that stays (none when the
+    /// file is gone or unmerged, and the path was added):
     /// `error: '<file>' appears as both a file and as a directory`,
     /// `error: <file>: cannot add to the index - missing --add option?`
     /// and `fatal: git update-index: --cacheinfo cannot add <file>`.
     case addedOverDirectory(path: String, files: [String])
+    /// Nothing said: git-merge-one-file removes a file our side deleted
+    /// where it keeps a directory, which read-tree leaves to it.
+    case removed(path: String)
+    /// `ERROR: File <path> added identically in both branches,` and
+    /// `ERROR: but permissions conflict <ours>-><theirs>.`: the same
+    /// content, added with different modes (octal, as `100644`).
+    case addedWithDifferentModes(path: String, ours: String, theirs: String)
     /// `ERROR: <path>: Not merging symbolic link changes.`: both sides
     /// changed it, one to a symbolic link. Ours stays in the work tree.
     case symlink(path: String)
@@ -67,15 +76,18 @@ public enum OctopusPathMerge: Sendable, Equatable {
         switch self {
         case .merged(let path), .conflict(let path), .addedInBoth(let path, _),
              .notHandled(let path, _, _, _), .addedOverDirectory(let path, _), .symlink(let path),
-             .submodule(let path):
+             .submodule(let path), .addedWithDifferentModes(let path, _, _), .removed(let path):
             return path
         }
     }
 
     /// Whether the path was left unmerged.
     public var failed: Bool {
-        if case .merged = self { return false }
-        return true
+        switch self {
+        case .merged, .removed: return false
+        case .addedOverDirectory(_, let files): return !files.isEmpty
+        default: return true
+        }
     }
 }
 

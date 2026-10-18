@@ -514,4 +514,80 @@ struct RepositoryOctopusMergeTests {
         }
     }
 }
+
+// Directory/file cases over a file the base has, permissions, and bare
+// repositories.
+extension RepositoryOctopusMergeTests {
+
+    /// Branches off `base` for directory/file cases over a file the base
+    /// has: `modd` changes `f`, `df` replaces it with `f/x`; `m1` and
+    /// `m2` add the same `s`, `m2` executable.
+    private func makeFileOverDirectory() throws -> URL {
+        let dir = try makeRepository()
+        try git(["checkout", "-q", "-b", "modd", "base"], in: dir)
+        try write("changed\n", to: "f", in: dir)
+        try git(["commit", "-q", "-am", "modd"], in: dir)
+        try git(["checkout", "-q", "-b", "df", "base"], in: dir)
+        try git(["rm", "-q", "f"], in: dir)
+        try FileManager.default.createDirectory(at: dir.appendingPathComponent("f"), withIntermediateDirectories: true)
+        try write("x\n", to: "f/x", in: dir)
+        try git(["add", "f"], in: dir)
+        try git(["commit", "-q", "-m", "df"], in: dir)
+        for (branch, executable) in [("m1", false), ("m2", true)] {
+            try git(["checkout", "-q", "-b", branch, "base"], in: dir)
+            try write("same\n", to: "s", in: dir)
+            if executable {
+                try FileManager.default.setAttributes([.posixPermissions: 0o755],
+                                                      ofItemAtPath: dir.appendingPathComponent("s").path)
+            }
+            try git(["add", "s"], in: dir)
+            try git(["commit", "-q", "-m", branch], in: dir)
+        }
+        try git(["checkout", "-q", "-f", "main"], in: dir)
+        try git(["clean", "-qfd"], in: dir)
+        return dir
+    }
+
+    @Test("a file replaced by a directory, as git-merge-one-file takes it", arguments: [
+        (["c", "modd", "df"], [OctopusPathMerge.notHandled(
+            path: "f", base: "", ours: "", theirs: ""), .addedOverDirectory(path: "f/x", files: [])]),
+        (["df", "c"], [OctopusPathMerge.removed(path: "f")])
+    ])
+    func fileReplacedByDirectory(heads: [String], last: [OctopusPathMerge]) throws {
+        let dir = try makeFileOverDirectory()
+        let other = try twin(of: dir)
+        let result = try merge(heads, in: dir)
+        _ = try git(["merge", "-q", "-m", "Merge branches"] + heads, in: other, check: false)
+        // Object names aside, the paths and what became of them.
+        let automatic = result.steps.last?.automatic?.map { path -> OctopusPathMerge in
+            guard case .notHandled(let path, _, _, _) = path else { return path }
+            return .notHandled(path: path, base: "", ours: "", theirs: "")
+        }
+        #expect(automatic == last)
+        #expect(try state(of: dir) == state(of: other))
+        #expect(!FileManager.default.fileExists(atPath: dir.appendingPathComponent("f~HEAD").path))
+    }
+
+    @Test("the same content added with different modes is a permissions conflict")
+    func addedWithDifferentModes() throws {
+        let dir = try makeFileOverDirectory()
+        let other = try twin(of: dir)
+        let result = try merge(["c", "m1", "m2"], in: dir)
+        #expect(try git(["merge", "-q", "-m", "Merge branches", "c", "m1", "m2"], in: other, check: false).status == 1)
+        #expect(result.steps.last?.automatic == [.addedWithDifferentModes(path: "s", ours: "100644", theirs: "100755")])
+        #expect(try state(of: dir) == state(of: other))
+    }
+
+    @Test("refuses a bare repository before anything changes")
+    func refusesBare() throws {
+        let dir = try makeRepository()
+        let bare = FileManager.default.temporaryDirectory.appendingPathComponent("OctopusBare-\(UUID().uuidString)")
+        try git(["clone", "-q", "--bare", dir.path, bare.path], in: dir)
+        let repository = try Repository.open(at: bare)
+        #expect(throws: Libgit2Error.self) {
+            try repository.octopusMerge(heads: ["a", "b"], message: "Merge", env: Self.identity)
+        }
+        #expect(!FileManager.default.fileExists(atPath: bare.appendingPathComponent("ORIG_HEAD").path))
+    }
+}
 #endif

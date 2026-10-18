@@ -82,6 +82,10 @@ extension Repository {
         author: Signature? = nil,
         env: [String: String] = ProcessInfo.processInfo.environment
     ) throws -> OctopusMergeResult {
+        // A merge needs a work tree.
+        if git_repository_is_bare(repo) != 0 {
+            throw Libgit2Error(code: -1, klass: 0, message: "this operation must be run in a work tree")
+        }
         // git refuses to start a merge while another operation waits.
         let state = git_repository_state(repo)
         if state == Int32(GIT_REPOSITORY_STATE_MERGE.rawValue) {
@@ -176,7 +180,7 @@ extension Repository {
                 keepOurs = automatic.compactMap { path in
                     switch path {
                     case .addedInBoth(let path, _), .notHandled(let path, _, _, _), .symlink(let path),
-                         .submodule(let path): return path
+                         .submodule(let path), .addedWithDifferentModes(let path, _, _): return path
                     default: return nil
                     }
                 }

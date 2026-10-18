@@ -95,6 +95,10 @@ extension Repository {
                     result.append(.symlink(path: path))
                 } else if let our, let their, [our.mode, their.mode].contains(0o160000) {
                     result.append(.submodule(path: path))
+                } else if let our, let their, ancestor == nil, our.hex == their.hex {
+                    // "Added in both, identically" but for the mode.
+                    result.append(.addedWithDifferentModes(path: path, ours: String(our.mode, radix: 8),
+                                                           theirs: String(their.mode, radix: 8)))
                 } else if our != nil, their != nil {
                     result.append(.addedInBoth(path: path, emptyBlobMissing: emptyBlobMissing))
                 } else {
@@ -105,9 +109,12 @@ extension Repository {
                 try conflict(path, ancestor: ancestor, ours: our, theirs: their, in: merged)
             }
         }
+        var reported = Set(result.map(\.path))
+        try readTreeDirectoryFileCases(paths: paths, bases: bases, ours: ours, theirs: theirs,
+                                       merged: merged, result: &result, reported: &reported)
+
         // A file where the other side has a directory: libgit2 leaves it
         // unmerged, and git reports their side's path.
-        var reported = Set(result.map(\.path))
         for path in try unmergedPaths(merged) where !reported.contains(path) {
             guard let other = paths.first(where: { $0.hasPrefix(path + "/") || path.hasPrefix($0 + "/") })
             else { continue }
@@ -146,6 +153,63 @@ extension Repository {
             }
         }
         return result.sorted { Self.indexOrder($0.path, $1.path) }
+    }
+
+    /// Where a file and a directory meet over a file the base had,
+    /// what read-tree leaves to git-merge-one-file beyond libgit2's
+    /// conflicts: a file our side deleted for a directory (`.removed`),
+    /// and a path their side adds below a file that doesn't stay.
+    private func readTreeDirectoryFileCases(
+        paths: Set<String>, bases: [git_oid], ours: git_oid, theirs: git_oid, merged: OpaquePointer?,
+        result: inout [OctopusPathMerge], reported: inout Set<String>
+    ) throws {
+        // A file our side deleted, the others kept, where our side now
+        // has a directory: read-tree leaves it, and git-merge-one-file
+        // removes it without a word.
+        try withTrees([ours, theirs] + bases) { trees in
+            for path in paths.sorted(by: Self.indexOrder) where !reported.contains(path) {
+                guard try entry(trees[0], path) == nil, let their = try entry(trees[1], path),
+                      try trees.dropFirst(2).allSatisfy({ try entry($0, path) == their }),
+                      paths.contains(where: { $0.hasPrefix(path + "/") }),
+                      try paths.contains(where: { try $0.hasPrefix(path + "/") && entry(trees[0], $0) != nil })
+                else { continue }
+                result.append(.removed(path: path))
+                reported.insert(path)
+            }
+        }
+        // A path their side adds below a file the base had (gone, or
+        // unmerged): read-tree leaves it for git-merge-one-file, which
+        // adds it.
+        try withTrees([ours, theirs] + bases) { trees in
+            for path in paths.sorted(by: Self.indexOrder) where !reported.contains(path) {
+                guard try entry(trees[1], path) != nil, try entry(trees[0], path) == nil else { continue }
+                var parents: [String] = []
+                var parent = Substring(path)
+                while let slash = parent.lastIndex(of: "/") {
+                    parent = parent[..<slash]
+                    parents.append(String(parent))
+                }
+                var inBase = false
+                for base in trees.dropFirst(2) where !inBase {
+                    inBase = try parents.contains { try entry(base, $0) != nil }
+                }
+                // …and the merge keeps no file there.
+                guard inBase, parents.allSatisfy({ git_index_get_bypath(merged, $0, 0) == nil }) else { continue }
+                result.append(.addedOverDirectory(path: path, files: []))
+                reported.insert(path)
+                // Added, in place of what libgit2 made of it.
+                _ = git_index_conflict_remove(merged, path)
+                if let their = try entry(trees[1], path) {
+                    var added = git_index_entry()
+                    added.id = their.oid
+                    added.mode = their.mode
+                    try path.withCString { cPath in
+                        added.path = cPath
+                        try check(git_index_add(merged, &added))
+                    }
+                }
+            }
+        }
     }
 
     func withTrees<T>(_ oids: [git_oid], _ body: ([OpaquePointer?]) throws -> T) throws -> T {
@@ -367,12 +431,26 @@ extension Repository {
         guard let workdir = git_repository_workdir(repo).map({ String(cString: $0) }) else { return }
         let root = URL(fileURLWithPath: workdir)
         func write(_ oid: git_oid, to path: String) throws {
+            // Where a directory stands, git leaves it.
+            var isDirectory: ObjCBool = false
+            if FileManager.default.fileExists(atPath: root.appendingPathComponent(path).path,
+                                              isDirectory: &isDirectory), isDirectory.boolValue { return }
             var oid = oid
             var blob: OpaquePointer?
             try check(git_blob_lookup(&blob, repo, &oid))
             defer { git_blob_free(blob) }
             let data = Data(bytes: git_blob_rawcontent(blob), count: Int(git_blob_rawsize(blob)))
             try data.write(to: root.appendingPathComponent(path))
+        }
+        // libgit2 writes a side's file next to a directory in its way as
+        // `<path>~<label>`; git writes none.
+        for path in try unmergedPaths(merged) {
+            for label in ["HEAD", theirLabel] {
+                let side = root.appendingPathComponent(path + "~" + label)
+                if git_index_get_bypath(merged, path + "~" + label, 0) == nil {
+                    try? FileManager.default.removeItem(at: side)
+                }
+            }
         }
         // git-merge-one-file leaves these with our side's content.
         for path in keepingOurs {
