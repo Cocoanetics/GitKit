@@ -498,6 +498,27 @@ extension RepositoryOctopusMergeTests {
         #expect(try git(["ls-files", "-v", "sub"], in: dir).stdout == git(["ls-files", "-v", "sub"], in: other).stdout)
     }
 
+    @Test("moves the ref a symbolic HEAD names outside refs/heads, and a detached HEAD itself",
+          arguments: ["refs/foo", nil])
+    func symbolicAndDetachedHead(target: String?) throws {
+        let dir = try makeRepository()
+        if let target {
+            try git(["update-ref", target, "main"], in: dir)
+            try git(["symbolic-ref", "HEAD", target], in: dir)
+        } else {
+            try git(["checkout", "-q", "--detach", "main"], in: dir)
+        }
+        let other = try twin(of: dir)
+        _ = try merge(["a", "b"], in: dir)
+        try git(["merge", "-q", "-m", "Merge branches", "a", "b"], in: other)
+        #expect(try state(of: dir) == state(of: other))
+        for ref in ["HEAD", "main"] + (target.map { [$0] } ?? []) {
+            #expect(try git(["rev-parse", ref], in: dir).stdout == git(["rev-parse", ref], in: other).stdout, "\(ref)")
+        }
+        #expect(try git(["symbolic-ref", "-q", "HEAD"], in: dir, check: false).stdout
+                == git(["symbolic-ref", "-q", "HEAD"], in: other, check: false).stdout)
+    }
+
     @Test("refuses a bare repository before anything changes")
     func refusesBare() throws {
         let dir = try makeRepository()

@@ -317,7 +317,9 @@ extension Repository {
             var head: OpaquePointer?
             try check(git_repository_head(&head, repo))
             defer { git_reference_free(head) }
-            if git_reference_is_branch(head) == 1 {
+            // A symbolic HEAD moves whatever it names (a branch, or any
+            // other ref); only a detached HEAD is set itself.
+            if git_repository_head_detached(repo) == 0 {
                 var moved: OpaquePointer?
                 try check(git_reference_set_target(&moved, head, &commitOID, reflog))
                 git_reference_free(moved)
