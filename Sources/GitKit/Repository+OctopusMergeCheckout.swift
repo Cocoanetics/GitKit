@@ -71,17 +71,34 @@ extension Repository {
             try check(git_index_write(index))
         }
         let root = URL(fileURLWithPath: workdir)
-        func write(_ oid: git_oid, to path: String) throws {
-            // Where a directory stands, git leaves it.
+        /// Write `oid` at `path` as an entry of `mode` is: a symbolic
+        /// link, a submodule's (empty) directory, or a file, executable
+        /// or not. Where a directory stands, a file isn't written.
+        func write(_ oid: git_oid, mode: UInt32 = 0o100644, to path: String) throws {
+            let url = root.appendingPathComponent(path)
+            if mode == 0o160000 {
+                if !Self.exists(url.path) {
+                    try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+                }
+                return
+            }
             var isDirectory: ObjCBool = false
-            if FileManager.default.fileExists(atPath: root.appendingPathComponent(path).path,
-                                              isDirectory: &isDirectory), isDirectory.boolValue { return }
+            let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
+            if exists, isDirectory.boolValue { return }
             var oid = oid
             var blob: OpaquePointer?
             try check(git_blob_lookup(&blob, repo, &oid))
             defer { git_blob_free(blob) }
             let data = Data(bytes: git_blob_rawcontent(blob), count: Int(git_blob_rawsize(blob)))
-            try data.write(to: root.appendingPathComponent(path))
+            if Self.exists(url.path) { try FileManager.default.removeItem(at: url) }
+            if mode == 0o120000 {
+                try FileManager.default.createSymbolicLink(atPath: url.path,
+                                                           withDestinationPath: String(decoding: data, as: UTF8.self))
+                return
+            }
+            try data.write(to: url)
+            try FileManager.default.setAttributes([.posixPermissions: mode == 0o100755 ? 0o755 : 0o644],
+                                                  ofItemAtPath: url.path)
         }
         // libgit2 writes a side's file next to a directory in its way as
         // `<path>~<label>`; git writes none.
@@ -119,23 +136,9 @@ extension Repository {
         for path in keepingOurs {
             var ancestor, ours, theirs: UnsafePointer<git_index_entry>?
             guard git_index_conflict_get(&ancestor, &ours, &theirs, merged, path) == 0, let ours else { continue }
-            switch ours.pointee.mode {
-            case 0o160000:
-                // A submodule stays as checkout left it.
-                continue
-            case 0o120000:
-                var oid = ours.pointee.id
-                var blob: OpaquePointer?
-                try check(git_blob_lookup(&blob, repo, &oid))
-                defer { git_blob_free(blob) }
-                let bytes = Data(bytes: git_blob_rawcontent(blob), count: Int(git_blob_rawsize(blob)))
-                let target = String(decoding: bytes, as: UTF8.self)
-                let link = root.appendingPathComponent(path)
-                try? FileManager.default.removeItem(at: link)
-                try FileManager.default.createSymbolicLink(atPath: link.path, withDestinationPath: target)
-            default:
-                try write(ours.pointee.id, to: path)
-            }
+            // A submodule stays as checkout left it.
+            if ours.pointee.mode == 0o160000 { continue }
+            try write(ours.pointee.id, mode: ours.pointee.mode, to: path)
         }
         // A merged file where unmerged paths sit below it: read-tree
         // leaves the file, and git-merge-one-file can't add the rest.
@@ -149,7 +152,7 @@ extension Repository {
             let directory = root.appendingPathComponent(file)
             if (try? FileManager.default.contentsOfDirectory(atPath: directory.path))?.isEmpty == false { continue }
             try? FileManager.default.removeItem(at: directory)
-            try write(entry.id, to: file)
+            try write(entry.id, mode: entry.mode, to: file)
         }
     }
 

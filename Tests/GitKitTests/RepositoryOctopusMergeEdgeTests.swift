@@ -300,6 +300,38 @@ extension RepositoryOctopusMergeTests {
         try expectGaveUp(dir, before: before, like: other)
     }
 
+    @Test("a link or an executable over a directory stays what it is", arguments: [true, false])
+    func fileOverDirectoryKeepsItsType(link: Bool) throws {
+        let dir = try makeRepository()
+        try git(["checkout", "-q", "-b", "kind", "base"], in: dir)
+        let d = dir.appendingPathComponent("d").path
+        if link {
+            try FileManager.default.createSymbolicLink(atPath: d, withDestinationPath: "target")
+        } else {
+            try write("#!/bin/sh\n", to: "d", in: dir)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: d)
+        }
+        try git(["add", "d"], in: dir)
+        try git(["commit", "-q", "-m", "kind"], in: dir)
+        try git(["checkout", "-q", "-b", "dir", "base"], in: dir)
+        try FileManager.default.createDirectory(atPath: d, withIntermediateDirectories: true)
+        try write("f\n", to: "d/file", in: dir)
+        try git(["add", "d"], in: dir)
+        try git(["commit", "-q", "-m", "dir"], in: dir)
+        try git(["checkout", "-q", "-f", "main"], in: dir)
+        try git(["clean", "-qfd"], in: dir)
+
+        let other = try twin(of: dir)
+        _ = try merge(["c", "kind", "dir"], in: dir)
+        _ = try git(["merge", "-q", "-m", "Merge branches", "c", "kind", "dir"], in: other, check: false)
+        #expect(try state(of: dir) == state(of: other))
+        let attributes = { (url: URL) in
+            try FileManager.default.attributesOfItem(atPath: url.appendingPathComponent("d").path)
+        }
+        #expect(try attributes(dir)[.type] as? FileAttributeType == attributes(other)[.type] as? FileAttributeType)
+        #expect(try attributes(dir)[.posixPermissions] as? Int == attributes(other)[.posixPermissions] as? Int)
+    }
+
     @Test("refuses a bare repository before anything changes")
     func refusesBare() throws {
         let dir = try makeRepository()
