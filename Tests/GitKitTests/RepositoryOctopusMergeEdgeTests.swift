@@ -285,6 +285,21 @@ extension RepositoryOctopusMergeTests {
         #expect(try String(contentsOf: dir.appendingPathComponent("p"), encoding: .utf8) == "1m\n2\n3\n4\n5\n6\n7s\n")
     }
 
+    @Test("a change in the work tree stops a merge whose result for that file is ours")
+    func dirtyFileMergedBackToOurs() throws {
+        let dir = try makeRepository()
+        // Ours changed f's first and last line, `b` only its last, alike.
+        try write("1a\n2\n3\n4\n5\n6\n7b\n", to: "f", in: dir)
+        try git(["commit", "-q", "-am", "ours"], in: dir)
+        try write("dirty\n", to: "f", in: dir)
+        let other = try twin(of: dir)
+        let before = try state(of: dir)
+        let result = try merge(["b", "c"], in: dir)
+        #expect(try git(["merge", "-q", "b", "c"], in: other, check: false).status == 2)
+        #expect(result.outcome == .failed(.notUpToDate(path: "f")))
+        try expectGaveUp(dir, before: before, like: other)
+    }
+
     @Test("refuses a bare repository before anything changes")
     func refusesBare() throws {
         let dir = try makeRepository()

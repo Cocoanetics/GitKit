@@ -155,9 +155,14 @@ extension Repository {
                 throw error
             }
             // The step changes every path its index differs from the
-            // merge so far at, conflicts included.
-            if let failure = overwrites(try changes(from: mergedTree, to: merged), worktree: worktree,
-                                        ignoreCase: ignoreCase) {
+            // merge so far at, conflicts included, and read-tree -u has
+            // touched every path it left to the automatic merge, even one
+            // that merges back to ours.
+            var touched = try changes(from: mergedTree, to: merged)
+            for path in automatic.map(\.path) where touched[path] == nil {
+                touched[path] = Change(oid: "", mode: 0)
+            }
+            if let failure = overwrites(touched, worktree: worktree, ignoreCase: ignoreCase) {
                 git_index_free(merged)
                 steps.append(OctopusMergeStep(head: name, kind: .merge, automatic: nil))
                 return OctopusMergeResult(steps: steps, outcome: .failed(failure))
