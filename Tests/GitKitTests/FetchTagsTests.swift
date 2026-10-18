@@ -348,6 +348,20 @@ struct FetchTagsTests {
         #expect(!(try fetchHead(clone)).contains("not-for-merge tag 'x'"))
     }
 
+    @Test("an explicit refspec into a symbolic tag is refused, as git refuses it")
+    func symbolicTagExplicit() throws {
+        let (upstream, clone) = try makeUpstreamAndClone()
+        defer { [upstream, clone].forEach { try? FileManager.default.removeItem(at: $0) } }
+        try runGit(["tag", "x", "side"], in: upstream)
+        try runGit(["symbolic-ref", "refs/tags/x", "refs/heads/main"], in: clone)
+        for tags in [FetchTags.off, .all] {
+            let (output, error) = try fetch(clone, ["refs/tags/x:refs/tags/x"], tags: tags)
+            #expect(error == FetchRejectedError(refs: ["refs/tags/x"]))
+            #expect(output.contains(" ! [rejected] x          -> x  (would clobber existing tag)\n"))
+            #expect(try runGit(["symbolic-ref", "refs/tags/x"], in: clone) == "refs/heads/main")
+        }
+    }
+
     @Test("a fetched ref that is an annotated tag vouches for what it points at")
     func annotatedTagTip() throws {
         let (upstream, clone) = try makeUpstreamAndClone()

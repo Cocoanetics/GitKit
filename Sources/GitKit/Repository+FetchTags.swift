@@ -300,17 +300,19 @@ extension Repository {
             for tag in mapped.map(\.tag) where !mapped.contains(where: {
                 $0.forced && $0.tag.utf8.elementsEqual(tag.utf8)
             }) {
-                // git leaves a symbolic tag alone, saying nothing and
-                // keeping it out of FETCH_HEAD.
-                if symbolicBefore[Array(tag.utf8)] != nil {
+                // `--tags` leaves a symbolic tag alone, saying nothing and
+                // keeping it out of FETCH_HEAD; an explicit refspec into
+                // it is refused like any other.
+                let symbolic = symbolicBefore[Array(tag.utf8)]
+                if symbolic != nil, !tags(name, true).contains(where: { $0.tag.utf8.elementsEqual(tag.utf8) }) {
                     try restore(tag)
                     lines.removeAll { $0.localRef.utf8.elementsEqual(tag.utf8) }
                     if allTags { excluded.append(tag) }
                     continue
                 }
-                guard var old = before[Array(tag.utf8)], !refusedNames.contains(Array(tag.utf8)) else {
-                    continue
-                }
+                guard var old = before[Array(tag.utf8)] ?? symbolic?.oid,
+                      !refusedNames.contains(Array(tag.utf8))
+                else { continue }
                 guard git_oid_equal(&old, &remote) == 0 else {
                     // Up to date, as git sees it; libgit2 may have read a
                     // short source as another ref and moved the tag.
@@ -329,6 +331,8 @@ extension Repository {
                     note: "would clobber existing tag"))
                 refused.append(tag)
                 refusedNames.insert(Array(tag.utf8))
+                // Nor does `--tags` list a symbolic tag in FETCH_HEAD.
+                if symbolic != nil, allTags { excluded.append(tag) }
             }
         }
         return (refused, excluded)
