@@ -180,6 +180,11 @@ struct RepositoryTests {
 
         try runGit(["tag", "v1"], in: dir)
         #expect(try push("v1").hasSuffix(" * [new tag]         v1 -> v1\n"))
+        #expect(try push("refs/tags/v1:refs/heads/fromtag").hasSuffix(
+            " * [new branch]      v1 -> fromtag\n"))
+        try runGit(["update-ref", "refs/remotes/upstream/topic", "HEAD"], in: dir)
+        #expect(try push("refs/remotes/upstream/topic:refs/heads/topic").hasSuffix(
+            " * [new branch]      upstream/topic -> topic\n"))
         try runGit(["switch", "-c", "local"], in: dir)
         #expect(try push("local:remote").hasSuffix(" * [new branch]      local -> remote\n"))
     }

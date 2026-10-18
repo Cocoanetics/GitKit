@@ -538,10 +538,12 @@ private let combinedPushRefTrampoline: git_push_update_reference_cb = {
     return status.isEmpty ? 0 : -1
 }
 
-/// A ref name as git's push summary shows it: without `refs/heads/` or
-/// `refs/tags/`.
+/// A ref name as git's push summary shows it (`shorten_unambiguous_ref`):
+/// `refs/heads/main` → `main`, `refs/tags/v1` → `v1`,
+/// `refs/remotes/upstream/topic` → `upstream/topic`, other `refs/x` → `x`.
 private func shortRefName(_ refname: String) -> String {
-    for prefix in ["refs/heads/", "refs/tags/"] where refname.hasPrefix(prefix) {
+    for prefix in ["refs/heads/", "refs/tags/", "refs/remotes/", "refs/"]
+    where refname.hasPrefix(prefix) {
         return String(refname.dropFirst(prefix.count))
     }
     return refname
