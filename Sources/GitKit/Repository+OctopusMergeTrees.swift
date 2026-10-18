@@ -431,9 +431,36 @@ extension Repository {
             return formatOID(&oid) + "\n"
         }.joined()
         try Data(heads.utf8).write(to: dir.appendingPathComponent("MERGE_HEAD"))
-        let text = message + "\n\n# Conflicts:\n" + conflicts.map { "#\t\($0)\n" }.joined()
+        // Every line commented, as strbuf_add_commented_lines does: the
+        // path's first after a tab, any further after a space.
+        let comment = try commentString()
+        func commented(_ text: String) -> String {
+            text.split(separator: "\n", omittingEmptySubsequences: false).enumerated().map { index, line in
+                index == 0 ? "\(comment)\t\(line)\n" : line.isEmpty ? "\(comment)\n" : "\(comment) \(line)\n"
+            }.joined()
+        }
+        let text = message + "\n\n\(comment) Conflicts:\n" + conflicts.map(commented).joined()
         try Data(text.utf8).write(to: dir.appendingPathComponent("MERGE_MSG"))
         try Data((noFastForward ? "no-ff" : "").utf8).write(to: dir.appendingPathComponent("MERGE_MODE"))
+    }
+
+    /// What starts a comment line: the last of `core.commentChar` and
+    /// `core.commentString` configured (one setting to git), else `#`,
+    /// as is `auto` when git writes a merge's message.
+    func commentString() throws -> String {
+        var config: OpaquePointer?
+        try check(git_repository_config_snapshot(&config, repo))
+        defer { git_config_free(config) }
+        var iterator: UnsafeMutablePointer<git_config_iterator>?
+        try check(git_config_iterator_glob_new(&iterator, config, "^core\\.comment(char|string)$"))
+        defer { git_config_iterator_free(iterator) }
+        var value: String?
+        var entry: UnsafeMutablePointer<git_config_entry>?
+        while git_config_next(&entry, iterator) == 0, let entry {
+            value = entry.pointee.value.map { String(cString: $0) }
+        }
+        guard let value, !value.isEmpty, value.lowercased() != "auto" else { return "#" }
+        return value
     }
 
     /// Check out `tree` and commit it on HEAD with `parents`.

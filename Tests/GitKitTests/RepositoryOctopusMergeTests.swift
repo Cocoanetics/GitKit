@@ -191,6 +191,31 @@ struct RepositoryOctopusMergeTests {
         #expect(try git(["rev-parse", "ORIG_HEAD"], in: dir).stdout == git(["rev-parse", "main"], in: dir).stdout)
     }
 
+    @Test("comments every line of a conflicted path in MERGE_MSG, with git's comment character",
+          arguments: [nil, ";"])
+    func mergeMessageComments(commentChar: String?) throws {
+        let dir = try makeRepository()
+        let name = "we\nird"
+        try git(["checkout", "-q", "-b", "n1", "base"], in: dir)
+        try write("1\n", to: name, in: dir)
+        try git(["add", "."], in: dir)
+        try git(["commit", "-q", "-m", "n1"], in: dir)
+        try git(["checkout", "-q", "-b", "n2", "base"], in: dir)
+        try write("2\n", to: name, in: dir)
+        try git(["add", "."], in: dir)
+        try git(["commit", "-q", "-m", "n2"], in: dir)
+        try git(["checkout", "-q", "main"], in: dir)
+        if let commentChar { try git(["config", "core.commentChar", commentChar], in: dir) }
+        let other = try twin(of: dir)
+        _ = try merge(["a", "n1", "n2"], in: dir)
+        #expect(try git(["merge", "-q", "-m", "Merge branches", "a", "n1", "n2"], in: other, check: false).status == 1)
+        let ours = try String(contentsOf: dir.appendingPathComponent(".git/MERGE_MSG"), encoding: .utf8)
+        let theirs = try String(contentsOf: other.appendingPathComponent(".git/MERGE_MSG"), encoding: .utf8)
+        #expect(ours == theirs)
+        let comment = commentChar ?? "#"
+        #expect(ours == "Merge branches\n\n\(comment) Conflicts:\n\(comment)\twe\n\(comment) ird\n")
+    }
+
     @Test("gives up, changing nothing, when an earlier head conflicts")
     func conflictsBeforeLastHead() throws {
         let dir = try makeRepository()
