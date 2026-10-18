@@ -299,6 +299,19 @@ struct FetchTagsTests {
         #expect(output.components(separatedBy: " -> v1\n").count == 2)
     }
 
+    @Test("the remote's HEAD fetched into a tag doesn't clobber it")
+    func headIntoTag() throws {
+        let (upstream, clone) = try makeUpstreamAndClone()
+        defer { [upstream, clone].forEach { try? FileManager.default.removeItem(at: $0) } }
+        _ = try fetch(clone, ["HEAD:refs/tags/x"], tags: .off)
+        let before = try runGit(["rev-parse", "x"], in: clone)
+        try runGit(["commit", "-q", "--allow-empty", "-m", "four"], in: upstream)
+        let (output, error) = try fetch(clone, ["HEAD:refs/tags/x"], tags: .off)
+        #expect(error == FetchRejectedError(refs: ["refs/tags/x"]))
+        #expect(output.contains(" ! [rejected] HEAD       -> x  (would clobber existing tag)\n"))
+        #expect(try runGit(["rev-parse", "x"], in: clone) == before)
+    }
+
     @Test("a negative refspec excludes a tag from an explicit refspec too")
     func excludedExplicitSource() throws {
         let (upstream, clone) = try makeUpstreamAndClone()

@@ -368,7 +368,7 @@ extension Repository {
         }
         var refusedTags: [String] = []
         if !tagsBefore.isEmpty || !symbolicTagsBefore.isEmpty || allTags {
-            let remoteRefs = try advertisedRefs(remoteHandle)
+            let remoteRefs = try advertisedRefs(remoteHandle, includingHead: true)
             let settled = try settleFetchedTags(
                 before: tagsBefore, symbolicBefore: symbolicTagsBefore,
                 remoteRefs: remoteRefs, refspecs: effectiveRefspecs,

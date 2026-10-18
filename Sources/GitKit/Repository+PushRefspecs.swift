@@ -184,7 +184,9 @@ extension Repository {
     /// The refs a connected remote advertises (`refs/…` only, without
     /// the peeled `^{}` entries of annotated tags, as git lists them),
     /// with the object each points at.
-    func advertisedRefs(_ remote: OpaquePointer?) throws -> RemoteRefs {
+    /// `includingHead` keeps the remote's `HEAD` too, which a fetch
+    /// refspec can name (`HEAD:refs/tags/x`).
+    func advertisedRefs(_ remote: OpaquePointer?, includingHead: Bool = false) throws -> RemoteRefs {
         var heads: UnsafeMutablePointer<UnsafePointer<git_remote_head>?>?
         var count = 0
         try check(git_remote_ls(&heads, &count, remote))
@@ -192,7 +194,9 @@ extension Repository {
         for index in 0..<count {
             guard let head = heads?[index]?.pointee, let name = head.name else { continue }
             let refname = String(cString: name)
-            if refname.hasPrefix("refs/"), !refname.hasSuffix("^{}") { refs.add(refname, head.oid) }
+            if refname.hasPrefix("refs/") || (includingHead && refname == "HEAD"), !refname.hasSuffix("^{}") {
+                refs.add(refname, head.oid)
+            }
         }
         return refs
     }
