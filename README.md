@@ -50,8 +50,10 @@ Operations are synchronous, `throws` (typed ``Libgit2Error``), and return
   (continue/skip/abort), `cherryPick`, `stash`
   (save/apply/pop/list/show/branch), `apply` (patches).
 - **Remotes** — `fetch` (with shallow `depth`), `unshallow`, `push` (incl.
-  `-u` upstream wiring), `addRemote`, `remoteList`, `remoteURL`,
-  real-git-style progress output. `GitSSHTransport.register(_:)` lets a
+  `-u` upstream wiring and git's per-ref summary), `addRemote`,
+  `remoteList`, `remoteURL`, real-git-style progress output. Remotes go in
+  as git spells them (`clone(fromRemote:)`, `addRemote(name:remote:)`),
+  and `fetch` / `push` take a URL or path as well as a remote's name. `GitSSHTransport.register(_:)` lets a
   host plug its own in-process SSH client (e.g. one built on
   swift-nio-ssh) in place of libgit2's process-spawning `ssh_exec`
   transport for `ssh://` and scp-style remotes; `unregister()` restores

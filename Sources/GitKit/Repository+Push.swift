@@ -90,6 +90,9 @@ extension Repository {
         let pushRefspec = lease == nil
             ? qualifiedRefspec
             : forcePushRefspec(qualifiedRefspec)
+        reporter.repository = repo
+        reporter.abbreviation = summaryAbbreviation()
+        reporter.typedSource = typedPushSource(refspec)
         let pushLease = try lease.map {
             try pushLeaseCheck(
                 $0, remote: remote, refspec: pushRefspec, isConfigured: isConfigured)
@@ -125,6 +128,10 @@ extension Repository {
             }
         }
 
+        // Nothing to send: git says so instead of printing a summary.
+        if reporter.refLines.isEmpty {
+            reporter.write("Everything up-to-date\n")
+        }
         reporter.flushRefLines()
 
         // libgit2 doesn't have a one-shot "push -u": after a successful
@@ -134,6 +141,25 @@ extension Repository {
             try setUpstreamForRefspec(
                 remote: remote, refspec: pushRefspec, isConfigured: isConfigured)
         }
+    }
+
+    /// The source of `refspec` as typed — `HEAD` in `HEAD:refs/heads/x`,
+    /// `main` in `+main` — or `nil` for a deletion (`:dst`) or a pattern
+    /// (`refs/heads/*`), whose updates each name their own source.
+    private func typedPushSource(_ refspec: String) -> String? {
+        let body = refspec.hasPrefix("+") ? refspec.dropFirst() : Substring(refspec)
+        let source = body.split(separator: ":", maxSplits: 1,
+                                omittingEmptySubsequences: false).first ?? ""
+        return source.isEmpty || source.contains("*") ? nil : String(source)
+    }
+
+    /// `core.abbrev` as git applies it to the push summary: a number of
+    /// hex digits (4–40), `no` for full IDs, else (unset, `auto`) git's
+    /// default of 7.
+    private func summaryAbbreviation() -> Int {
+        guard let value = try? configGet("core.abbrev")?.lowercased() else { return 7 }
+        if let length = Int(value) { return min(max(length, 4), 40) }
+        return ["no", "false", "off"].contains(value) ? 40 : 7
     }
 
     /// libgit2's push parser expects fully-qualified refs where the CLI

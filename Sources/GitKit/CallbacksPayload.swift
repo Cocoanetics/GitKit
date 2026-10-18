@@ -135,7 +135,8 @@ func withCallbacksPayload<T>(
     let pushRefCB = reporter != nil ? combinedPushRefTrampoline : nil
     let packCB = reporter != nil ? combinedPackProgressTrampoline : nil
     let pushTransferCB = reporter != nil ? combinedPushTransferTrampoline : nil
-    let pushNegotiationCB = pushLease != nil ? combinedPushNegotiationTrampoline : nil
+    let pushNegotiationCB = (reporter != nil || pushLease != nil)
+        ? combinedPushNegotiationTrampoline : nil
     return try body(credCB, sidebandCB, transferCB, updateCB, pushRefCB,
                     packCB, pushTransferCB, pushNegotiationCB, raw)
 }
@@ -460,8 +461,50 @@ private let combinedPushNegotiationTrampoline: git_push_negotiation = {
     updates, len, payload in
     guard let payload else { return 0 }
     let box = Unmanaged<CallbackBox>.fromOpaque(payload).takeUnretainedValue()
+    if box.reporter != nil, let updates {
+        for index in 0..<Int(len) {
+            guard let update = updates[index]?.pointee,
+                  let destination = update.dst_refname else { continue }
+            var old = update.src
+            var new = update.dst
+            box.reporter!.pushUpdates[String(cString: destination)] = ProgressReporter.PushUpdate(
+                source: update.src_refname.map { String(cString: $0) } ?? "",
+                oldID: git_oid_is_zero(&old) == 1 ? nil : old,
+                newID: git_oid_is_zero(&new) == 1 ? nil : new)
+        }
+    }
     guard let pushLease = box.pushLease else { return 0 }
     return pushLease.verify(updates: updates, count: Int(len))
+}
+
+/// `oid` abbreviated the way git abbreviates it: at least `minimum` hex
+/// digits, lengthened while another object in `repository` shares the
+/// prefix (`git_object_short_id`). An object the repository doesn't
+/// have, like a remote's old tip, stays at `minimum`.
+func abbreviated(_ oid: git_oid, minimum: Int, in repository: OpaquePointer?) -> String {
+    var oid = oid
+    let full = String(cString: git_oid_tostr_s(&oid))
+    var object: OpaquePointer?
+    guard let repository,
+          git_object_lookup(&object, repository, &oid, GIT_OBJECT_ANY) == 0
+    else { return String(full.prefix(minimum)) }
+    defer { git_object_free(object) }
+    var buffer = git_buf()
+    defer { git_buf_dispose(&buffer) }
+    guard git_object_short_id(&buffer, object) == 0, let pointer = buffer.ptr else {
+        return String(full.prefix(minimum))
+    }
+    let unique = String(cString: pointer)
+    return unique.count >= minimum ? unique : String(full.prefix(minimum))
+}
+
+/// Whether moving a ref from `old` to `new` is a fast-forward: `new`
+/// descends from `old` in `repository`.
+private func isFastForward(from old: git_oid, to new: git_oid, in repository: OpaquePointer?) -> Bool {
+    guard let repository else { return false }
+    var old = old
+    var new = new
+    return git_graph_descendant_of(repository, &new, &old) == 1
 }
 
 private func humanBytes(_ bytes: Int) -> String {
@@ -482,18 +525,65 @@ private let combinedPushRefTrampoline: git_push_update_reference_cb = {
     guard box.reporter != nil else { return 0 }
     let refname = String(cString: refnamePtr)
     let status = statusPtr.map { String(cString: $0) } ?? ""
-    let short = stripHeadsPrefix(refname)
+    let update = box.reporter!.pushUpdates[refname]
+    let destination = shortRefName(refname)
+    let source = box.reporter!.typedSource.map(shortRefName)
+        ?? update.map { shortRefName($0.source) } ?? destination
+    let refs = source.isEmpty ? destination : "\(source) -> \(destination)"
 
+    // git's TRANSPORT_SUMMARY_WIDTH: room for `old...new`.
+    let width = 2 * box.reporter!.abbreviation + 3
     let line: String
-    if status.isEmpty {
-        // Real git's push summary doesn't pad the ref column when
-        // there's only one ref — keep it tight to match.
-        line = " * [new branch]      \(short) -> \(short)"
+    if !status.isEmpty {
+        line = pushSummaryLine("!", "[rejected]", "\(refs) (\(status))", width: width)
+    } else if let update, update.newID == nil {
+        line = pushSummaryLine("-", "[deleted]", destination, width: width)
+    } else if var old = update?.oldID, var new = update?.newID {
+        // A ref already up to date gets no line (git shows those only
+        // with `-v`); with nothing else, the push says `Everything
+        // up-to-date`.
+        if git_oid_equal(&old, &new) == 1 { return 0 }
+        let repository = box.reporter!.repository
+        let abbrev = box.reporter!.abbreviation
+        let oldID = abbreviated(old, minimum: abbrev, in: repository)
+        let newID = abbreviated(new, minimum: abbrev, in: repository)
+        if isFastForward(from: old, to: new, in: repository) {
+            line = pushSummaryLine(" ", "\(oldID)..\(newID)", refs, width: width)
+        } else {
+            line = pushSummaryLine(
+                "+", "\(oldID)...\(newID)", "\(refs) (forced update)", width: width)
+        }
     } else {
-        line = " ! [rejected]        \(short) -> \(short) (\(status))"
+        let kind = refname.hasPrefix("refs/heads/") ? "[new branch]"
+            : refname.hasPrefix("refs/tags/") ? "[new tag]" : "[new reference]"
+        line = pushSummaryLine("*", kind, refs, width: width)
     }
     box.reporter!.refLines.append(line)
     return status.isEmpty ? 0 : -1
+}
+
+/// A ref name as git's push summary shows it (`prettify_refname`):
+/// `refs/heads/main` → `main`, `refs/tags/v1` → `v1`,
+/// `refs/remotes/upstream/topic` → `upstream/topic`. Other namespaces
+/// stay fully qualified.
+private func shortRefName(_ refname: String) -> String {
+    for prefix in ["refs/heads/", "refs/tags/", "refs/remotes/"]
+    where refname.hasPrefix(prefix) {
+        return String(refname.dropFirst(prefix.count))
+    }
+    return refname
+}
+
+/// One line of git's push summary: ` <flag> <summary> <refs>`, the
+/// summary padded to `width` columns (`TRANSPORT_SUMMARY_WIDTH`, 17 at
+/// the default abbreviation) so the refs line up.
+private func pushSummaryLine(
+    _ flag: Character, _ summary: String, _ refs: String, width: Int
+) -> String {
+    let padded = summary.count >= width
+        ? summary
+        : summary + String(repeating: " ", count: width - summary.count)
+    return " \(flag) \(padded) \(refs)"
 }
 
 // MARK: Credential builder (extracted from CredentialsBridge so the
@@ -580,13 +670,6 @@ private func sourceShorthand(_ refname: String) -> String {
         return String(trimmed[trimmed.index(after: slash)...])
     }
     return String(trimmed)
-}
-
-private func stripHeadsPrefix(_ refname: String) -> String {
-    let prefix = "refs/heads/"
-    return refname.hasPrefix(prefix)
-        ? String(refname.dropFirst(prefix.count))
-        : refname
 }
 
 private func pad(_ s: String, to width: Int) -> String {

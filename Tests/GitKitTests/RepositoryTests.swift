@@ -8,6 +8,14 @@ import Foundation
 import Testing
 @testable import GitKit
 
+/// Collects progress text from a push; the sink is `@Sendable`.
+private final class ProgressLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var buffer = ""
+    func append(_ text: String) { lock.lock(); buffer += text; lock.unlock() }
+    var text: String { lock.lock(); defer { lock.unlock() }; return buffer }
+}
+
 @Suite("Repository")
 struct RepositoryTests {
 
@@ -115,6 +123,87 @@ struct RepositoryTests {
         let remoteSHA = try runGit(["rev-parse", "refs/heads/main"], in: origin)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         #expect(remoteSHA == localSHA)
+    }
+
+    @Test("push prints git's summary for each kind of ref update")
+    func pushSummaryLines() throws {
+        let dir = try makeFixtureRepo()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let origin = try makeBareOrigin()
+        defer { try? FileManager.default.removeItem(at: origin) }
+
+        let repo = try Repository.open(at: dir)
+        try repo.addRemote(name: "origin", url: origin)
+        func head() throws -> String {
+            try runGit(["rev-parse", "HEAD"], in: dir)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        func push(_ refspec: String = "main", lease: PushLease? = nil) throws -> String {
+            let log = ProgressLog()
+            if let lease {
+                try repo.push(remote: "origin", refspec: refspec, setUpstream: false,
+                              forceWithLease: lease, progress: { log.append($0) })
+            } else {
+                try repo.push(remote: "origin", refspec: refspec, setUpstream: false,
+                              progress: { log.append($0) })
+            }
+            return log.text
+        }
+
+        #expect(try push().hasSuffix(" * [new branch]      main -> main\n"))
+
+        let first = try head()
+        try Data("more\n".utf8).write(to: dir.appendingPathComponent("more.txt"))
+        try runGit(["add", "more.txt"], in: dir)
+        try runGit(["commit", "-m", "more"], in: dir)
+        let second = try head()
+        #expect(try push().hasSuffix("   \(first.prefix(7))..\(second.prefix(7))  main -> main\n"))
+
+        #expect(try push() == "Everything up-to-date\n")
+
+        try runGit(["commit", "--amend", "-m", "amended"], in: dir)
+        let amended = try head()
+        #expect(try push(lease: .expecting(second)).hasSuffix(
+            " + \(second.prefix(7))...\(amended.prefix(7)) main -> main (forced update)\n"))
+
+        // Forced, but a fast-forward: git prints a plain update.
+        try Data("next\n".utf8).write(to: dir.appendingPathComponent("next.txt"))
+        try runGit(["add", "next.txt"], in: dir)
+        try runGit(["commit", "-m", "next"], in: dir)
+        let next = try head()
+        #expect(try push(lease: .expecting(amended)).hasSuffix(
+            "   \(amended.prefix(7))..\(next.prefix(7))  main -> main\n"))
+
+        try runGit(["branch", "dev"], in: dir)
+        _ = try push("dev")
+        #expect(try push(":refs/heads/dev").hasSuffix(" - [deleted]         dev\n"))
+
+        try runGit(["tag", "v1"], in: dir)
+        #expect(try push("v1").hasSuffix(" * [new tag]         v1 -> v1\n"))
+        #expect(try push("refs/tags/v1:refs/heads/fromtag").hasSuffix(
+            " * [new branch]      v1 -> fromtag\n"))
+        try runGit(["update-ref", "refs/remotes/upstream/topic", "HEAD"], in: dir)
+        #expect(try push("refs/remotes/upstream/topic:refs/heads/topic").hasSuffix(
+            " * [new branch]      upstream/topic -> topic\n"))
+        #expect(try push("main:refs/custom/foo").hasSuffix(
+            " * [new reference]   main -> refs/custom/foo\n"))
+        try runGit(["update-ref", "refs/custom/local", "HEAD"], in: dir)
+        #expect(try push("refs/custom/local:refs/custom/remote").hasSuffix(
+            " * [new reference]   refs/custom/local -> refs/custom/remote\n"))
+
+        try runGit(["switch", "-c", "local"], in: dir)
+        #expect(try push("local:remote").hasSuffix(" * [new branch]      local -> remote\n"))
+        #expect(try push("HEAD:refs/heads/review").hasSuffix(
+            " * [new branch]      HEAD -> review\n"))
+
+        // core.abbrev widens the IDs and the column.
+        try runGit(["switch", "-q", "main"], in: dir)
+        try runGit(["config", "core.abbrev", "12"], in: dir)
+        let before = try head()
+        try runGit(["commit", "--allow-empty", "-m", "abbrev"], in: dir)
+        let after = try head()
+        #expect(try push().hasSuffix(
+            "   \(before.prefix(12))..\(after.prefix(12))  main -> main\n"))
     }
 
     @Test("fetch and push take a path, like git's <repository>")
