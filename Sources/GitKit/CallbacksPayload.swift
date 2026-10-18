@@ -372,58 +372,6 @@ private let combinedUpdateRefsTrampoline: @convention(c) (
     return 0
 }
 
-/// git's line for a local ref a fetch changed (`update_local_ref`): new
-/// refs by the kind of remote ref, fast-forwards as `old..new`, other
-/// moves as forced, a moved tag as `[tag update]`, a pruned ref as
-/// `[deleted]`.
-private func fetchLine(
-    refname: String, old: git_oid?, new: git_oid?, spec: OpaquePointer?,
-    reporter: ProgressReporter
-) -> FetchSummaryLine {
-    let local = shortRefName(refname)
-    guard let new else {
-        return .init(kind: .deleted, flag: "-", summary: "[deleted]",
-                     remoteRef: "", remote: "(none)", localRef: refname, local: local)
-    }
-    // The refspec maps the local ref back to the remote one. A tag libgit2
-    // followed comes with whatever refspec it was working through, which
-    // doesn't map it: such a tag maps onto itself.
-    let remoteRef = remoteRefName(of: refname, through: spec) ?? refname
-    let remote = shortRefName(remoteRef)
-    guard let old else {
-        let kind = remoteRef.hasPrefix("refs/tags/") ? "[new tag]"
-            : remoteRef.hasPrefix("refs/heads/") ? "[new branch]" : "[new ref]"
-        return .init(kind: .update, flag: "*", summary: kind,
-                     remoteRef: remoteRef, remote: remote, localRef: refname, local: local)
-    }
-    if refname.hasPrefix("refs/tags/") {
-        return .init(kind: .update, flag: "t", summary: "[tag update]",
-                     remoteRef: remoteRef, remote: remote, localRef: refname, local: local)
-    }
-    let oldID = abbreviated(old, minimum: reporter.abbreviation, in: reporter.repository)
-    let newID = abbreviated(new, minimum: reporter.abbreviation, in: reporter.repository)
-    // With fetch.showForcedUpdates off, git skips the ancestry walk and
-    // shows every update as a fast-forward.
-    if !reporter.showForcedUpdates || isFastForward(from: old, to: new, in: reporter.repository) {
-        return .init(kind: .update, flag: " ", summary: "\(oldID)..\(newID)",
-                     remoteRef: remoteRef, remote: remote, localRef: refname, local: local)
-    }
-    return .init(kind: .update, flag: "+", summary: "\(oldID)...\(newID)",
-                 remoteRef: remoteRef, remote: remote, localRef: refname, local: local,
-                 note: "forced update")
-}
-
-/// The remote ref `spec` maps onto local ref `refname`, if it does.
-private func remoteRefName(of refname: String, through spec: OpaquePointer?) -> String? {
-    guard let spec else { return nil }
-    var buffer = git_buf()
-    defer { git_buf_dispose(&buffer) }
-    guard git_refspec_rtransform(&buffer, spec, refname) == 0, let pointer = buffer.ptr else {
-        return nil
-    }
-    return String(cString: pointer)
-}
-
 /// `pack_progress`: server-side pack-builder phases for push.
 /// Stage 0 = `Counting objects`, stage 1 = `Compressing objects`.
 /// Real git emits `\r`-overwrite progress per stage and a `, done.\n`
@@ -538,15 +486,6 @@ func abbreviated(_ oid: git_oid, minimum: Int, in repository: OpaquePointer?) ->
     }
     let unique = String(cString: pointer)
     return unique.count >= minimum ? unique : String(full.prefix(minimum))
-}
-
-/// Whether moving a ref from `old` to `new` is a fast-forward: `new`
-/// descends from `old` in `repository`.
-private func isFastForward(from old: git_oid, to new: git_oid, in repository: OpaquePointer?) -> Bool {
-    guard let repository else { return false }
-    var old = old
-    var new = new
-    return git_graph_descendant_of(repository, &new, &old) == 1
 }
 
 private func humanBytes(_ bytes: Int) -> String {

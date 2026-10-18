@@ -238,7 +238,10 @@ behaves, each reported upstream:
   pruning, as git does. libgit2 only leaves them out of the negotiation,
   then updates them anyway whenever their objects are present, and prunes
   their remote-tracking refs once they're gone from the remote
-  (libgit2/libgit2#7435).
+  (libgit2/libgit2#7435). It also lets an explicit refspec for a tag
+  (`refs/tags/v1:refs/custom/x`) take effect, where libgit2's tag
+  auto-following claimed the tag first and never applied the refspec
+  (libgit2/libgit2#7438).
 
 ## The curated module and vendored headers (Windows, and why the submodule stays pristine)
 

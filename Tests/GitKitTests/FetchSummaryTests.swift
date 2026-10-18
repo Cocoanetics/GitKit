@@ -118,6 +118,25 @@ struct FetchSummaryTests {
         #expect(output == expected)
     }
 
+    @Test("an annotated tag moved forward is a fast-forward, peeled to its commit")
+    func annotatedTagFastForward() throws {
+        let fixture = try makeFixture()
+        defer { fixture.remove() }
+        let (work, git, kit) = (fixture.work, fixture.git, fixture.kit)
+        try runGit(["tag", "-a", "-m", "one", "v1"], in: work)
+        try runGit(["push", "-q", "origin", "v1"], in: work)
+        for clone in [git, kit] {
+            try runGit(["fetch", "-q", "origin", "refs/tags/v1:refs/custom/x"], in: clone)
+        }
+        try runGit(["commit", "-q", "--allow-empty", "-m", "two"], in: work)
+        try runGit(["tag", "-f", "-a", "-m", "two", "v1"], in: work)
+        try runGit(["push", "-q", "-f", "origin", "v1"], in: work)
+
+        let expected = try runGit(["fetch", "origin", "+refs/tags/v1:refs/custom/x"], in: git)
+        let output = try gitKitFetch(kit, refspecs: ["+refs/tags/v1:refs/custom/x"])
+        #expect(output == expected)
+    }
+
     @Test("headers show remotes as git does: without credentials, and fetch without .git")
     func displayURLs() {
         let cases: [(url: String, shown: String, from: String)] = [
