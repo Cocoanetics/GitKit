@@ -153,7 +153,7 @@ extension Repository {
         guard plan.refusals.isEmpty else {
             throw PushRefusedError(url: displayURL, refusals: plan.refusals)
         }
-        let pushLease = try lease.map { lease -> PushLeaseCheck in
+        if lease != nil {
             guard plan.patterns.isEmpty, plan.matching == nil,
                   plan.explicit.count == 1
             else {
@@ -162,10 +162,10 @@ extension Repository {
                     klass: Int32(GIT_ERROR_INVALID.rawValue),
                     message: "force-with-lease requires a destination ref")
             }
-            plan.explicit = plan.explicit.map { guessedPushRefspec(forcePushRefspec($0)) }
-            return try pushLeaseCheck(
-                lease, remote: remote, refspec: plan.explicit[0], isConfigured: isConfigured)
+            plan.explicit = plan.explicit.map(forcePushRefspec)
         }
+        // Checked once the remote's refs have completed its destination.
+        var pushLease: PushLeaseCheck?
         reporter.repository = repo
         reporter.abbreviation = try summaryAbbreviation()
         reporter.typedSources = plan.typedSources
@@ -174,7 +174,6 @@ extension Repository {
         try check(git_push_options_init(&opts, UInt32(GIT_PUSH_OPTIONS_VERSION)))
         let outcome = try withCallbacksPayload(
             credentials: credentials, reporter: reporter,
-            pushLease: pushLease,
             {
                 credCB, sidebandCB, _, _, pushRefCB, packCB,
                 pushTransferCB, pushNegotiationCB, payload -> PushOutcome in
@@ -194,8 +193,9 @@ extension Repository {
                 try check(git_remote_connect(
                     remoteHandle, GIT_DIRECTION_PUSH, &callbacks, nil, nil))
                 let remoteRefs = try advertisedRefs(remoteHandle)
-                try settleExplicitRefspecs(
-                    &plan, remoteRefs: remoteRefs, remote: remoteHandle, url: displayURL, payload: payload)
+                pushLease = try settleExplicitRefspecs(
+                    &plan, remoteRefs: remoteRefs, lease: lease, remote: (remote, remoteHandle, isConfigured),
+                    url: displayURL, payload: payload)
                 let pushRefspecs = try expandedPushRefspecs(plan, remoteRefs: remoteRefs.names)
                 guard !pushRefspecs.isEmpty else {
                     git_remote_disconnect(remoteHandle)
@@ -352,25 +352,35 @@ extension Repository {
 
     /// The explicit refspecs as the remote's refs settle them: a short
     /// destination names the remote ref as git finds it (`:dev` deletes
-    /// `refs/heads/dev`), and the summary shows each source as typed by
-    /// the destination the remote reports on. git refuses a destination it
-    /// can't complete, a deletion of nothing, and two explicit refspecs to
-    /// one ref before sending anything, listing every one; this throws
-    /// that refusal, disconnected.
+    /// `refs/heads/dev`), the summary shows each source as typed by the
+    /// destination the remote reports on, and a lease checks the
+    /// destination so completed. git refuses a destination it can't
+    /// complete, a deletion of nothing, and two explicit refspecs to one
+    /// ref before sending anything, listing every one; this throws that
+    /// refusal, disconnected.
     private func settleExplicitRefspecs(
-        _ plan: inout PushPlan, remoteRefs: RemoteRefs, remote: OpaquePointer?,
+        _ plan: inout PushPlan, remoteRefs: RemoteRefs, lease: PushLease?,
+        remote: (name: String, handle: OpaquePointer?, isConfigured: Bool),
         url: String, payload: UnsafeMutableRawPointer?
-    ) throws {
+    ) throws -> PushLeaseCheck? {
         let matched = matchedExplicitRefspecs(plan.explicit, remoteRefs: remoteRefs)
         guard matched.refusals.isEmpty else {
-            git_remote_disconnect(remote)
+            git_remote_disconnect(remote.handle)
             throw PushRefusedError(url: url, refusals: matched.refusals)
         }
         plan.explicit = matched.refspecs
         recordTypedSources(in: &plan)
-        if let payload {
-            Unmanaged<CallbackBox>.fromOpaque(payload).takeUnretainedValue()
-                .reporter?.typedSources = plan.typedSources
+        let box = payload.map { Unmanaged<CallbackBox>.fromOpaque($0).takeUnretainedValue() }
+        box?.reporter?.typedSources = plan.typedSources
+        guard let lease else { return nil }
+        do {
+            let check = try pushLeaseCheck(
+                lease, remote: remote.name, refspec: plan.explicit[0], isConfigured: remote.isConfigured)
+            box?.pushLease = check
+            return check
+        } catch {
+            git_remote_disconnect(remote.handle)
+            throw error
         }
     }
 
@@ -456,20 +466,6 @@ extension Repository {
         // A short destination is spelled out once the remote's refs are
         // in (qualifiedDestination), as git finds it.
         return "\(prefix)\(qualifiedSrc):\(body[body.index(after: colon)...])"
-    }
-
-    /// `refspec` with a short destination under the source's kind, as git
-    /// guesses it, for a lease that needs its destination before the
-    /// remote's refs are in.
-    private func guessedPushRefspec(_ refspec: String) -> String {
-        let body = Self.unforced(refspec)
-        guard let colon = body.firstIndex(of: ":") else { return refspec }
-        let source = String(body[..<colon])
-        let name = String(body[body.index(after: colon)...])
-        guard !name.isEmpty, !name.hasPrefix("refs/"),
-              let full = guessedDestination(name, from: source)
-        else { return refspec }
-        return (refspec.hasPrefix("+") ? "+" : "") + source + ":" + full
     }
 
     /// Whether `expression` names an object, as `git rev-parse` would.

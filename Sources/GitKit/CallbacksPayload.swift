@@ -9,7 +9,8 @@ import CGitKit
 final class CallbackBox {
     let credentialsProvider: CredentialProvider?
     var reporter: ProgressReporter?
-    let pushLease: PushLeaseCheck?
+    /// Set once the remote's refs have completed the lease's destination.
+    var pushLease: PushLeaseCheck?
 
     init(
         credentials: CredentialProvider?,

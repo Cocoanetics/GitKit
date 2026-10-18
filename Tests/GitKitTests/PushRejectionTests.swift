@@ -273,6 +273,22 @@ struct PushRejectionTests {
         }
     }
 
+    @Test("a lease checks the destination the remote's refs complete")
+    func leaseShortDestination() throws {
+        let (remote, mine, theirs) = try makeRemoteAndClones()
+        defer { [remote, mine, theirs].forEach { try? FileManager.default.removeItem(at: $0) } }
+        let remoteSHA = try runGit(["rev-parse", "main"], in: remote)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        try runGit(["commit", "-q", "--allow-empty", "-m", "two"], in: mine)
+        try runGit(["commit", "-q", "--allow-empty", "-m", "three"], in: mine)
+
+        // `HEAD^` isn't a ref to guess from: `main` is the remote's.
+        try Repository.open(at: mine).push(
+            remote: "origin", refspec: "HEAD^:main", setUpstream: false,
+            forceWithLease: .expecting(remoteSHA), progress: { _ in })
+        #expect(try runGit(["rev-parse", "main"], in: remote) == runGit(["rev-parse", "HEAD^"], in: mine))
+    }
+
     @Test("the refs git accepts still go, and get their upstream")
     func partialPush() throws {
         let (remote, mine, theirs) = try makeRemoteAndClones()
