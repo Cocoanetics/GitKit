@@ -327,7 +327,7 @@ struct RefspecSetTests {
                       setUpstream: true, progress: { _ in })
         #expect(throws: Failure.self) { try runGit(["config", "branch.\(head).remote"], in: work) }
         #expect(try runGit(["rev-parse", "rev"], in: archive) == runGit(["rev-parse", "HEAD"], in: work))
-        #expect(throws: Libgit2Error.self) {
+        #expect(throws: PushRefusedError.self) {
             try repo.push(remote: archive.path, refspecs: ["HEAD^{commit}:rev2"],
                           setUpstream: false, progress: { _ in })
         }
@@ -337,7 +337,7 @@ struct RefspecSetTests {
         try runGit(["commit", "-q", "--allow-empty", "-m", "two"], in: work)
         let claimed = try makeBare()
         defer { removing(claimed)() }
-        #expect(throws: Libgit2Error.self) {
+        #expect(throws: PushRefusedError.self) {
             try repo.push(remote: claimed.path,
                           refspecs: ["main:refs/heads/x", "dev:refs/heads/x"],
                           setUpstream: false, progress: { _ in })

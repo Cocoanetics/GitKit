@@ -29,14 +29,6 @@ public struct Libgit2Error: Error, LocalizedError, Sendable {
         "libgit2 error (\(code)/\(klass)): \(message)"
     }
 
-    /// One error for several refusals, as git lists them: the first one's
-    /// code, and every message, one per line. `nil` when there are none.
-    init?(listing errors: [Libgit2Error]) {
-        guard let first = errors.first else { return nil }
-        self.init(code: first.code, klass: first.klass,
-                  message: errors.map(\.message).joined(separator: "\n"))
-    }
-
     static func last(code: Int32) -> Libgit2Error {
         if let raw = git_error_last(), let msg = raw.pointee.message {
             return Libgit2Error(

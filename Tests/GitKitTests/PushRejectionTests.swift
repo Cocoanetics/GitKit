@@ -174,7 +174,8 @@ struct PushRejectionTests {
             #expect {
                 try repo.push(remote: "origin", refspecs: refspecs, setUpstream: false, progress: { _ in })
             } throws: { error in
-                (error as? Libgit2Error)?.message == "dst ref \(destination) receives from more than one src"
+                (error as? PushRefusedError)?.refusals.map(\.message)
+                    == ["dst ref \(destination) receives from more than one src"]
             }
         }
         #expect(try runGit(["rev-parse", "main"], in: remote) == before)
@@ -205,7 +206,7 @@ struct PushRejectionTests {
             #expect {
                 try repo.push(remote: "origin", refspecs: refspecs, setUpstream: false, progress: { _ in })
             } throws: { error in
-                (error as? Libgit2Error)?.message == lines.joined(separator: "\n")
+                (error as? PushRefusedError)?.refusals.map(\.message) == lines
             }
         }
     }
@@ -225,11 +226,51 @@ struct PushRejectionTests {
 
         // Nothing to delete, or two sources for one ref: refused up front.
         for refspecs in [[":nope"], [":keep", "main:refs/heads/keep"]] {
-            #expect(throws: Libgit2Error.self, "\(refspecs)") {
+            #expect(throws: PushRefusedError.self, "\(refspecs)") {
                 try repo.push(remote: "origin", refspecs: refspecs, setUpstream: false, progress: { _ in })
             }
         }
         #expect(try runGit(["rev-parse", "keep"], in: remote) == runGit(["rev-parse", "main"], in: remote))
+    }
+
+    @Test("a short destination is the remote ref it abbreviates, else the source's kind")
+    func shortDestinations() throws {
+        let (remote, mine, theirs) = try makeRemoteAndClones()
+        defer { [remote, mine, theirs].forEach { try? FileManager.default.removeItem(at: $0) } }
+        try runGit(["tag", "x"], in: mine)
+        try runGit(["push", "-q", "origin", "x"], in: mine)
+        try runGit(["branch", "dev"], in: mine)
+        try runGit(["commit", "-q", "--allow-empty", "-m", "ahead"], in: mine)
+        let repo = try Repository.open(at: mine)
+
+        // The remote's tag `x` takes `main:x`, which may not move it.
+        let (output, error) = try push(mine, ["main:x"])
+        #expect(output.hasSuffix(" ! [rejected]        main -> x (already exists)\n"))
+        #expect(error?.rejections == [.init(remoteRef: "refs/tags/x", reason: .alreadyExists)])
+
+        // A full source with a short destination meets another refspec there.
+        #expect {
+            try repo.push(remote: "origin", refspecs: ["refs/heads/main:y", "dev:refs/heads/y"],
+                          setUpstream: false, progress: { _ in })
+        } throws: { error in
+            (error as? PushRefusedError)?.refusals.map(\.message)
+                == ["dst ref refs/heads/y receives from more than one src"]
+        }
+
+        // A revision goes where the remote has the name, else git gives up.
+        try repo.push(remote: "origin", refspecs: ["HEAD^:main"], setUpstream: false, progress: { _ in })
+        #expect {
+            try repo.push(remote: "origin", refspecs: ["HEAD^:x2"], setUpstream: false, progress: { _ in })
+        } throws: { error in
+            guard let refusal = (error as? PushRefusedError)?.refusals.first else { return false }
+            return refusal.message.hasPrefix("The destination you provided is not a full refname (i.e.,\n")
+                && refusal.hint == [
+                    "The <src> part of the refspec is a commit object.",
+                    "Did you mean to create a new branch by pushing to",
+                    "'HEAD^:refs/heads/x2'?"
+                ]
+                && refusal.adviceKey == "pushUnqualifiedRefName"
+        }
     }
 
     @Test("the refs git accepts still go, and get their upstream")

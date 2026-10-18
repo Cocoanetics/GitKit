@@ -290,7 +290,7 @@ struct GitSSHTransportTests {
             try runGit(["commit", "-q", "--allow-empty", "-m", "ahead"], in: work)
 
             // Two sources for one new ref: refused before anything is sent.
-            #expect(throws: Libgit2Error.self) {
+            #expect(throws: PushRefusedError.self) {
                 try repo.push(remote: "origin", refspecs: ["main:refs/heads/x", "dev:refs/heads/x"],
                               setUpstream: false, progress: { _ in })
             }

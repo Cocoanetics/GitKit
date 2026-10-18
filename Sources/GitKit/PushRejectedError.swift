@@ -57,3 +57,35 @@ public struct PushRejectedError: Error, LocalizedError, Sendable, Equatable {
         "failed to push some refs to '\(url)'"
     }
 }
+
+/// A push git refused before sending anything: a source that matches no
+/// ref (or more than one), two refspecs to one ref, a deletion of a ref
+/// the remote doesn't have, a destination git can't complete. Nothing
+/// was pushed. git prints an `error:` for each refusal, in order, some
+/// with a hint, then its verdict.
+public struct PushRefusedError: Error, LocalizedError, Sendable, Equatable {
+    /// One refspec git refused.
+    public struct Refusal: Sendable, Equatable {
+        /// git's message, which can run over several lines.
+        public let message: String
+        /// git's hint for it, line by line; empty when it has none.
+        public let hint: [String]
+        /// The `advice.*` key that turns the hint off.
+        public let adviceKey: String?
+
+        init(_ message: String, hint: [String] = [], adviceKey: String? = nil) {
+            self.message = message
+            self.hint = hint
+            self.adviceKey = adviceKey
+        }
+    }
+
+    /// The remote's (push) URL or path, as git names it in the verdict.
+    public let url: String
+    public let refusals: [Refusal]
+
+    public var errorDescription: String? {
+        (refusals.map(\.message) + ["failed to push some refs to '\(url)'"])
+            .joined(separator: "\n")
+    }
+}

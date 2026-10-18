@@ -148,6 +148,11 @@ extension Repository {
             ? try configuredPushRefspecs(remoteHandle)
             : requested
         var plan = try pushPlan(for: refspecs)
+        // git refuses sources that match nothing before it connects.
+        let displayURL = ProgressReporter.anonymizedURL(remoteURL ?? remote)
+        guard plan.refusals.isEmpty else {
+            throw PushRefusedError(url: displayURL, refusals: plan.refusals)
+        }
         let pushLease = try lease.map { lease -> PushLeaseCheck in
             guard plan.patterns.isEmpty, plan.matching == nil,
                   plan.explicit.count == 1
@@ -157,7 +162,7 @@ extension Repository {
                     klass: Int32(GIT_ERROR_INVALID.rawValue),
                     message: "force-with-lease requires a destination ref")
             }
-            plan.explicit = plan.explicit.map(forcePushRefspec)
+            plan.explicit = plan.explicit.map { guessedPushRefspec(forcePushRefspec($0)) }
             return try pushLeaseCheck(
                 lease, remote: remote, refspec: plan.explicit[0], isConfigured: isConfigured)
         }
@@ -189,16 +194,8 @@ extension Repository {
                 try check(git_remote_connect(
                     remoteHandle, GIT_DIRECTION_PUSH, &callbacks, nil, nil))
                 let remoteRefs = try advertisedRefs(remoteHandle)
-                // A deletion names the remote ref as git finds it among
-                // the remote's refs (`:dev` deletes `refs/heads/dev`). git
-                // refuses a deletion of nothing, and two explicit refspecs
-                // to one ref, before sending anything, listing every one.
-                let matched = matchedExplicitRefspecs(plan.explicit, remoteRefs: remoteRefs)
-                if let error = Libgit2Error(listing: matched.refusals) {
-                    git_remote_disconnect(remoteHandle)
-                    throw error
-                }
-                plan.explicit = matched.refspecs
+                try settleExplicitRefspecs(
+                    &plan, remoteRefs: remoteRefs, remote: remoteHandle, url: displayURL, payload: payload)
                 let pushRefspecs = try expandedPushRefspecs(plan, remoteRefs: remoteRefs.names)
                 guard !pushRefspecs.isEmpty else {
                     git_remote_disconnect(remoteHandle)
@@ -259,7 +256,7 @@ extension Repository {
         }
         guard rejections.isEmpty else {
             throw PushRejectedError(
-                url: ProgressReporter.anonymizedURL(remoteURL ?? remote),
+                url: displayURL,
                 rejections: rejections, pushed: pushed, summary: summary)
         }
         return pushed
@@ -353,6 +350,30 @@ extension Repository {
                                width: 2 * abbreviation + 3)
     }
 
+    /// The explicit refspecs as the remote's refs settle them: a short
+    /// destination names the remote ref as git finds it (`:dev` deletes
+    /// `refs/heads/dev`), and the summary shows each source as typed by
+    /// the destination the remote reports on. git refuses a destination it
+    /// can't complete, a deletion of nothing, and two explicit refspecs to
+    /// one ref before sending anything, listing every one; this throws
+    /// that refusal, disconnected.
+    private func settleExplicitRefspecs(
+        _ plan: inout PushPlan, remoteRefs: RemoteRefs, remote: OpaquePointer?,
+        url: String, payload: UnsafeMutableRawPointer?
+    ) throws {
+        let matched = matchedExplicitRefspecs(plan.explicit, remoteRefs: remoteRefs)
+        guard matched.refusals.isEmpty else {
+            git_remote_disconnect(remote)
+            throw PushRefusedError(url: url, refusals: matched.refusals)
+        }
+        plan.explicit = matched.refspecs
+        recordTypedSources(in: &plan)
+        if let payload {
+            Unmanaged<CallbackBox>.fromOpaque(payload).takeUnretainedValue()
+                .reporter?.typedSources = plan.typedSources
+        }
+    }
+
     /// What `remote` is configured to push (`remote.<name>.push`).
     private func configuredPushRefspecs(_ remote: OpaquePointer?) throws -> [String] {
         var array = git_strarray()
@@ -419,34 +440,36 @@ extension Repository {
         let src = colon.map { String(body[..<$0]) } ?? body
         guard !src.isEmpty, !src.hasPrefix("refs/") else { return refspec }
 
-        let qualifiedSrc: String, dstPrefix: String
+        let qualifiedSrc: String
         do {
-            (qualifiedSrc, dstPrefix) = try qualifiedPushSource(src)
+            (qualifiedSrc, _) = try qualifiedPushSource(src)
         } catch {
             // Not a branch or tag, but maybe any other revision (`HEAD^`,
-            // an object ID), which git pushes to a destination given in
-            // full.
-            guard let colon, isRevision(src) else { throw error }
-            let dst = body[body.index(after: colon)...]
-            guard dst.hasPrefix("refs/") else {
-                throw Libgit2Error(
-                    code: GIT_EINVALIDSPEC.rawValue,
-                    klass: Int32(GIT_ERROR_INVALID.rawValue),
-                    message: "the destination you provided is not a full refname "
-                        + "(i.e., starting with \"refs/\")")
-            }
+            // an object ID), pushed to a destination git completes once
+            // it has the remote's refs, or refuses.
+            guard colon != nil, isRevision(src) else { throw error }
             return refspec
         }
         guard let colon else {
             return "\(prefix)\(qualifiedSrc):\(qualifiedSrc)"
         }
+        // A short destination is spelled out once the remote's refs are
+        // in (qualifiedDestination), as git finds it.
+        return "\(prefix)\(qualifiedSrc):\(body[body.index(after: colon)...])"
+    }
 
-        let dstStart = body.index(after: colon)
-        let dst = String(body[dstStart...])
-        let qualifiedDst = dst.isEmpty || dst.hasPrefix("refs/")
-            ? dst
-            : "\(dstPrefix)\(dst)"
-        return "\(prefix)\(qualifiedSrc):\(qualifiedDst)"
+    /// `refspec` with a short destination under the source's kind, as git
+    /// guesses it, for a lease that needs its destination before the
+    /// remote's refs are in.
+    private func guessedPushRefspec(_ refspec: String) -> String {
+        let body = Self.unforced(refspec)
+        guard let colon = body.firstIndex(of: ":") else { return refspec }
+        let source = String(body[..<colon])
+        let name = String(body[body.index(after: colon)...])
+        guard !name.isEmpty, !name.hasPrefix("refs/"),
+              let full = guessedDestination(name, from: source)
+        else { return refspec }
+        return (refspec.hasPrefix("+") ? "+" : "") + source + ":" + full
     }
 
     /// Whether `expression` names an object, as `git rev-parse` would.

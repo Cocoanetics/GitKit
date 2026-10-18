@@ -20,6 +20,19 @@ struct RemoteRefs {
     func object(of name: String) -> git_oid? {
         objects[Array(name.utf8)]
     }
+
+    /// The remote refs `name` abbreviates, as git counts them
+    /// (`count_refspec_match` over `ref_rev_parse_rules`): a match that is
+    /// a branch or a tag, or spelled from `refs/` on, wins over the others.
+    func abbreviated(_ name: String) -> [String] {
+        let rules = [name, "refs/\(name)", "refs/tags/\(name)", "refs/heads/\(name)",
+                     "refs/remotes/\(name)", "refs/remotes/\(name)/HEAD"]
+        let found = rules.filter { object(of: $0) != nil }
+        let strong = found.filter {
+            $0 == name || $0 == "refs/\(name)" || $0.hasPrefix("refs/heads/") || $0.hasPrefix("refs/tags/")
+        }
+        return strong.isEmpty ? found : strong
+    }
 }
 
 /// One push's refspecs, sorted the way git reads them: some name a ref,
@@ -43,8 +56,14 @@ struct PushPlan {
     }
 
     /// The refspecs that name their refs, qualified for libgit2 (`main`
-    /// becomes `refs/heads/main:refs/heads/main`).
+    /// becomes `refs/heads/main:refs/heads/main`); a short destination
+    /// waits for the remote's refs to be spelled out.
     var explicit: [String] = []
+    /// How each explicit refspec's source was typed, by position.
+    var explicitTypedSources: [String?] = []
+    /// git's refusals of sources that match nothing, for the push to
+    /// report before it connects.
+    var refusals: [PushRefusedError.Refusal] = []
     /// How each explicit refspec's source was typed (`HEAD`, `main`),
     /// keyed by its destination ref's UTF-8 bytes, for the summary of
     /// what the remote reports on (which goes to the first update of a ref).
@@ -88,9 +107,6 @@ extension Repository {
     /// a ref the way the CLI accepts them (`main`, `HEAD:review`).
     func pushPlan(for refspecs: [String]) throws -> PushPlan {
         var plan = PushPlan()
-        // git reports every source that matches nothing (or more than
-        // one ref) once all refspecs have parsed (check_push_refs).
-        var unmatched: [Libgit2Error] = []
         for refspec in refspecs {
             if refspec.hasPrefix("^") {
                 // As in git: a ref name or a pattern, without a
@@ -108,26 +124,21 @@ extension Repository {
             } else if body.contains("*") {
                 plan.patterns.append(try pushPattern(body, force: force))
             } else {
+                // git reports every source that matches nothing (or more
+                // than one ref) once all refspecs have parsed
+                // (check_push_refs).
                 let qualified: String
                 do {
                     qualified = try qualifiedPushRefspec(refspec)
                 } catch let error as Libgit2Error where error.message.hasPrefix("src refspec ") {
-                    unmatched.append(error)
+                    plan.refusals.append(.init(error.message))
                     continue
                 }
                 plan.explicit.append(qualified)
-                if let typed = typedPushSource(refspec) {
-                    plan.typedSourcesByRefspec[Array(Self.unforced(qualified).utf8)] = typed
-                }
-                // The remote reports on the first update to a ref.
-                if let destination = destinationRefName(fromPushRefspec: qualified),
-                   plan.typedSources[Array(destination.utf8)] == nil,
-                   let typed = typedPushSource(refspec) {
-                    plan.typedSources[Array(destination.utf8)] = typed
-                }
+                plan.explicitTypedSources.append(typedPushSource(refspec))
             }
         }
-        if let error = Libgit2Error(listing: unmatched) { throw error }
+        recordTypedSources(in: &plan)
         return plan
     }
 
@@ -186,29 +197,82 @@ extension Repository {
         return refs
     }
 
-    /// A deletion (`:dst`) with its destination spelled out the way git
-    /// finds it among the remote's refs (`ref_rev_parse_rules`): `:dev`
-    /// deletes `refs/heads/dev`. Like git, this refuses a name that
-    /// matches no remote ref, or both a branch and a tag.
-    func qualifiedDeletion(_ refspec: String, remoteRefs: RemoteRefs) throws -> String {
+    /// An explicit refspec's destination spelled out the way git finds
+    /// it once it has the remote's refs (`match_explicit`): a short one
+    /// names the remote ref it abbreviates (``RemoteRefs/abbreviated(_:)``),
+    /// else, for anything but a deletion, the source's kind prefixes it
+    /// (`refs/heads/` or `refs/tags/`, `guess_ref`). git's refusal when it
+    /// can do neither, or when the name is ambiguous.
+    func qualifiedDestination(
+        _ refspec: String, remoteRefs: RemoteRefs
+    ) -> (refspec: String?, refusal: PushRefusedError.Refusal?) {
+        let force = refspec.hasPrefix("+")
         let body = Self.unforced(refspec)
-        guard body.hasPrefix(":"), body.count > 1 else { return refspec }
-        let name = String(body.dropFirst())
-        guard !name.hasPrefix("refs/") else { return refspec }
-        let matches = [name, "refs/\(name)", "refs/tags/\(name)", "refs/heads/\(name)",
-                       "refs/remotes/\(name)", "refs/remotes/\(name)/HEAD"]
-            .filter { remoteRefs.object(of: $0) != nil }
-        guard let full = matches.first else {
-            throw Libgit2Error(
-                code: GIT_ENOTFOUND.rawValue, klass: Int32(GIT_ERROR_REFERENCE.rawValue),
-                message: "unable to delete '\(name)': remote ref does not exist")
+        guard let colon = body.firstIndex(of: ":") else { return (refspec, nil) }
+        let source = String(body[..<colon])
+        let name = String(body[body.index(after: colon)...])
+        guard !name.isEmpty, !name.hasPrefix("refs/") else { return (refspec, nil) }
+        let full: String
+        let matches = remoteRefs.abbreviated(name)
+        if matches.count > 1 {
+            return (nil, .init("dst refspec \(name) matches more than one"))
+        } else if let match = matches.first {
+            full = match
+        } else if source.isEmpty {
+            return (nil, .init("unable to delete '\(name)': remote ref does not exist"))
+        } else if let guessed = guessedDestination(name, from: source) {
+            full = guessed
+        } else {
+            return (nil, unqualifiedDestination(name, source: source))
         }
-        guard matches.count == 1 else {
-            throw Libgit2Error(
-                code: GIT_EAMBIGUOUS.rawValue, klass: Int32(GIT_ERROR_REFERENCE.rawValue),
-                message: "dst refspec \(name) matches more than one")
+        return ((force ? "+" : "") + source + ":" + full, nil)
+    }
+
+    /// git's `guess_ref`: `name` under the kind of ref `source` is
+    /// (following a symbolic ref such as `HEAD`), `nil` for anything that
+    /// isn't a branch or a tag.
+    func guessedDestination(_ name: String, from source: String) -> String? {
+        var resolved = source
+        var reference: OpaquePointer?
+        if git_reference_lookup(&reference, repo, source) == 0 {
+            defer { git_reference_free(reference) }
+            var target: OpaquePointer?
+            if git_reference_resolve(&target, reference) == 0, let targetName = git_reference_name(target) {
+                resolved = String(cString: targetName)
+            }
+            git_reference_free(target)
         }
-        return (refspec.hasPrefix("+") ? "+:" : ":") + full
+        return ["refs/heads/", "refs/tags/"].first { resolved.hasPrefix($0) }.map { $0 + name }
+    }
+
+    /// git's refusal of a short destination it can't complete, with the
+    /// hint for what the source is (`show_push_unqualified_ref_name_error`).
+    private func unqualifiedDestination(_ name: String, source: String) -> PushRefusedError.Refusal {
+        let message = """
+            The destination you provided is not a full refname (i.e.,
+            starting with "refs/"). We tried to guess what you meant by:
+
+            - Looking for a ref that matches '\(name)' on the remote side.
+            - Checking if the <src> being pushed ('\(source)')
+              is a ref in "refs/{heads,tags}/". If so we add a corresponding
+              refs/{heads,tags}/ prefix on the remote side.
+
+            Neither worked, so we gave up. You must fully qualify the ref.
+            """
+        var object: OpaquePointer?
+        defer { git_object_free(object) }
+        guard git_revparse_single(&object, repo, source) == 0 else { return .init(message) }
+        let (kind, verb, namespace) = switch git_object_type(object) {
+        case GIT_OBJECT_COMMIT: ("commit", "create a new branch", "refs/heads/")
+        case GIT_OBJECT_TAG: ("tag", "create a new tag", "refs/tags/")
+        case GIT_OBJECT_TREE: ("tree", "tag a new tree", "refs/tags/")
+        default: ("blob", "tag a new blob", "refs/tags/")
+        }
+        return .init(message, hint: [
+            "The <src> part of the refspec is a \(kind) object.",
+            "Did you mean to \(verb) by pushing to",
+            "'\(source):\(namespace)\(name)'?"
+        ], adviceKey: "pushUnqualifiedRefName")
     }
 
     /// `refspec` without its `+`.
@@ -218,35 +282,46 @@ extension Repository {
 
     /// The explicit refspecs as the remote's refs settle them, the way
     /// git matches them before sending anything (`match_explicit_refs`):
-    /// a deletion spelled out (``qualifiedDeletion(_:remoteRefs:)``), and
-    /// every refusal in refspec order — a deletion of nothing or of an
-    /// ambiguous name, and a second refspec to a destination one already
-    /// takes, new or not, whatever its source and whatever a negative
-    /// refspec makes of it.
+    /// destinations spelled out (``qualifiedDestination(_:remoteRefs:)``),
+    /// and every refusal in refspec order — a destination git can't
+    /// complete or finds ambiguous, a deletion of nothing, and a second
+    /// refspec to a destination one already takes, new or not, whatever
+    /// its source and whatever a negative refspec makes of it.
     func matchedExplicitRefspecs(
         _ explicit: [String], remoteRefs: RemoteRefs
-    ) -> (refspecs: [String], refusals: [Libgit2Error]) {
+    ) -> (refspecs: [String], refusals: [PushRefusedError.Refusal]) {
         var refspecs: [String] = []
-        var refusals: [Libgit2Error] = []
+        var refusals: [PushRefusedError.Refusal] = []
         var taken = Set<[UInt8]>()  // ref names as bytes, as git compares them
         for refspec in explicit {
-            let qualified: String
-            do {
-                qualified = try qualifiedDeletion(refspec, remoteRefs: remoteRefs)
-            } catch {
-                refusals.append(error as? Libgit2Error ?? Libgit2Error(
-                    code: GIT_ERROR.rawValue, klass: 0, message: "\(error)"))
+            let (qualified, refusal) = qualifiedDestination(refspec, remoteRefs: remoteRefs)
+            guard let qualified else {
+                refusal.map { refusals.append($0) }
                 continue
             }
             if let destination = destinationRefName(fromPushRefspec: qualified),
                !taken.insert(Array(destination.utf8)).inserted {
-                refusals.append(Libgit2Error(
-                    code: GIT_EINVALIDSPEC.rawValue, klass: Int32(GIT_ERROR_REFERENCE.rawValue),
-                    message: "dst ref \(destination) receives from more than one src"))
+                refusals.append(.init("dst ref \(destination) receives from more than one src"))
             }
             refspecs.append(qualified)
         }
         return (refspecs, refusals)
+    }
+
+    /// The typed source of each explicit refspec, by its destination (the
+    /// remote reports on a ref's first update) and by the refspec itself,
+    /// for the summary lines.
+    func recordTypedSources(in plan: inout PushPlan) {
+        plan.typedSources = [:]
+        plan.typedSourcesByRefspec = [:]
+        for (refspec, typed) in zip(plan.explicit, plan.explicitTypedSources) {
+            guard let typed else { continue }
+            plan.typedSourcesByRefspec[Array(Self.unforced(refspec).utf8)] = typed
+            if let destination = destinationRefName(fromPushRefspec: refspec),
+               plan.typedSources[Array(destination.utf8)] == nil {
+                plan.typedSources[Array(destination.utf8)] = typed
+            }
+        }
     }
 
     /// How git names `remote` in a push's output: a configured remote's
