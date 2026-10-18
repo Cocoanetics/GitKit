@@ -265,7 +265,7 @@ extension Repository {
         let objectIDTags = refspecs.compactMap(Self.objectIDTagRefspec)
         let explicitTags = Set(remoteRefs.names.flatMap { name in
             tags(name, true).map { Array($0.tag.utf8) }
-        } + objectIDTags.map { Array($0.0.utf8) })
+        } + objectIDTags.map { Array($0.tag.utf8) })
         /// The source an explicit refspec stores into `tag` from, and its
         /// object.
         func explicitSource(of tag: String) -> (source: String, oid: git_oid)? {
@@ -274,7 +274,7 @@ extension Repository {
             }), let oid = remoteRefs.object(of: name) {
                 return (name, oid)
             }
-            return objectIDTags.first { $0.0.utf8.elementsEqual(tag.utf8) }.map { ($0.2, $0.1) }
+            return objectIDTags.first { $0.tag.utf8.elementsEqual(tag.utf8) }.map { ($0.source, $0.oid) }
         }
         var refused: [String] = []
         // Ref names as bytes, as git compares them.
@@ -357,7 +357,8 @@ extension Repository {
         // A source that is an object ID names no advertised ref; it moves
         // a tag only when forced, like any other.
         // A forced one moves the tag, as git lets it.
-        for (tag, oid, source, forced) in objectIDTags where !forced {
+        for refspec in objectIDTags where !refspec.forced {
+            let (tag, oid, source) = (refspec.tag, refspec.oid, refspec.source)
             var new = oid
             guard var old = before[Array(tag.utf8)], git_oid_equal(&old, &new) == 0,
                   !refusedNames.contains(Array(tag.utf8))
@@ -374,9 +375,17 @@ extension Repository {
         return (refused, excluded)
     }
 
-    /// An `<object ID>:refs/tags/<name>` refspec's tag, object, source
-    /// as written, and whether it's forced; `nil` for any other refspec.
-    private static func objectIDTagRefspec(_ refspec: String) -> (String, git_oid, String, Bool)? {
+    /// An `<object ID>:refs/tags/<name>` fetch refspec.
+    private struct ObjectIDTagRefspec {
+        let tag: String
+        let oid: git_oid
+        /// The object ID as written.
+        let source: String
+        let forced: Bool
+    }
+
+    /// `refspec` as an ``ObjectIDTagRefspec``, or `nil` for any other.
+    private static func objectIDTagRefspec(_ refspec: String) -> ObjectIDTagRefspec? {
         let forced = refspec.hasPrefix("+")
         let body = forced ? refspec.dropFirst() : Substring(refspec)
         guard !body.hasPrefix("^"), let colon = body.firstIndex(of: ":") else { return nil }
@@ -387,7 +396,7 @@ extension Repository {
         else { return nil }
         var oid = git_oid()
         guard source.withCString({ git_oid_fromstrp(&oid, $0) }) == 0 else { return nil }
-        return (destination, oid, source, forced)
+        return ObjectIDTagRefspec(tag: destination, oid: oid, source: source, forced: forced)
     }
 
     /// Drop the tags libgit2 followed that git wouldn't have. git follows
