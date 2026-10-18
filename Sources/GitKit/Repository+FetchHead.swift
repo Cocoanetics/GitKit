@@ -8,9 +8,9 @@ extension Repository {
     ///
     /// git prints pruned refs first, then walks the fetched refs in
     /// passes (builtin/fetch.c, `store_updated_refs`): the ref to merge,
-    /// the other refs `refspecs` fetch, then what came along with them —
-    /// auto-followed tags and the opportunistic update of a
-    /// remote-tracking ref — each pass in ref-name order.
+    /// the other refs `refspecs` fetch and the tags that came along, then
+    /// the opportunistic updates of remote-tracking refs, each in
+    /// ref-name order.
     func orderedFetchLines(
         _ lines: [FetchSummaryLine], refspecs: [String]
     ) -> [FetchSummaryLine] {
@@ -27,6 +27,14 @@ extension Repository {
         func fetched(_ name: String, mapped: Bool) -> Bool {
             parsed.contains { $0.mapped == mapped && Self.refspec($0.spec, fetches: name) }
         }
+        // An update the refspecs asked for, as opposed to an
+        // opportunistic one of another remote-tracking ref.
+        func stored(_ name: String, into local: String) -> Bool {
+            parsed.contains {
+                $0.mapped && Self.refspec($0.spec, fetches: name)
+                    && Self.refspec($0.spec, maps: name, to: local)
+            }
+        }
 
         let entries = fetchHeadEntries()
         let toMerge = Set(entries.filter(\.merge).map(\.name))
@@ -36,8 +44,10 @@ extension Repository {
             case .deleted:
                 ranked.append((0, line.local, line))
             case .update:
-                let rank = fetched(line.remoteRef, mapped: true)
-                    ? (toMerge.contains(line.remoteRef) ? 1 : 2) : 3
+                // Followed tags come after what the refspecs fetched.
+                let rank = stored(line.remoteRef, into: line.localRef)
+                    ? (toMerge.contains(line.remoteRef) ? 1 : 2)
+                    : line.remoteRef.hasPrefix("refs/tags/") ? 3 : 4
                 ranked.append((rank, line.remoteRef, line))
             case .fetchHead:
                 continue
@@ -48,11 +58,18 @@ extension Repository {
             let (kind, what) = Self.fetchHeadDescription(of: entry.name)
             ranked.append((entry.merge ? 1 : 2, entry.name, FetchSummaryLine(
                 kind: .fetchHead, flag: "*", summary: kind,
-                remoteRef: entry.name, remote: what, local: "FETCH_HEAD")))
+                remoteRef: entry.name, remote: what, localRef: "FETCH_HEAD", local: "FETCH_HEAD")))
         }
         return ranked.enumerated()
             .sorted { ($0.element.rank, $0.element.key, $0.offset) < ($1.element.rank, $1.element.key, $1.offset) }
             .map(\.element.line)
+    }
+
+    /// Whether `refspec` stores what it fetches in a local ref: it has a
+    /// destination (`main:refs/heads/x`, a wildcard mapping).
+    static func storesFetchedRef(_ refspec: String) -> Bool {
+        guard !refspec.hasPrefix("^"), let colon = refspec.lastIndex(of: ":") else { return false }
+        return refspec.index(after: colon) < refspec.endIndex
     }
 
     /// What the remote is configured to fetch (`remote.<name>.fetch`).
@@ -91,6 +108,27 @@ extension Repository {
         else { return false }
         return ["refs/", "refs/tags/", "refs/heads/", "refs/remotes/"]
             .contains { $0 + source == name }
+    }
+
+    /// Whether `spec` sends remote ref `name` to local ref `local`, a
+    /// short destination taken as git expands it.
+    private static func refspec(_ spec: OpaquePointer, maps name: String, to local: String) -> Bool {
+        let destination: String
+        if let source = git_refspec_src(spec), String(cString: source).contains("*") {
+            var buffer = git_buf()
+            defer { git_buf_dispose(&buffer) }
+            guard git_refspec_transform(&buffer, spec, name) == 0, let pointer = buffer.ptr else {
+                return false
+            }
+            destination = String(cString: pointer)
+        } else {
+            // libgit2's transform wants the source as written (`dev`, not
+            // `refs/heads/dev`); a plain refspec has just the one target.
+            guard let dst = git_refspec_dst(spec) else { return false }
+            destination = String(cString: dst)
+        }
+        return ["", "refs/", "refs/heads/", "refs/tags/", "refs/remotes/"]
+            .contains { $0 + destination == local }
     }
 
     /// The summary and name git shows for a FETCH_HEAD entry.

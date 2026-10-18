@@ -27,6 +27,9 @@ struct FetchSummaryLine {
     let remoteRef: String
     /// The remote ref as shown (`main`, `(none)`).
     let remote: String
+    /// The local ref, e.g. `refs/remotes/origin/main` (`FETCH_HEAD`).
+    let localRef: String
+    /// The local ref as shown (`origin/main`).
     let local: String
     /// Shown after the line in parentheses (`forced update`).
     var note: String?

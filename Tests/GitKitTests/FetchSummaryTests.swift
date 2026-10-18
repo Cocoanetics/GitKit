@@ -126,11 +126,21 @@ struct FetchSummaryTests {
         defer { fixture.remove() }
         let (remote, work, git, kit) = (fixture.remote, fixture.work, fixture.git, fixture.kit)
         try runGit(["commit", "-q", "--allow-empty", "-m", "two"], in: work)
-        try runGit(["push", "-q", "origin", "main"], in: work)
+        try runGit(["tag", "v1"], in: work)
+        try runGit(["branch", "-f", "dev", "main"], in: work)
+        try runGit(["push", "-q", "origin", "main", "dev", "v1"], in: work)
 
         let expected = try runGit(["fetch", "origin", "main"], in: git)
         let output = try gitKitFetch(kit, refspecs: ["main"])
         #expect(output == expected)
+        // Nothing stored, so no tags followed (the remote has `v1`).
+        #expect(throws: Failure.self) { try runGit(["rev-parse", "--verify", "v1"], in: kit) }
+
+        // With a destination, the tag comes along, before the
+        // opportunistic update of origin/dev.
+        let stored = try runGit(["fetch", "origin", "dev:refs/heads/copy"], in: git)
+        let storedOutput = try gitKitFetch(kit, refspecs: ["dev:refs/heads/copy"])
+        #expect(storedOutput == stored)
 
         // A remote without a fetch refspec: its HEAD.
         for clone in [git, kit] {

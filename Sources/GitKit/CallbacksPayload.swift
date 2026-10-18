@@ -383,7 +383,7 @@ private func fetchLine(
     let local = shortRefName(refname)
     guard let new else {
         return .init(kind: .deleted, flag: "-", summary: "[deleted]",
-                     remoteRef: "", remote: "(none)", local: local)
+                     remoteRef: "", remote: "(none)", localRef: refname, local: local)
     }
     // Tags map onto themselves; libgit2 hands an auto-followed tag over
     // with whatever refspec it was working through.
@@ -394,20 +394,21 @@ private func fetchLine(
         let kind = remoteRef.hasPrefix("refs/tags/") ? "[new tag]"
             : remoteRef.hasPrefix("refs/heads/") ? "[new branch]" : "[new ref]"
         return .init(kind: .update, flag: "*", summary: kind,
-                     remoteRef: remoteRef, remote: remote, local: local)
+                     remoteRef: remoteRef, remote: remote, localRef: refname, local: local)
     }
     if refname.hasPrefix("refs/tags/") {
         return .init(kind: .update, flag: "t", summary: "[tag update]",
-                     remoteRef: remoteRef, remote: remote, local: local)
+                     remoteRef: remoteRef, remote: remote, localRef: refname, local: local)
     }
     let oldID = abbreviated(old, minimum: reporter.abbreviation, in: reporter.repository)
     let newID = abbreviated(new, minimum: reporter.abbreviation, in: reporter.repository)
     if isFastForward(from: old, to: new, in: reporter.repository) {
         return .init(kind: .update, flag: " ", summary: "\(oldID)..\(newID)",
-                     remoteRef: remoteRef, remote: remote, local: local)
+                     remoteRef: remoteRef, remote: remote, localRef: refname, local: local)
     }
     return .init(kind: .update, flag: "+", summary: "\(oldID)...\(newID)",
-                 remoteRef: remoteRef, remote: remote, local: local, note: "forced update")
+                 remoteRef: remoteRef, remote: remote, localRef: refname, local: local,
+                 note: "forced update")
 }
 
 /// The remote ref `spec` maps onto local ref `refname`, if it does.
