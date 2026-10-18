@@ -193,6 +193,50 @@ struct FetchSummaryTests {
         }
     }
 
+    @Test("pruned refs list by their full names, across namespaces")
+    func prunedAcrossNamespaces() throws {
+        let fixture = try makeFixture()
+        defer { fixture.remove() }
+        let (work, git, kit) = (fixture.work, fixture.git, fixture.kit)
+        // `refs/heads/x/gone` sorts before `refs/remotes/origin/gone`,
+        // though `origin/gone` sorts before `x/gone`.
+        for clone in [git, kit] {
+            try runGit(["config", "--add", "remote.origin.fetch", "+refs/heads/*:refs/heads/x/*"], in: clone)
+            try runGit(["fetch", "-q", "origin"], in: clone)
+        }
+        try runGit(["push", "-q", "origin", ":gone"], in: work)
+        let expected = try runGit(["fetch", "--prune", "origin"], in: git)
+        #expect(expected.contains(" - [deleted]         (none)     -> x/gone\n - [deleted]"))
+        #expect(try gitKitFetch(kit, prune: true) == expected)
+    }
+
+    @Test("core.abbrev is read as git reads it, and refused as git refuses it")
+    func coreAbbrev() throws {
+        let fixture = try makeFixture()
+        defer { fixture.remove() }
+        let (work, git, kit) = (fixture.work, fixture.git, fixture.kit)
+        try runGit(["commit", "-q", "--allow-empty", "-m", "two"], in: work)
+        try runGit(["push", "-q", "origin", "main"], in: work)
+        for value in ["3", "bogus", "true"] {
+            try runGit(["config", "core.abbrev", value], in: kit)
+            #expect(throws: Libgit2Error.self, "\(value)") { try gitKitFetch(kit) }
+        }
+        // Refused before anything was fetched.
+        try runGit(["config", "--unset", "core.abbrev"], in: kit)
+        #expect(try runGit(["rev-parse", "origin/main"], in: kit) != runGit(["rev-parse", "main"], in: work))
+
+        // `no` is the full ID; a number takes git's units, at most 40.
+        for value in ["no", "7k"] {
+            for clone in [git, kit] { try runGit(["config", "core.abbrev", value], in: clone) }
+            try runGit(["commit", "-q", "--allow-empty", "-m", value], in: work)
+            try runGit(["push", "-q", "origin", "main"], in: work)
+            let expected = try runGit(["fetch", "origin"], in: git)
+            #expect(expected.contains(try runGit(["rev-parse", "main"], in: work)
+                .trimmingCharacters(in: .whitespacesAndNewlines)))
+            #expect(try gitKitFetch(kit) == expected)
+        }
+    }
+
     @Test("display widths count as git's utf8_strwidth does")
     func displayWidths() {
         #expect(DisplayWidth.of("main") == 4)

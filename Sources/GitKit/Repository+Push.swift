@@ -160,7 +160,7 @@ extension Repository {
                 lease, remote: remote, refspec: plan.explicit[0], isConfigured: isConfigured)
         }
         reporter.repository = repo
-        reporter.abbreviation = summaryAbbreviation()
+        reporter.abbreviation = try summaryAbbreviation()
         reporter.typedSources = plan.typedSources
 
         var opts = git_push_options()
@@ -373,13 +373,39 @@ extension Repository {
         return source.isEmpty || source.contains("*") ? nil : String(source)
     }
 
-    /// `core.abbrev` as git applies it to the push and fetch summaries: a number of
-    /// hex digits (4–40), `no` for full IDs, else (unset, `auto`) git's
-    /// default of 7.
-    func summaryAbbreviation() -> Int {
-        guard let value = try? configGet("core.abbrev")?.lowercased() else { return 7 }
-        if let length = Int(value) { return min(max(length, 4), 40) }
-        return ["no", "false", "off"].contains(value) ? 40 : 7
+    /// `core.abbrev` as git applies it to the push and fetch summaries
+    /// (git_default_core_config): unset or `auto` is git's default of 7,
+    /// `false`/`no`/`off` or empty the full 40, a number of at least 4
+    /// (with git's `k`/`m`/`g` units) at most 40. git refuses to run with
+    /// anything else, so this throws git's error for it.
+    func summaryAbbreviation() throws -> Int {
+        var config: OpaquePointer?
+        try check(git_repository_config_snapshot(&config, repo))
+        defer { git_config_free(config) }
+        var entry: UnsafeMutablePointer<git_config_entry>?
+        let result = git_config_get_entry(&entry, config, "core.abbrev")
+        if result == GIT_ENOTFOUND.rawValue { return 7 }
+        try check(result)
+        defer { git_config_entry_free(entry) }
+        func invalid(_ message: String) -> Libgit2Error {
+            Libgit2Error(code: GIT_ERROR.rawValue, klass: Int32(GIT_ERROR_CONFIG.rawValue), message: message)
+        }
+        guard let raw = entry?.pointee.value else { throw invalid("missing value for 'core.abbrev'") }
+        let value = String(cString: raw)
+        switch value.lowercased() {
+        case "auto": return 7
+        case "", "false", "no", "off": return 40
+        default: break
+        }
+        var length: Int64 = 0
+        guard git_config_parse_int64(&length, raw) == 0 else {
+            throw invalid("bad numeric config value '\(value)' for 'core.abbrev': invalid unit")
+        }
+        guard length <= Int64(Int32.max), length >= Int64(Int32.min) else {
+            throw invalid("bad numeric config value '\(value)' for 'core.abbrev': out of range")
+        }
+        guard length >= 4 else { throw invalid("abbrev length out of range: \(length)") }
+        return Int(min(length, 40))
     }
 
     /// libgit2's push parser expects fully-qualified refs where the CLI

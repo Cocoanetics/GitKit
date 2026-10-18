@@ -253,7 +253,7 @@ extension Repository {
         reporter.suppressTransferProgress =
             ProgressReporter.isLocalURL(remoteURL)
         reporter.repository = repo
-        reporter.abbreviation = summaryAbbreviation()
+        reporter.abbreviation = try summaryAbbreviation()
         reporter.showForcedUpdates = try configFlag("fetch.showForcedUpdates") ?? true
         if !reporter.showForcedUpdates, try configFlag("advice.fetchShowForcedUpdates") ?? true {
             reporter.write("""

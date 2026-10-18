@@ -62,7 +62,9 @@ extension Repository {
         for line in lines.map({ Self.qualified($0, by: entries.map(\.name)) }) {
             switch line.kind {
             case .deleted:
-                ranked.append(.init(rank: 0, refspec: 0, key: line.local, line: line))
+                // By the full local name, as git walks its refs for stale
+                // ones (get_stale_heads).
+                ranked.append(.init(rank: 0, refspec: 0, key: line.localRef, line: line))
             case .update:
                 if let refspec = storer(of: line.remoteRef, into: line.localRef) {
                     ranked.append(.init(rank: toMerge.contains(Array(line.remoteRef.utf8)) ? 1 : 2,
