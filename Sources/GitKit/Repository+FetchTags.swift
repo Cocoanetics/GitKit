@@ -15,6 +15,45 @@ public struct FetchRejectedError: Error, LocalizedError, Sendable, Equatable {
     }
 }
 
+/// The objects a repository had before a fetch: its loose objects and
+/// the packs it had then (`objects/pack/*.idx`), a fetch writing what it
+/// downloads as a new pack.
+final class ObjectsBefore {
+    private var odb: OpaquePointer?
+
+    init(repository: OpaquePointer?, packs: Set<String>) {
+        guard let path = git_repository_commondir(repository) ?? git_repository_path(repository) else { return }
+        let objects = URL(fileURLWithPath: String(cString: path)).appendingPathComponent("objects")
+        guard git_odb_new(&odb) == 0 else { return }
+        var loose: UnsafeMutablePointer<git_odb_backend>?
+        if git_odb_backend_loose(&loose, objects.path, -1, 0, 0, 0) == 0 {
+            _ = git_odb_add_backend(odb, loose, 2)
+        }
+        for pack in packs {
+            var backend: UnsafeMutablePointer<git_odb_backend>?
+            let index = objects.appendingPathComponent("pack").appendingPathComponent(pack).path
+            if git_odb_backend_one_pack(&backend, index) == 0 {
+                _ = git_odb_add_backend(odb, backend, 1)
+            }
+        }
+    }
+
+    deinit { git_odb_free(odb) }
+
+    func has(_ oid: git_oid) -> Bool {
+        var oid = oid
+        return odb.map { git_odb_exists($0, &oid) == 1 } ?? false
+    }
+
+    /// The pack indexes `repository` has now, by file name.
+    static func packs(of repository: OpaquePointer?) -> Set<String> {
+        guard let path = git_repository_commondir(repository) ?? git_repository_path(repository) else { return [] }
+        let dir = URL(fileURLWithPath: String(cString: path)).appendingPathComponent("objects/pack")
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
+        return Set(names.filter { $0.hasSuffix(".idx") })
+    }
+}
+
 extension Repository {
 
     /// The tag refspec git adds for `--tags` (`tag_refspec`).
@@ -142,7 +181,9 @@ extension Repository {
     /// asked for — is kept here only if a ref that isn't a tag, or what
     /// FETCH_HEAD holds, reaches what it points at. Returns the tags
     /// dropped.
-    func dropUnfollowableTags(refspecs: [String], lines: inout [FetchSummaryLine]) throws -> [String] {
+    func dropUnfollowableTags(
+        refspecs: [String], packsBefore: Set<String>, lines: inout [FetchSummaryLine]
+    ) throws -> [String] {
         let specs: [OpaquePointer] = refspecs.filter { !$0.hasPrefix("^") }.compactMap { text in
             var spec: OpaquePointer?
             return git_refspec_parse(&spec, text, 1) == 0 ? spec : nil
@@ -150,12 +191,12 @@ extension Repository {
         defer { specs.forEach { git_refspec_free($0) } }
         let followed = lines.filter { line in
             line.kind == .update && line.summary == "[new tag]"
-                && !specs.contains { git_refspec_src_matches($0, line.remoteRef) == 1 }
+                && !specs.contains { Self.refspec($0, fetches: line.remoteRef) }
         }
         guard !followed.isEmpty else { return [] }
 
-        // The tips that count: every ref but the tags, and what FETCH_HEAD
-        // holds but tags.
+        // The tips that count: every ref but the tags, what FETCH_HEAD
+        // holds but tags, and what the refspecs stored.
         var tips: [git_oid] = []
         var iterator: UnsafeMutablePointer<git_reference_iterator>?
         try check(git_reference_iterator_new(&iterator, repo))
@@ -182,6 +223,12 @@ extension Repository {
             return 0
         }, Unmanaged.passUnretained(heads).toOpaque())
         tips += heads.oids
+        // And the refs the refspecs stored, tags too (`main:refs/tags/x`).
+        for line in lines where line.kind == .update && line.flag != "!"
+            && !followed.contains(where: { $0.localRef.utf8.elementsEqual(line.localRef.utf8) }) {
+            var oid = git_oid()
+            if git_reference_name_to_id(&oid, repo, line.localRef) == 0 { tips.append(oid) }
+        }
 
         // What each followed tag points at, peeled.
         var targets: [(tag: String, id: git_oid, isCommit: Bool)] = []
@@ -196,6 +243,7 @@ extension Repository {
         let others = Set(targets.filter { !$0.isCommit }.map { Self.hex($0.id) })
         let held = others.isEmpty ? [] : historyHolds(others, from: tips)
         var dropped: [String] = []
+        var before: ObjectsBefore?
         for target in targets {
             var id = target.id
             let reached = target.isCommit
@@ -203,6 +251,10 @@ extension Repository {
                     || git_graph_reachable_from_any(repo, &id, tips, tips.count) == 1
                 : held.contains(Self.hex(id))
             guard !reached else { continue }
+            // An object the repository had before, reachable or not, is
+            // one git follows a tag of.
+            if before == nil { before = ObjectsBefore(repository: repo, packs: packsBefore) }
+            if before?.has(id) == true { continue }
             try check(git_reference_remove(repo, target.tag))
             dropped.append(target.tag)
         }

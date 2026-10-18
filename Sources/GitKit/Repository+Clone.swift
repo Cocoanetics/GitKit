@@ -302,6 +302,12 @@ extension Repository {
             || (tags == nil && git_remote_autotag(remoteHandle) == GIT_REMOTE_DOWNLOAD_TAGS_ALL)
         // A refspec that stores into refs/tags/ can't move a tag unless
         // forced: what the tags were tells which moved.
+        // Whether git would follow tags itself, and the packs there are
+        // before the fetch adds its own, to tell what was here already.
+        let followsTags = tags == nil && !allTags
+            && git_remote_autotag(remoteHandle) == GIT_REMOTE_DOWNLOAD_TAGS_AUTO
+            && effectiveRefspecs.contains(where: Self.storesFetchedRef)
+        let packsBefore = followsTags ? ObjectsBefore.packs(of: repo) : []
         let tagsBefore = allTags || (effectiveRefspecs.contains {
             !$0.hasPrefix("+") && !$0.hasPrefix("^") && Self.storesFetchedRef($0)
         }) ? try localTagObjects() : [:]
@@ -354,9 +360,9 @@ extension Repository {
         }
         // git follows only the tags pointing into what it has once the
         // fetch is in; libgit2 fetched every tag's objects for that.
-        if tags == nil, !allTags, git_remote_autotag(remoteHandle) == GIT_REMOTE_DOWNLOAD_TAGS_AUTO,
-           effectiveRefspecs.contains(where: Self.storesFetchedRef) {
-            _ = try dropUnfollowableTags(refspecs: effectiveRefspecs, lines: &reporter.fetchLines)
+        if followsTags {
+            _ = try dropUnfollowableTags(
+                refspecs: effectiveRefspecs, packsBefore: packsBefore, lines: &reporter.fetchLines)
         }
         var refusedTags: [String] = []
         if !tagsBefore.isEmpty || allTags {

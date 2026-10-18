@@ -176,6 +176,28 @@ struct FetchTagsTests {
         #expect(!names.contains("tblob"))
     }
 
+    @Test("a tag of an object here already, reachable or not, is followed")
+    func danglingTarget() throws {
+        let (upstream, clone) = try makeUpstreamAndClone()
+        defer { [upstream, clone].forEach { try? FileManager.default.removeItem(at: $0) } }
+        let blob = try runGit(["hash-object", "-w", "--stdin"], in: upstream, input: "dangling\n")
+        try runGit(["tag", "tdangling", blob], in: upstream)
+        try runGit(["hash-object", "-w", "--stdin"], in: clone, input: "dangling\n")
+        _ = try fetch(clone, tags: nil)
+        #expect(try tagNames(clone).contains("tdangling"))
+    }
+
+    @Test("a tag fetched by a short source is the refspec's, not a followed one")
+    func shortSourceTag() throws {
+        let (upstream, clone) = try makeUpstreamAndClone()
+        defer { [upstream, clone].forEach { try? FileManager.default.removeItem(at: $0) } }
+        // vside2 is on `side`, which this fetch doesn't bring.
+        let (output, error) = try fetch(clone, ["vside2:refs/tags/x"], tags: nil)
+        #expect(error == nil)
+        #expect(output.contains(" * [new tag]         vside2     -> x\n"))
+        #expect(try runGit(["rev-parse", "x"], in: clone) == runGit(["rev-parse", "vside2"], in: upstream))
+    }
+
     @Test("--no-tags follows none, and overrides tagOpt")
     func noTags() throws {
         let (upstream, clone) = try makeUpstreamAndClone()
