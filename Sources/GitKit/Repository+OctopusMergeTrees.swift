@@ -384,7 +384,9 @@ extension Repository {
         defer { git_diff_free(diff) }
         var changes: [String: Bool] = [:]
         for i in 0..<git_diff_num_deltas(diff) {
-            guard let delta = git_diff_get_delta(diff, i)?.pointee else { continue }
+            // A file gone from the work tree has nothing to lose: git's
+            // verify_uptodate takes it as up to date.
+            guard let delta = git_diff_get_delta(diff, i)?.pointee, delta.status != GIT_DELTA_DELETED else { continue }
             changes[String(cString: delta.new_file.path ?? delta.old_file.path)] = delta.status == GIT_DELTA_UNTRACKED
         }
         return changes
@@ -414,21 +416,64 @@ extension Repository {
         return nil
     }
 
-    func checkOutConflicts(_ merged: OpaquePointer?, theirLabel: String, keepingOurs: [String]) throws {
+    /// Check out what the merge changes and nothing else, as read-tree
+    /// -u updates the entries it changes: a file deleted from the work
+    /// tree is written again only where the merge changes it.
+    func withCheckout(
+        of paths: [String], strategy: UInt32, _ body: (inout git_checkout_options) throws -> Void
+    ) throws {
+        guard !paths.isEmpty else { return } // no paths would mean every path
         var options = git_checkout_options()
         try check(git_checkout_options_init(&options, UInt32(GIT_CHECKOUT_OPTIONS_VERSION)))
-        options.checkout_strategy = UInt32(GIT_CHECKOUT_SAFE.rawValue)
-            | UInt32(GIT_CHECKOUT_ALLOW_CONFLICTS.rawValue)
-        try "HEAD".withCString { ours in
-            try theirLabel.withCString { theirs in
-                options.our_label = ours
-                options.their_label = theirs
-                // Checkout writes the merged entries, conflicts and all,
-                // to the repository's index.
-                try check(git_checkout_index(repo, merged, &options))
+        options.checkout_strategy = strategy | UInt32(GIT_CHECKOUT_RECREATE_MISSING.rawValue)
+            | UInt32(GIT_CHECKOUT_DISABLE_PATHSPEC_MATCH.rawValue)
+        var strings: [UnsafeMutablePointer<CChar>?] = paths.map { strdup($0) }
+        defer { strings.forEach { free($0) } }
+        try strings.withUnsafeMutableBufferPointer { buffer in
+            options.paths = git_strarray(strings: buffer.baseAddress, count: buffer.count)
+            try body(&options)
+        }
+    }
+
+    func checkOutConflicts(
+        _ merged: OpaquePointer?, from headTree: git_oid, theirLabel: String, keepingOurs: [String]
+    ) throws {
+        // An unmerged path one side deleted has nothing to write where
+        // the work tree no longer has it; libgit2 can't recreate it.
+        let workdir = git_repository_workdir(repo).map { String(cString: $0) } ?? ""
+        let changed = try changes(from: headTree, to: merged).keys.sorted(by: Self.indexOrder)
+        let skipped = changed.filter { path in
+            var ancestor, ours, theirs: UnsafePointer<git_index_entry>?
+            guard git_index_conflict_get(&ancestor, &ours, &theirs, merged, path) == 0, ours == nil || theirs == nil
+            else { return false }
+            return !FileManager.default.fileExists(atPath: workdir + path)
+        }
+        let paths = changed.filter { !skipped.contains($0) }
+        try withCheckout(of: paths, strategy: UInt32(GIT_CHECKOUT_SAFE.rawValue)
+                         | UInt32(GIT_CHECKOUT_ALLOW_CONFLICTS.rawValue)) { options in
+            try "HEAD".withCString { ours in
+                try theirLabel.withCString { theirs in
+                    options.our_label = ours
+                    options.their_label = theirs
+                    // Checkout writes the merged entries, conflicts and
+                    // all, to the repository's index.
+                    try check(git_checkout_index(repo, merged, &options))
+                }
             }
         }
-        guard let workdir = git_repository_workdir(repo).map({ String(cString: $0) }) else { return }
+        // Their stages go to the index all the same.
+        if !skipped.isEmpty {
+            var index: OpaquePointer?
+            try check(git_repository_index(&index, repo))
+            defer { git_index_free(index) }
+            for path in skipped {
+                var ancestor, ours, theirs: UnsafePointer<git_index_entry>?
+                guard git_index_conflict_get(&ancestor, &ours, &theirs, merged, path) == 0 else { continue }
+                _ = git_index_remove_bypath(index, path)
+                try check(git_index_conflict_add(index, ancestor, ours, theirs))
+            }
+            try check(git_index_write(index))
+        }
         let root = URL(fileURLWithPath: workdir)
         func write(_ oid: git_oid, to path: String) throws {
             // Where a directory stands, git leaves it.
@@ -543,11 +588,15 @@ extension Repository {
 
     /// Check out `tree` and commit it on HEAD with `parents`.
     func commitMerge(
-        tree: git_oid, parents: [git_oid], message: String, author: Signature?, env: [String: String]
+        tree: git_oid, from headTree: git_oid, parents: [git_oid], message: String, author: Signature?,
+        env: [String: String]
     ) throws -> String {
-        var options = git_checkout_options()
-        try check(git_checkout_options_init(&options, UInt32(GIT_CHECKOUT_OPTIONS_VERSION)))
-        options.checkout_strategy = UInt32(GIT_CHECKOUT_SAFE.rawValue)
+        // A path the merge deletes that the work tree no longer has is
+        // only the index's business; libgit2 can't "recreate" it.
+        let workdir = git_repository_workdir(repo).map { String(cString: $0) } ?? ""
+        let changed = try diffEntries(headTree, tree)
+        let gone = changed.filter { $0.value.oid == nil && !FileManager.default.fileExists(atPath: workdir + $0.key) }
+        let paths = changed.keys.filter { gone[$0] == nil }.sorted(by: Self.indexOrder)
         var commits: [OpaquePointer?] = []
         defer { commits.forEach { git_commit_free($0) } }
         for parent in parents {
@@ -562,7 +611,16 @@ extension Repository {
         defer { git_signature_free(committerSig) }
 
         return try withTree(tree) { tree in
-            try check(git_checkout_tree(repo, tree, &options))
+            try withCheckout(of: paths, strategy: UInt32(GIT_CHECKOUT_SAFE.rawValue)) { options in
+                try check(git_checkout_tree(repo, tree, &options))
+            }
+            if !gone.isEmpty {
+                var index: OpaquePointer?
+                try check(git_repository_index(&index, repo))
+                defer { git_index_free(index) }
+                for path in gone.keys { _ = git_index_remove_bypath(index, path) }
+                try check(git_index_write(index))
+            }
             var commitOID = git_oid()
             _ = try commits.withUnsafeMutableBufferPointer { buffer in
                 try message.withCString { text in

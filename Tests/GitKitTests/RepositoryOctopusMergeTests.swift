@@ -578,6 +578,18 @@ extension RepositoryOctopusMergeTests {
         #expect(try state(of: dir) == state(of: other))
     }
 
+    @Test("a file deleted from the work tree is up to date: the merge deletes or writes it",
+          arguments: [["c", "df"], ["c", "modd"], ["c", "modd", "df"], ["c", "df", "modd"]])
+    func fileDeletedFromWorkTree(heads: [String]) throws {
+        let dir = try makeFileOverDirectory()
+        try FileManager.default.removeItem(at: dir.appendingPathComponent("f"))
+        let other = try twin(of: dir)
+        let result = try merge(heads, in: dir)
+        _ = try git(["merge", "-q", "-m", "Merge branches"] + heads, in: other, check: false)
+        if case .failed = result.outcome { Issue.record("expected the merge to go on, got \(result.outcome)") }
+        #expect(try state(of: dir) == state(of: other))
+    }
+
     @Test("refuses a bare repository before anything changes")
     func refusesBare() throws {
         let dir = try makeRepository()

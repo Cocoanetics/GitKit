@@ -194,7 +194,7 @@ extension Repository {
 
         try writeOrigHead(head)
         if let conflicted {
-            try checkOutConflicts(conflicted, theirLabel: heads.last ?? "", keepingOurs: keepOurs)
+            try checkOutConflicts(conflicted, from: headTree, theirLabel: heads.last ?? "", keepingOurs: keepOurs)
             try writeMergeState(oids: oids, message: message, conflicts: conflictedPaths,
                                 noFastForward: noFastForward)
             return OctopusMergeResult(steps: steps, outcome: .conflicts(paths: conflictedPaths))
@@ -204,7 +204,7 @@ extension Repository {
         let parents = (headSubsumed && !noFastForward ? [] : [head]) + oids
         // git ends a message with a newline.
         let text = message.hasSuffix("\n") ? message : message + "\n"
-        let sha = try commitMerge(tree: mergedTree, parents: parents, message: text,
+        let sha = try commitMerge(tree: mergedTree, from: headTree, parents: parents, message: text,
                                   author: author, env: env)
         let stats = try mergeStats(from: headTree, to: mergedTree)
         return OctopusMergeResult(steps: steps, outcome: .mergeCommit(
