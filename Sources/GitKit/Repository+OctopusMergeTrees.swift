@@ -387,8 +387,8 @@ extension Repository {
                 var blob: OpaquePointer?
                 try check(git_blob_lookup(&blob, repo, &oid))
                 defer { git_blob_free(blob) }
-                let target = String(decoding: Data(bytes: git_blob_rawcontent(blob), count: Int(git_blob_rawsize(blob))),
-                                    as: UTF8.self)
+                let bytes = Data(bytes: git_blob_rawcontent(blob), count: Int(git_blob_rawsize(blob)))
+                let target = String(decoding: bytes, as: UTF8.self)
                 let link = root.appendingPathComponent(path)
                 try? FileManager.default.removeItem(at: link)
                 try FileManager.default.createSymbolicLink(atPath: link.path, withDestinationPath: target)

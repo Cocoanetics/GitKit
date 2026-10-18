@@ -319,7 +319,8 @@ struct RepositoryOctopusMergeTests {
         #expect(result.steps.last?.automatic == [.symlink(path: "lnk"), .submodule(path: "sub")])
         #expect(result.outcome == .conflicts(paths: ["lnk", "sub"]))
         #expect(try state(of: dir) == state(of: other))
-        #expect(try FileManager.default.destinationOfSymbolicLink(atPath: dir.appendingPathComponent("lnk").path) == "x")
+        let link = dir.appendingPathComponent("lnk").path
+        #expect(try FileManager.default.destinationOfSymbolicLink(atPath: link) == "x")
     }
 
     @Test("refuses to start while a merge or cherry-pick waits, as git does")
