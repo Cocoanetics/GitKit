@@ -183,57 +183,77 @@ extension Repository {
         }, Unmanaged.passUnretained(heads).toOpaque())
         tips += heads.oids
 
-        var dropped: [String] = []
-        var snapshot: Set<String>?
+        // What each followed tag points at, peeled.
+        var targets: [(tag: String, id: git_oid, isCommit: Bool)] = []
         for line in followed {
             var object: OpaquePointer?
             guard git_revparse_single(&object, repo, line.localRef + "^{}") == 0,
-                  var target = git_object_id(object)?.pointee
+                  let id = git_object_id(object)?.pointee
             else { git_object_free(object); continue }
-            let type = git_object_type(object)
+            targets.append((line.localRef, id, git_object_type(object) == GIT_OBJECT_COMMIT))
             git_object_free(object)
-            let reached: Bool
-            if type == GIT_OBJECT_COMMIT {
-                reached = tips.contains { tip in var tip = tip; return git_oid_equal(&tip, &target) == 1 }
-                    || git_graph_reachable_from_any(repo, &target, tips, tips.count) == 1
-            } else {
-                // A tree or blob: kept when the tips' trees hold it.
-                if snapshot == nil { snapshot = tipTrees(tips) }
-                reached = snapshot?.contains(Self.hex(target)) == true
-            }
+        }
+        let others = Set(targets.filter { !$0.isCommit }.map { Self.hex($0.id) })
+        let held = others.isEmpty ? [] : historyHolds(others, from: tips)
+        var dropped: [String] = []
+        for target in targets {
+            var id = target.id
+            let reached = target.isCommit
+                ? tips.contains { tip in var tip = tip; return git_oid_equal(&tip, &id) == 1 }
+                    || git_graph_reachable_from_any(repo, &id, tips, tips.count) == 1
+                : held.contains(Self.hex(id))
             guard !reached else { continue }
-            try check(git_reference_remove(repo, line.localRef))
-            dropped.append(line.localRef)
+            try check(git_reference_remove(repo, target.tag))
+            dropped.append(target.tag)
         }
         lines.removeAll { line in dropped.contains { $0.utf8.elementsEqual(line.localRef.utf8) } }
         try removeFetchHeadTags(dropped)
         return dropped
     }
 
-    /// Every tree and blob the commits among `tips` hold, as hex IDs.
-    /// git follows a tag of a tree or blob it has once the fetch is in;
-    /// libgit2 fetched every tag's objects, so the tips' snapshots stand
-    /// in for what git would have.
-    private func tipTrees(_ tips: [git_oid]) -> Set<String> {
-        final class Found { var ids = Set<String>() }
-        let found = Found()
-        for var tip in tips {
+    /// Which of `targets` (trees and blobs, as hex IDs) the history of
+    /// `tips` holds. git follows a tag of a tree or blob it has once the
+    /// fetch is in; libgit2 fetched every tag's objects, so what the
+    /// commits reachable from the tips hold stands in for what git would
+    /// have. Each tree is walked once, and the walk stops once every
+    /// target is found.
+    private func historyHolds(_ targets: Set<String>, from tips: [git_oid]) -> Set<String> {
+        final class Search {
+            var wanted: Set<String>
+            var found = Set<String>()
+            var seenTrees = Set<String>()
+            init(_ wanted: Set<String>) { self.wanted = wanted }
+            /// Note `id`; whether it's a tree not walked before.
+            func visit(_ id: String, isTree: Bool) -> Bool {
+                if wanted.remove(id) != nil { found.insert(id) }
+                return isTree ? seenTrees.insert(id).inserted : false
+            }
+        }
+        let search = Search(targets)
+        var walk: OpaquePointer?
+        guard git_revwalk_new(&walk, repo) == 0 else { return [] }
+        defer { git_revwalk_free(walk) }
+        for var tip in tips { _ = git_revwalk_push(walk, &tip) }
+        var oid = git_oid()
+        while !search.wanted.isEmpty, git_revwalk_next(&oid, walk) == 0 {
             var commit: OpaquePointer?
-            guard git_commit_lookup(&commit, repo, &tip) == 0 else { continue }
+            guard git_commit_lookup(&commit, repo, &oid) == 0 else { continue }
             defer { git_commit_free(commit) }
             var tree: OpaquePointer?
             guard git_commit_tree(&tree, commit) == 0 else { continue }
             defer { git_tree_free(tree) }
             guard let root = git_tree_id(tree)?.pointee,
-                  found.ids.insert(Self.hex(root)).inserted
+                  search.visit(Self.hex(root), isTree: true)
             else { continue }
             _ = git_tree_walk(tree, GIT_TREEWALK_PRE, { _, entry, payload in
                 guard let entry, let payload, let id = git_tree_entry_id(entry)?.pointee else { return 0 }
-                Unmanaged<Found>.fromOpaque(payload).takeUnretainedValue().ids.insert(Repository.hex(id))
-                return 0
-            }, Unmanaged.passUnretained(found).toOpaque())
+                let search = Unmanaged<Search>.fromOpaque(payload).takeUnretainedValue()
+                let isTree = git_tree_entry_type(entry) == GIT_OBJECT_TREE
+                // A subtree walked before holds nothing new: skip it.
+                return search.visit(Repository.hex(id), isTree: isTree) || !isTree ? 0 : 1
+            }, Unmanaged.passUnretained(search).toOpaque())
         }
-        return found.ids
+        return search.found
     }
 
     static func hex(_ oid: git_oid) -> String {

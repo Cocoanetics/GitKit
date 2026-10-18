@@ -162,9 +162,17 @@ struct FetchTagsTests {
         let blob = try runGit(["hash-object", "-w", "--stdin"], in: upstream, input: "unrelated\n")
         try runGit(["tag", "tblob", blob], in: upstream)
         try runGit(["tag", "tmain", "main^{tree}"], in: upstream)
+        // A blob only an ancestor of the fetched tip holds.
+        try Data("gone\n".utf8).write(to: upstream.appendingPathComponent("gone.txt"))
+        try runGit(["add", "gone.txt"], in: upstream)
+        try runGit(["commit", "-q", "-m", "add"], in: upstream)
+        try runGit(["tag", "tgone", "HEAD:gone.txt"], in: upstream)
+        try runGit(["rm", "-q", "gone.txt"], in: upstream)
+        try runGit(["commit", "-q", "-m", "rm"], in: upstream)
         _ = try fetch(clone, tags: nil)
         let names = try tagNames(clone)
         #expect(names.contains("tmain"))
+        #expect(names.contains("tgone"))
         #expect(!names.contains("tblob"))
     }
 
