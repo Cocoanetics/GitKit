@@ -150,14 +150,17 @@ extension Repository {
     }
 
     /// Whether `name` is a ref name as git takes one in a refspec: a
-    /// single level is fine, and with `pattern`, one `*`.
+    /// single level is fine, and with `pattern`, one `*`. libgit2 accepts
+    /// a name it can tidy up (`refs/heads//x`); git doesn't, so the name
+    /// has to come back from normalizing unchanged.
     private func isValidRefspecName(_ name: String, pattern: Bool) -> Bool {
         // C enums import as Int32 on Windows, UInt32 elsewhere.
         var flags = UInt32(GIT_REFERENCE_FORMAT_ALLOW_ONELEVEL.rawValue)
         if pattern { flags |= UInt32(GIT_REFERENCE_FORMAT_REFSPEC_PATTERN.rawValue) }
         // Normalizing only ever shortens the name.
         var buffer = [CChar](repeating: 0, count: name.utf8.count + 1)
-        return git_reference_normalize_name(&buffer, buffer.count, name, flags) == 0
+        guard git_reference_normalize_name(&buffer, buffer.count, name, flags) == 0 else { return false }
+        return String(cString: buffer) == name
     }
 
     /// A full object ID in hex, SHA-1 or SHA-256.

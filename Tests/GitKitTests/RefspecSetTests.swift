@@ -261,6 +261,7 @@ struct RefspecSetTests {
         let malformed = [
             ["refs/heads/*:refs/heads/x"], ["refs/heads/**:refs/heads/**"],
             ["refs/heads/*", "^refs/heads/**"], ["refs/heads/*", "^"],
+            ["refs/heads/*", "^refs/heads//private"], ["refs/heads//*:refs/heads/*"],
             ["refs/heads/*", "^refs/heads/wip:refs/heads/wip"],
             ["refs/heads/*", "^" + String(repeating: "a", count: 40)]
         ]
