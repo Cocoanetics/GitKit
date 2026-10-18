@@ -166,6 +166,14 @@ extension Repository {
     ///   - remote: The remote to fetch from: a configured remote's name
     ///     (e.g. `"origin"`), or, as in git, a URL or path.
     ///   - refspecs: The refspecs to fetch, or none for the remote's own.
+    ///   - location: Where to connect instead, when the caller has
+    ///     resolved the remote itself: a URL or path, used exactly as
+    ///     given (no `insteadOf` rewriting, a relative path read against
+    ///     the process's directory). A configured remote keeps its name
+    ///     for its refspecs and remote-tracking refs, and the output —
+    ///     `From`, `FETCH_HEAD` — still shows its URL as configured, or
+    ///     `remote` as given. `nil` (the default) connects where libgit2
+    ///     reads `remote` to be.
     ///   - depth: Limit the fetch to the last `depth` commits per tip — a
     ///     shallow fetch (`git fetch --depth N`). `nil` (the default) or a
     ///     non-positive value fetches full history.
@@ -177,13 +185,14 @@ extension Repository {
     public func fetch(
         remote: String,
         refspecs: [String],
+        connectingTo location: String? = nil,
         depth: Int? = nil,
         prune: Bool = false,
         credentials: CredentialProvider? = nil,
         progress: @escaping @Sendable (String) -> Void = GitProgress.standardError
     ) throws {
         try fetch(
-            remote: remote, refspecs: refspecs,
+            remote: remote, refspecs: refspecs, location: location,
             rawDepth: Repository.normalizedDepth(depth) ?? Int32(GIT_FETCH_DEPTH_FULL.rawValue),
             prune: prune, credentials: credentials, progress: progress)
     }
@@ -214,23 +223,32 @@ extension Repository {
     /// Deepen a shallow clone back to full history, fetching `refspecs`
     /// from `remote` in one operation — `git fetch --unshallow <remote>
     /// [<refspec>…]`. Empty `refspecs` means the remote's configured
-    /// ones, as for ``fetch(remote:refspecs:depth:prune:credentials:progress:)``.
+    /// ones, as for ``fetch(remote:refspecs:connectingTo:depth:prune:credentials:progress:)``.
     ///
     /// - Parameters:
     ///   - remote: The remote to fetch from: a configured remote's name
     ///     (e.g. `"origin"`), or, as in git, a URL or path.
     ///   - refspecs: The refspecs to unshallow, or none for the remote's own.
+    ///   - location: Where to connect instead, when the caller has
+    ///     resolved the remote itself: a URL or path, used exactly as
+    ///     given (no `insteadOf` rewriting, a relative path read against
+    ///     the process's directory). A configured remote keeps its name
+    ///     for its refspecs and remote-tracking refs, and the output —
+    ///     `From`, `FETCH_HEAD` — still shows its URL as configured, or
+    ///     `remote` as given. `nil` (the default) connects where libgit2
+    ///     reads `remote` to be.
     ///   - credentials: Invoked by the transport on auth challenges.
     ///   - progress: Sink for real-git-style progress lines (defaults to
     ///     the process's stderr).
     public func unshallow(
         remote: String,
         refspecs: [String],
+        connectingTo location: String? = nil,
         credentials: CredentialProvider? = nil,
         progress: @escaping @Sendable (String) -> Void = GitProgress.standardError
     ) throws {
         try fetch(
-            remote: remote, refspecs: refspecs,
+            remote: remote, refspecs: refspecs, location: location,
             rawDepth: Int32(GIT_FETCH_DEPTH_UNSHALLOW.rawValue),
             prune: false, credentials: credentials, progress: progress)
     }
@@ -238,6 +256,7 @@ extension Repository {
     private func fetch(
         remote: String,
         refspecs: [String],
+        location: String?,
         rawDepth: Int32,
         prune: Bool,
         credentials: CredentialProvider?,
@@ -246,12 +265,15 @@ extension Repository {
         let (remoteHandle, _) = try lookupRemote(remote)
         defer { git_remote_free(remoteHandle) }
 
-        // Pull the remote URL out of the handle for the `From <url>` header.
+        // Pull the remote URL out of the handle for the `From <url>`
+        // header: as configured, or as given, before `location` replaces
+        // it for the connection.
         let remoteURL = git_remote_url(remoteHandle).map { String(cString: $0) }
+        let connectionURL = try connect(remoteHandle, to: location, for: GIT_DIRECTION_FETCH) ?? remoteURL
         var reporter = ProgressReporter(
             headerURL: remoteURL, direction: .fetch, output: progress)
         reporter.suppressTransferProgress =
-            ProgressReporter.isLocalURL(remoteURL)
+            ProgressReporter.isLocalURL(connectionURL)
         reporter.repository = repo
         reporter.abbreviation = try summaryAbbreviation()
         reporter.showForcedUpdates = try configFlag("fetch.showForcedUpdates") ?? true
@@ -299,6 +321,11 @@ extension Repository {
                     },
                     outReporter: { reporter = $0 })
             }
+        }
+        // libgit2 names the URL it connected to in FETCH_HEAD; git names
+        // the one it shows in `From`.
+        if location != nil, let remoteURL {
+            try relabelFetchHead(as: ProgressReporter.fetchDisplayURL(remoteURL))
         }
         reporter.fetchLines = orderedFetchLines(reporter.fetchLines, refspecs: effectiveRefspecs)
         reporter.flushRefLines()
