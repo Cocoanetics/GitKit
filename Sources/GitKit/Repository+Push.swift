@@ -36,7 +36,7 @@ extension Repository {
     ) throws {
         try pushImpl(
             remote: remote, refspecs: [refspec], setUpstream: setUpstream,
-            forceWithLease: nil, credentials: credentials, progress: progress)
+            location: nil, forceWithLease: nil, credentials: credentials, progress: progress)
     }
 
     /// Push `refspecs` to `remote` in one operation — one connection, one
@@ -60,7 +60,18 @@ extension Repository {
     ///     (e.g. `"origin"`), or, as in git, a URL or path.
     ///   - refspecs: The refspecs to push, or none for the remote's own.
     ///   - setUpstream: When `true`, configure each pushed branch's
-    ///     upstream afterwards, as `git push -u` does.
+    ///     upstream afterwards, as `git push -u` does: to the remote's
+    ///     name, or `remote` as given.
+    ///   - location: Where to connect instead, when the caller has
+    ///     resolved the remote itself: a URL or path, used exactly as
+    ///     given (no `pushInsteadOf` rewriting, a relative path read
+    ///     against the process's directory). It takes the place of the
+    ///     push URL when the remote has one, else of its URL. A configured
+    ///     remote keeps its name for its refspecs, remote-tracking refs and
+    ///     `setUpstream`, and the output — `To`, ``PushRejectedError/url``,
+    ///     ``PushRefusedError/url`` — still shows its URL as configured, or
+    ///     `remote` as given. `nil` (the default) connects where libgit2
+    ///     reads `remote` to be.
     ///   - credentials: Invoked by the transport on auth challenges.
     ///   - progress: Sink for real-git-style progress lines (defaults to
     ///     the process's stderr).
@@ -72,12 +83,13 @@ extension Repository {
         remote: String,
         refspecs: [String],
         setUpstream: Bool,
+        connectingTo location: String? = nil,
         credentials: CredentialProvider? = nil,
         progress: @escaping @Sendable (String) -> Void = GitProgress.standardError
     ) throws -> [String] {
         try pushImpl(
             remote: remote, refspecs: refspecs, setUpstream: setUpstream,
-            forceWithLease: nil, credentials: credentials, progress: progress)
+            location: location, forceWithLease: nil, credentials: credentials, progress: progress)
     }
 
     /// Push `refspec` to `remote` with `--force-with-lease` semantics.
@@ -94,6 +106,16 @@ extension Repository {
     ///     after a successful push.
     ///   - forceWithLease: The lease expectation to verify before sending
     ///     the forced update.
+    ///   - location: Where to connect instead, when the caller has
+    ///     resolved the remote itself: a URL or path, used exactly as
+    ///     given (no `pushInsteadOf` rewriting, a relative path read
+    ///     against the process's directory). It takes the place of the
+    ///     push URL when the remote has one, else of its URL. A configured
+    ///     remote keeps its name for its refspecs, remote-tracking refs and
+    ///     `setUpstream`, and the output — `To`, ``PushRejectedError/url``,
+    ///     ``PushRefusedError/url`` — still shows its URL as configured, or
+    ///     `remote` as given. `nil` (the default) connects where libgit2
+    ///     reads `remote` to be.
     ///   - credentials: Invoked by the transport on auth challenges.
     ///   - progress: Sink for real-git-style progress lines (defaults to
     ///     the process's stderr).
@@ -102,12 +124,13 @@ extension Repository {
         refspec: String,
         setUpstream: Bool,
         forceWithLease lease: PushLease,
+        connectingTo location: String? = nil,
         credentials: CredentialProvider? = nil,
         progress: @escaping @Sendable (String) -> Void = GitProgress.standardError
     ) throws {
         try pushImpl(
             remote: remote, refspecs: [refspec], setUpstream: setUpstream,
-            forceWithLease: lease, credentials: credentials, progress: progress)
+            location: location, forceWithLease: lease, credentials: credentials, progress: progress)
     }
 
     /// What a push came to: refs sent, or nothing to send.
@@ -129,6 +152,7 @@ extension Repository {
         remote: String,
         refspecs requested: [String],
         setUpstream: Bool,
+        location: String?,
         forceWithLease lease: PushLease?,
         credentials: CredentialProvider?,
         progress: @escaping @Sendable (String) -> Void
@@ -136,13 +160,15 @@ extension Repository {
         let (remoteHandle, isConfigured) = try lookupRemote(remote)
         defer { git_remote_free(remoteHandle) }
 
-        // git names the push URL, when the remote has one.
+        // git names the push URL, when the remote has one: as configured,
+        // or as given, before `location` replaces it for the connection.
         let remoteURL = (git_remote_pushurl(remoteHandle) ?? git_remote_url(remoteHandle))
             .map { String(cString: $0) }
+        let connectionURL = try connect(remoteHandle, to: location, for: GIT_DIRECTION_PUSH) ?? remoteURL
         var reporter = ProgressReporter(
             headerURL: remoteURL, direction: .push, output: progress)
         reporter.suppressTransferProgress =
-            ProgressReporter.isLocalURL(remoteURL)
+            ProgressReporter.isLocalURL(connectionURL)
 
         let refspecs = requested.isEmpty
             ? try configuredPushRefspecs(remoteHandle)

@@ -63,7 +63,15 @@ Operations are synchronous, `throws` (typed ``Libgit2Error``), and return
   and `fetch` / `push` take a URL or path as well as a remote's name, and
   a set of refspecs applied together, as git applies them: negative
   refspecs (`^refs/heads/wip`), and for `push`, patterns and the matching
-  refspec `:`. `GitSSHTransport.register(_:)` lets a
+  refspec `:`. A caller that resolves the remote itself — git opens a
+  relative remote from the top of the work tree, libgit2 from the
+  process's directory — passes `connectingTo:` to `fetch`, `unshallow`
+  and `push`: libgit2 connects to exactly that location (no `insteadOf`
+  rewriting), so what the caller authorized is what gets opened, while a
+  configured remote keeps its name for its refspecs, tracking refs and
+  `-u`, and the output (`From`/`To`, `FETCH_HEAD`, `PushRejectedError.url`,
+  `PushRefusedError.url`) names the remote as configured or as given
+  (`To ../bare`). `GitSSHTransport.register(_:)` lets a
   host plug its own in-process SSH client (e.g. one built on
   swift-nio-ssh) in place of libgit2's process-spawning `ssh_exec`
   transport for `ssh://` and scp-style remotes; `unregister()` restores
