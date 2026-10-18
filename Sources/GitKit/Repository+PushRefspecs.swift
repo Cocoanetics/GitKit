@@ -148,10 +148,10 @@ extension Repository {
     /// A destination two of `refspecs` push to that the remote already
     /// has, which git refuses outright.
     func duplicatedDestination(in refspecs: [String], remoteRefs: [String: git_oid]) -> String? {
-        var seen = Set<String>()
+        var seen = Set<[UInt8]>()  // ref names as bytes, as git compares them
         for refspec in refspecs {
             guard let destination = destinationRefName(fromPushRefspec: refspec) else { continue }
-            if !seen.insert(destination).inserted, remoteRefs[destination] != nil {
+            if !seen.insert(Array(destination.utf8)).inserted, remoteRefs[destination] != nil {
                 return destination
             }
         }
