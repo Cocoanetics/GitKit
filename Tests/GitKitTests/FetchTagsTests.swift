@@ -323,6 +323,12 @@ struct FetchTagsTests {
         #expect(error == nil)
         #expect(output.contains(" * [new ref]         \(sha) -> v1\n"))
         #expect(try runGit(["rev-parse", "v1"], in: clone) == sha)
+
+        // Forced, it moves the tag that's there.
+        let other = try runGit(["rev-parse", "side"], in: upstream)
+        let forced = try fetch(clone, ["+\(other):refs/tags/v1", "^refs/tags/v1"], tags: .all)
+        #expect(forced.error == nil)
+        #expect(try runGit(["rev-parse", "v1"], in: clone) == other)
     }
 
     @Test("the remote's HEAD fetched into a tag doesn't clobber it")
