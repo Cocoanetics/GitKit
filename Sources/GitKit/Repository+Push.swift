@@ -198,9 +198,9 @@ extension Repository {
                     let common = remoteRefs.names.contains { !plan.excludes($0) }
                     return common ? .nothingToSend : .noRefsInCommon
                 }
-                // git refuses two updates to one of the remote's refs
-                // before sending anything (`match_explicit`).
-                if let duplicate = duplicatedDestination(in: pushRefspecs, remoteRefs: remoteRefs) {
+                // git refuses two updates to one ref before sending
+                // anything (`match_explicit`).
+                if let duplicate = duplicatedDestination(in: pushRefspecs) {
                     git_remote_disconnect(remoteHandle)
                     throw Libgit2Error(
                         code: GIT_EINVALIDSPEC.rawValue,
@@ -317,8 +317,8 @@ extension Repository {
         }
         rejected.forEach { refuse($0.refspec, $0.reason) }
 
-        // receive-pack's reports go to the first update for each ref, so
-        // a second update for one ref goes unreported: `[remote failure]`.
+        // An update the remote never reported on failed, as git counts
+        // it (`[remote failure]`). Each report goes to one update.
         var reports = Dictionary(reporter.reportedRefs.map { (Array($0.utf8), 1) }, uniquingKeysWith: +)
         var unreported = Set<[UInt8]>()
         for refspec in accepted where !isUpToDate(refspec, remoteRefs: remoteRefs) {

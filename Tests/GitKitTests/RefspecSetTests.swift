@@ -333,11 +333,11 @@ struct RefspecSetTests {
         }
 
         // A pattern leaves alone a destination an explicit refspec claims,
-        // while explicit refspecs all go out, as in git.
+        // while two explicit refspecs to one ref are refused, as in git.
         try runGit(["commit", "-q", "--allow-empty", "-m", "two"], in: work)
         let claimed = try makeBare()
         defer { removing(claimed)() }
-        #expect(throws: PushRejectedError.self) {
+        #expect(throws: Libgit2Error.self) {
             try repo.push(remote: claimed.path,
                           refspecs: ["main:refs/heads/x", "dev:refs/heads/x"],
                           setUpstream: false, progress: { _ in })

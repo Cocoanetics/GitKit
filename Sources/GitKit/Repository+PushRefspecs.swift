@@ -123,11 +123,11 @@ extension Repository {
 
     /// The refspecs to hand libgit2: the explicit ones, then each local
     /// ref a pattern matches, then the branches the matching refspec
-    /// pairs up with `remoteRefs`. As in git, a pattern
-    /// or the matching refspec leaves alone a destination something else
-    /// is already being pushed to, while explicit refspecs all go out
-    /// (two to one ref, and the remote refuses both). A negative refspec
-    /// drops every update to a ref it names.
+    /// pairs up with `remoteRefs`. As in git, a pattern or the matching
+    /// refspec leaves alone a destination something else is already
+    /// being pushed to, while two explicit refspecs to one ref stay, for
+    /// ``duplicatedDestination(in:)`` to refuse. A negative refspec drops
+    /// every update to a ref it names.
     func expandedPushRefspecs(_ plan: PushPlan, remoteRefs: [String]?) throws -> [String] {
         var refspecs = plan.explicit
         // Ref names as bytes, as git compares them.
@@ -206,15 +206,14 @@ extension Repository {
         refspec.hasPrefix("+") ? String(refspec.dropFirst()) : refspec
     }
 
-    /// A destination two of `refspecs` push to that the remote already
-    /// has, which git refuses outright.
-    func duplicatedDestination(in refspecs: [String], remoteRefs: RemoteRefs) -> String? {
+    /// A destination two of `refspecs` push to, which git refuses before
+    /// sending anything (`match_explicit`), whether or not the remote has
+    /// the ref and whether or not the sources differ.
+    func duplicatedDestination(in refspecs: [String]) -> String? {
         var seen = Set<[UInt8]>()  // ref names as bytes, as git compares them
         for refspec in refspecs {
             guard let destination = destinationRefName(fromPushRefspec: refspec) else { continue }
-            if !seen.insert(Array(destination.utf8)).inserted, remoteRefs.object(of: destination) != nil {
-                return destination
-            }
+            if !seen.insert(Array(destination.utf8)).inserted { return destination }
         }
         return nil
     }

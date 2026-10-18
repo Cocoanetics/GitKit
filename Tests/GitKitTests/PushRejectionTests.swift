@@ -140,8 +140,8 @@ struct PushRejectionTests {
         #expect(error?.rejections == [.init(remoteRef: "refs/tags/v1", reason: .alreadyExists)])
     }
 
-    @Test("two refspecs to one of the remote's refs are refused before sending")
-    func duplicateExistingDestination() throws {
+    @Test("two refspecs to one ref are refused before sending, new or not")
+    func duplicateDestination() throws {
         let (remote, mine, theirs) = try makeRemoteAndClones()
         defer { [remote, mine, theirs].forEach { try? FileManager.default.removeItem(at: $0) } }
         try runGit(["branch", "dev"], in: mine)
@@ -149,11 +149,22 @@ struct PushRejectionTests {
         let before = try runGit(["rev-parse", "main"], in: remote)
 
         let repo = try Repository.open(at: mine)
-        #expect(throws: Libgit2Error.self) {
-            try repo.push(remote: "origin", refspecs: ["main:refs/heads/main", "dev:refs/heads/main"],
-                          setUpstream: false, progress: { _ in })
+        // An existing ref, a new one, and a new one from the same source
+        // twice (`HEAD` is `main`): git refuses each up front.
+        for (refspecs, destination) in [
+            (["main:refs/heads/main", "dev:refs/heads/main"], "refs/heads/main"),
+            (["main:refs/heads/x", "dev:refs/heads/x"], "refs/heads/x"),
+            (["HEAD:refs/heads/y", "main:refs/heads/y"], "refs/heads/y")
+        ] {
+            #expect {
+                try repo.push(remote: "origin", refspecs: refspecs, setUpstream: false, progress: { _ in })
+            } throws: { error in
+                (error as? Libgit2Error)?.message == "dst ref \(destination) receives from more than one src"
+            }
         }
         #expect(try runGit(["rev-parse", "main"], in: remote) == before)
+        #expect(try runGit(["for-each-ref", "--format=%(refname)"], in: remote)
+                .split(separator: "\n").allSatisfy { !["refs/heads/x", "refs/heads/y"].contains(String($0)) })
         #expect(repo.displayName(ofRemote: "origin") == remote.path)
         #expect(repo.displayName(ofRemote: "https://me:secret@example.com/r.git")
                 == "https://example.com/r.git")
