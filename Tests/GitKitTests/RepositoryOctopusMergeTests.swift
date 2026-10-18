@@ -590,6 +590,40 @@ extension RepositoryOctopusMergeTests {
         #expect(try state(of: dir) == state(of: other))
     }
 
+    @Test("merges through a revert or a bisect, as git does", arguments: ["REVERT_HEAD", "BISECT_LOG"])
+    func mergesThroughOtherOperations(file: String) throws {
+        let dir = try makeRepository()
+        try Data((try git(["rev-parse", "c"], in: dir).stdout + "\n").utf8)
+            .write(to: dir.appendingPathComponent(".git/" + file))
+        let other = try twin(of: dir)
+        let result = try merge(["a", "b"], in: dir)
+        try git(["merge", "-q", "-m", "Merge branches", "a", "b"], in: other)
+        guard case .mergeCommit = result.outcome else {
+            Issue.record("expected a merge commit, got \(result.outcome)"); return
+        }
+        #expect(try state(of: dir) == state(of: other))
+    }
+
+    @Test("removes a symbolic link the merge deletes, even one pointing nowhere")
+    func removesDanglingSymlink() throws {
+        let dir = try makeRepository()
+        try git(["checkout", "-q", "-b", "link", "base"], in: dir)
+        try FileManager.default.createSymbolicLink(
+            atPath: dir.appendingPathComponent("dl").path, withDestinationPath: "nowhere")
+        try git(["add", "dl"], in: dir)
+        try git(["commit", "-q", "-m", "link"], in: dir)
+        try git(["checkout", "-q", "-b", "unlink"], in: dir)
+        try git(["rm", "-q", "dl"], in: dir)
+        try git(["commit", "-q", "-m", "unlink"], in: dir)
+        try git(["checkout", "-q", "link"], in: dir)
+        let other = try twin(of: dir)
+        _ = try merge(["unlink", "c"], in: dir)
+        try git(["merge", "-q", "-m", "Merge branches", "unlink", "c"], in: other)
+        #expect(try state(of: dir) == state(of: other))
+        let link = dir.appendingPathComponent("dl").path
+        #expect((try? FileManager.default.destinationOfSymbolicLink(atPath: link)) == nil)
+    }
+
     @Test("refuses a bare repository before anything changes")
     func refusesBare() throws {
         let dir = try makeRepository()

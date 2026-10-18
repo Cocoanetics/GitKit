@@ -416,6 +416,12 @@ extension Repository {
         return nil
     }
 
+    /// Whether anything is at `path`, a symbolic link counted as itself
+    /// even when what it points to is missing (lstat, not stat).
+    static func exists(_ path: String) -> Bool {
+        (try? FileManager.default.attributesOfItem(atPath: path)) != nil
+    }
+
     /// Check out what the merge changes and nothing else, as read-tree
     /// -u updates the entries it changes: a file deleted from the work
     /// tree is written again only where the merge changes it.
@@ -446,7 +452,7 @@ extension Repository {
             var ancestor, ours, theirs: UnsafePointer<git_index_entry>?
             guard git_index_conflict_get(&ancestor, &ours, &theirs, merged, path) == 0, ours == nil || theirs == nil
             else { return false }
-            return !FileManager.default.fileExists(atPath: workdir + path)
+            return !Self.exists(workdir + path)
         }
         let paths = changed.filter { !skipped.contains($0) }
         try withCheckout(of: paths, strategy: UInt32(GIT_CHECKOUT_SAFE.rawValue)
@@ -595,7 +601,7 @@ extension Repository {
         // only the index's business; libgit2 can't "recreate" it.
         let workdir = git_repository_workdir(repo).map { String(cString: $0) } ?? ""
         let changed = try diffEntries(headTree, tree)
-        let gone = changed.filter { $0.value.oid == nil && !FileManager.default.fileExists(atPath: workdir + $0.key) }
+        let gone = changed.filter { $0.value.oid == nil && !Self.exists(workdir + $0.key) }
         let paths = changed.keys.filter { gone[$0] == nil }.sorted(by: Self.indexOrder)
         var commits: [OpaquePointer?] = []
         defer { commits.forEach { git_commit_free($0) } }

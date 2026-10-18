@@ -96,9 +96,7 @@ extension Repository {
             throw Libgit2Error(code: -1, klass: 0,
                 message: "You have not concluded your cherry-pick (CHERRY_PICK_HEAD exists).")
         }
-        if state != Int32(GIT_REPOSITORY_STATE_NONE.rawValue) {
-            throw Libgit2Error(code: -1, klass: 0, message: "another operation is in progress")
-        }
+        // Anything else (a bisect, a revert, a rebase) git merges through.
         guard let head = try headOID() else {
             throw Libgit2Error(code: -1, klass: 0,
                 message: "Can merge only exactly one commit into empty head")
