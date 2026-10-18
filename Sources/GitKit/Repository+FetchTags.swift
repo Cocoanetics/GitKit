@@ -83,6 +83,74 @@ final class ObjectsBefore {
     }
 }
 
+/// Which local tags a fetch's refspecs send each remote ref to.
+private struct TagMapping {
+    private let specs: [(spec: OpaquePointer, text: String)]
+    private let remoteRefs: RemoteRefs
+    private let owner: SpecOwner
+
+    /// Frees the parsed refspecs with the mapping.
+    private final class SpecOwner {
+        var specs: [OpaquePointer] = []
+        deinit { specs.forEach { git_refspec_free($0) } }
+    }
+
+    init(_ texts: [String], remoteRefs: RemoteRefs) {
+        let owner = SpecOwner()
+        specs = texts.compactMap { text in
+            var spec: OpaquePointer?
+            guard git_refspec_parse(&spec, text, 1) == 0, let spec else { return nil }
+            owner.specs.append(spec)
+            return (spec, text)
+        }
+        self.owner = owner
+        self.remoteRefs = remoteRefs
+    }
+
+    /// Whether a negative refspec excludes remote ref `name`.
+    func isExcluded(_ name: String) -> Bool {
+        specs.contains { $0.text.hasPrefix("^") && git_refspec_src_matches_negative($0.spec, name) == 1 }
+    }
+
+    /// The local tags the refspecs map remote ref `name` onto, each with
+    /// whether a forced refspec does; `explicitOnly` leaves out the tag
+    /// refspec `--tags` adds.
+    func tags(for name: String, explicitOnly: Bool) -> [(tag: String, forced: Bool)] {
+        specs.compactMap { spec in
+            guard !spec.text.hasPrefix("^"), !(explicitOnly && spec.text == Repository.allTagsRefspec),
+                  let dst = git_refspec_dst(spec.spec), dst.pointee != 0,
+                  fetches(spec.spec, name)
+            else { return nil }
+            let tag: String
+            if let source = git_refspec_src(spec.spec), String(cString: source).contains("*") {
+                var buffer = git_buf()
+                defer { git_buf_dispose(&buffer) }
+                guard git_refspec_transform(&buffer, spec.spec, name) == 0, let pointer = buffer.ptr else {
+                    return nil
+                }
+                tag = String(cString: pointer)
+            } else {
+                tag = String(cString: dst)
+            }
+            return tag.hasPrefix("refs/tags/") ? (tag, git_refspec_force(spec.spec) == 1) : nil
+        }
+    }
+
+    /// Whether `spec` fetches remote ref `name`. A short source
+    /// (`main:refs/tags/x`) fetches the one ref git expands it to, the
+    /// first of its spellings the remote has (`refs/tags/foo` before
+    /// `refs/heads/foo`, as `ref_rev_parse_rules` orders them).
+    private func fetches(_ spec: OpaquePointer, _ name: String) -> Bool {
+        guard let source = git_refspec_src(spec).map({ String(cString: $0) }),
+              !source.contains("*"), !source.hasPrefix("refs/")
+        else { return Repository.refspec(spec, fetches: name) }
+        let resolved = [source, "refs/\(source)", "refs/tags/\(source)", "refs/heads/\(source)",
+                        "refs/remotes/\(source)", "refs/remotes/\(source)/HEAD"]
+            .first { remoteRefs.object(of: $0) != nil }
+        return resolved.map { $0.utf8.elementsEqual(name.utf8) } ?? false
+    }
+}
+
 extension Repository {
 
     /// The tag refspec git adds for `--tags` (`tag_refspec`).
@@ -90,11 +158,11 @@ extension Repository {
 
     /// Every local tag that is a symbolic ref (`refs/tags/x ->
     /// refs/heads/main`), and its target, by name as bytes.
-    func localSymbolicTags() throws -> [[UInt8]: String] {
+    func localSymbolicTags() throws -> [[UInt8]: SymbolicTag] {
         var iterator: UnsafeMutablePointer<git_reference_iterator>?
         try check(git_reference_iterator_glob_new(&iterator, repo, "refs/tags/*"))
         defer { git_reference_iterator_free(iterator) }
-        var tags: [[UInt8]: String] = [:]
+        var tags: [[UInt8]: SymbolicTag] = [:]
         while true {
             var ref: OpaquePointer?
             let rc = git_reference_next(&ref, iterator)
@@ -104,9 +172,46 @@ extension Repository {
             guard let name = git_reference_name(ref), let target = git_reference_symbolic_target(ref) else {
                 continue
             }
-            tags[Array(String(cString: name).utf8)] = String(cString: target)
+            var oid = git_oid()
+            let resolved = git_reference_name_to_id(&oid, repo, name) == 0 ? oid : nil
+            tags[Array(String(cString: name).utf8)] = SymbolicTag(target: String(cString: target), oid: resolved)
         }
         return tags
+    }
+
+    /// A symbolic tag as it was: the ref it names, and what that held.
+    struct SymbolicTag {
+        let target: String
+        let oid: git_oid?
+    }
+
+    /// Put `tag` back as `before` had it, or gone if it had none; a
+    /// symbolic tag stays the symbolic ref it was.
+    private func restoreTag(
+        _ tag: String, before: [[UInt8]: git_oid], symbolicBefore: [[UInt8]: SymbolicTag]
+    ) throws {
+        if let symbolic = symbolicBefore[Array(tag.utf8)] {
+            var ref: OpaquePointer?
+            defer { git_reference_free(ref) }
+            if git_reference_lookup(&ref, repo, tag) == 0, let current = git_reference_symbolic_target(ref),
+               String(cString: current) == symbolic.target {
+                return
+            }
+            var created: OpaquePointer?
+            try check(git_reference_symbolic_create(&created, repo, tag, symbolic.target, 1, nil))
+            git_reference_free(created)
+            return
+        }
+        var now = git_oid()
+        let exists = git_reference_name_to_id(&now, repo, tag) == 0
+        if var old = before[Array(tag.utf8)] {
+            guard !exists || git_oid_equal(&now, &old) == 0 else { return }
+            var ref: OpaquePointer?
+            try check(git_reference_create(&ref, repo, tag, &old, 1, nil))
+            git_reference_free(ref)
+        } else if exists {
+            try check(git_reference_remove(repo, tag))
+        }
     }
 
     /// Every local tag and the object it points at, by name as bytes.
@@ -143,87 +248,19 @@ extension Repository {
     /// Returns the tags refused, and the ones excluded, whose lines go
     /// from FETCH_HEAD.
     func settleFetchedTags(
-        before: [[UInt8]: git_oid], symbolicBefore: [[UInt8]: String] = [:],
+        before: [[UInt8]: git_oid], symbolicBefore: [[UInt8]: SymbolicTag] = [:],
         remoteRefs: RemoteRefs, refspecs: [String], allTags: Bool,
         lines: inout [FetchSummaryLine]
     ) throws -> (refused: [String], excluded: [String]) {
-        let texts = refspecs + (allTags ? [Self.allTagsRefspec] : [])
-        let specs: [(spec: OpaquePointer, text: String)] = texts.compactMap { text in
-            var spec: OpaquePointer?
-            guard git_refspec_parse(&spec, text, 1) == 0, let spec else { return nil }
-            return (spec, text)
-        }
-        defer { specs.forEach { git_refspec_free($0.spec) } }
-        let negatives = specs.filter { $0.text.hasPrefix("^") }
-        func isExcluded(_ name: String) -> Bool {
-            negatives.contains { git_refspec_src_matches_negative($0.spec, name) == 1 }
-        }
-        /// The local tags the fetch's refspecs map remote ref `name`
-        /// onto, each with whether a forced refspec does.
-        func tags(for name: String, explicitOnly: Bool = false) -> [(tag: String, forced: Bool)] {
-            specs.compactMap { spec in
-                guard !spec.text.hasPrefix("^"), !(explicitOnly && spec.text == Self.allTagsRefspec),
-                      let dst = git_refspec_dst(spec.spec), dst.pointee != 0,
-                      fetches(spec.spec, name)
-                else { return nil }
-                let tag: String
-                if let source = git_refspec_src(spec.spec), String(cString: source).contains("*") {
-                    var buffer = git_buf()
-                    defer { git_buf_dispose(&buffer) }
-                    guard git_refspec_transform(&buffer, spec.spec, name) == 0, let pointer = buffer.ptr else {
-                        return nil
-                    }
-                    tag = String(cString: pointer)
-                } else {
-                    tag = String(cString: dst)
-                }
-                return tag.hasPrefix("refs/tags/") ? (tag, git_refspec_force(spec.spec) == 1) : nil
-            }
-        }
-        /// Whether `spec` fetches remote ref `name`. A short source
-        /// (`main:refs/tags/x`) fetches the one ref git expands it to,
-        /// the first of its spellings the remote has (`refs/tags/foo`
-        /// before `refs/heads/foo`, as `ref_rev_parse_rules` orders them).
-        func fetches(_ spec: OpaquePointer, _ name: String) -> Bool {
-            guard let source = git_refspec_src(spec).map({ String(cString: $0) }),
-                  !source.contains("*"), !source.hasPrefix("refs/")
-            else { return Self.refspec(spec, fetches: name) }
-            let resolved = [source, "refs/\(source)", "refs/tags/\(source)", "refs/heads/\(source)",
-                            "refs/remotes/\(source)", "refs/remotes/\(source)/HEAD"]
-                .first { remoteRefs.object(of: $0) != nil }
-            return resolved.map { $0.utf8.elementsEqual(name.utf8) } ?? false
-        }
-        /// Put `tag` back as `before` had it, or gone if it had none; a
-        /// symbolic tag stays the symbolic ref it was.
+        let mapping = TagMapping(refspecs + (allTags ? [Self.allTagsRefspec] : []), remoteRefs: remoteRefs)
+        let tags = mapping.tags(for:explicitOnly:)
         func restore(_ tag: String) throws {
-            if let target = symbolicBefore[Array(tag.utf8)] {
-                var ref: OpaquePointer?
-                if git_reference_lookup(&ref, repo, tag) == 0,
-                   let current = git_reference_symbolic_target(ref), String(cString: current) == target {
-                    git_reference_free(ref)
-                    return
-                }
-                git_reference_free(ref)
-                var created: OpaquePointer?
-                try check(git_reference_symbolic_create(&created, repo, tag, target, 1, nil))
-                git_reference_free(created)
-                return
-            }
-            var now = git_oid()
-            let exists = git_reference_name_to_id(&now, repo, tag) == 0
-            if var old = before[Array(tag.utf8)] {
-                guard !exists || git_oid_equal(&now, &old) == 0 else { return }
-                var ref: OpaquePointer?
-                try check(git_reference_create(&ref, repo, tag, &old, 1, nil))
-                git_reference_free(ref)
-            } else if exists {
-                try check(git_reference_remove(repo, tag))
-            }
+            try restoreTag(tag, before: before, symbolicBefore: symbolicBefore)
         }
 
         // The local tags the explicit refspecs store into, from any ref.
         let explicitTags = Set(remoteRefs.names.flatMap { name in
-            tags(for: name, explicitOnly: true).map { Array($0.tag.utf8) }
+            tags(name, true).map { Array($0.tag.utf8) }
         })
         var refused: [String] = []
         // Ref names as bytes, as git compares them.
@@ -231,14 +268,14 @@ extension Repository {
         var excluded: [String] = []
         for name in remoteRefs.names {
             guard var remote = remoteRefs.object(of: name) else { continue }
-            if allTags, name.hasPrefix("refs/tags/"), isExcluded(name) {
+            if allTags, name.hasPrefix("refs/tags/"), mapping.isExcluded(name) {
                 // Only `--tags`' own mapping is excluded: what an explicit
                 // refspec stores there stays.
                 if !explicitTags.contains(Array(name.utf8)) {
                     try restore(name)
                     lines.removeAll { $0.localRef.utf8.elementsEqual(name.utf8) }
                 } else if let source = remoteRefs.names.first(where: { source in
-                    tags(for: source, explicitOnly: true).contains { $0.tag.utf8.elementsEqual(name.utf8) }
+                    tags(source, true).contains { $0.tag.utf8.elementsEqual(name.utf8) }
                 }), var value = remoteRefs.object(of: source) {
                     // libgit2 ran the tag itself over it too: the explicit
                     // source's value goes back, with one line for it.
@@ -255,10 +292,20 @@ extension Repository {
                 excluded.append(name)
                 continue
             }
-            let mapped = tags(for: name)
+            let mapped = tags(name, false)
             // Each tag the ref goes to is settled on its own; a forced
-            // refspec to that same tag lets it move.
-            for tag in mapped.map(\.tag) where !mapped.contains(where: { $0.tag == tag && $0.forced }) {
+            // refspec to that same tag (by its bytes) lets it move.
+            for tag in mapped.map(\.tag) where !mapped.contains(where: {
+                $0.forced && $0.tag.utf8.elementsEqual(tag.utf8)
+            }) {
+                // git leaves a symbolic tag alone, saying nothing and
+                // keeping it out of FETCH_HEAD.
+                if symbolicBefore[Array(tag.utf8)] != nil {
+                    try restore(tag)
+                    lines.removeAll { $0.localRef.utf8.elementsEqual(tag.utf8) }
+                    if allTags { excluded.append(tag) }
+                    continue
+                }
                 guard var old = before[Array(tag.utf8)], !refusedNames.contains(Array(tag.utf8)) else {
                     continue
                 }
@@ -351,6 +398,17 @@ extension Repository {
             else { git_object_free(object); continue }
             targets.append((line.localRef, id, git_object_type(object) == GIT_OBJECT_COMMIT))
             git_object_free(object)
+        }
+        // A tip that is an annotated tag stands for what it points at.
+        for var tip in tips {
+            var object: OpaquePointer?
+            guard git_object_lookup(&object, repo, &tip, GIT_OBJECT_TAG) == 0 else { continue }
+            defer { git_object_free(object) }
+            var peeled: OpaquePointer?
+            if git_object_peel(&peeled, object, GIT_OBJECT_ANY) == 0, let id = git_object_id(peeled)?.pointee {
+                tips.append(id)
+            }
+            git_object_free(peeled)
         }
         // The commit graph takes commits only; a tip can be a tree or blob.
         let commitTips = tips.filter { tip in

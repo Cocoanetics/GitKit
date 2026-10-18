@@ -101,7 +101,17 @@ extension Repository {
         credentials: CredentialProvider? = nil,
         progress: @escaping @Sendable (String) -> Void = GitProgress.standardError
     ) throws -> [String] {
-        try pushImpl(
+        // As git does, every expected object ID is read before anything
+        // is sent, whether or not its lease comes to apply.
+        for case .object(let sha) in leases.leases.map(\.expectation) {
+            var oid = git_oid()
+            guard sha.withCString({ git_oid_fromstrp(&oid, $0) }) == 0 else {
+                throw Libgit2Error(
+                    code: GIT_EINVALID.rawValue, klass: Int32(GIT_ERROR_INVALID.rawValue),
+                    message: "cannot parse expected object name '\(sha)'")
+            }
+        }
+        return try pushImpl(
             remote: remote, refspecs: refspecs, setUpstream: setUpstream,
             location: location, forceWithLease: nil, leases: leases,
             credentials: credentials, progress: progress)

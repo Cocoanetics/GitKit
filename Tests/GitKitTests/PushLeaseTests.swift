@@ -226,6 +226,22 @@ struct PushLeaseTests {
         #expect(log.text.hasSuffix(" + \(old)...\(new) v1 -> v1 (forced update)\n"))
     }
 
+    @Test("every expected object ID is read before anything is sent")
+    func badExpectation() throws {
+        let (remote, mine, theirs) = try makeRemoteAndClones()
+        defer { [remote, mine, theirs].forEach { try? FileManager.default.removeItem(at: $0) } }
+        try runGit(["commit", "-q", "--allow-empty", "-m", "ahead"], in: mine)
+        let before = try runGit(["rev-parse", "main"], in: remote)
+        #expect(throws: Libgit2Error.self) {
+            // The bad lease covers nothing pushed; git refuses all the same.
+            try Repository.open(at: mine).push(
+                remote: "origin", refspecs: ["main"], setUpstream: false,
+                leases: PushLeases([.init(ref: "dev", expectation: .object("nosuch"))], trackingForRest: true),
+                progress: { _ in })
+        }
+        #expect(try runGit(["rev-parse", "main"], in: remote) == before)
+    }
+
     @Test("lease matching follows git's spelling of refs")
     func leaseRefMatching() {
         let leases = PushLeases([.init(ref: "main", expectation: .absent)])

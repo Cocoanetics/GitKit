@@ -324,6 +324,33 @@ struct FetchTagsTests {
         #expect(try runGit(["symbolic-ref", "refs/tags/x"], in: clone) == "refs/heads/main")
     }
 
+    @Test("--tags leaves a symbolic tag alone, as git does")
+    func symbolicTagUntouched() throws {
+        let (upstream, clone) = try makeUpstreamAndClone()
+        defer { [upstream, clone].forEach { try? FileManager.default.removeItem(at: $0) } }
+        try runGit(["tag", "x", "side"], in: upstream)
+        try runGit(["symbolic-ref", "refs/tags/x", "refs/heads/main"], in: clone)
+        let (output, error) = try fetch(clone, tags: .all)
+        #expect(error == nil)
+        #expect(!output.contains(" -> x"))
+        #expect(try runGit(["symbolic-ref", "refs/tags/x"], in: clone) == "refs/heads/main")
+        #expect(!(try fetchHead(clone)).contains("not-for-merge tag 'x'"))
+    }
+
+    @Test("a fetched ref that is an annotated tag vouches for what it points at")
+    func annotatedTagTip() throws {
+        let (upstream, clone) = try makeUpstreamAndClone()
+        defer { [upstream, clone].forEach { try? FileManager.default.removeItem(at: $0) } }
+        try runGit(["checkout", "-q", "-b", "hidden"], in: upstream)
+        try runGit(["commit", "-q", "--allow-empty", "-m", "h"], in: upstream)
+        try runGit(["tag", "vhidden"], in: upstream)
+        try runGit(["tag", "-a", "ann", "-m", "a"], in: upstream)
+        try runGit(["update-ref", "refs/meta/ann", "refs/tags/ann"], in: upstream)
+        try runGit(["checkout", "-q", "main"], in: upstream)
+        _ = try fetch(clone, ["refs/meta/ann:refs/meta/ann"], tags: nil)
+        #expect(try tagNames(clone).contains("vhidden"))
+    }
+
     @Test("a negative refspec keeps a tag out of --tags")
     func negativeRefspec() throws {
         let (upstream, clone) = try makeUpstreamAndClone()

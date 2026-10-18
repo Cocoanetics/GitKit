@@ -308,10 +308,11 @@ extension Repository {
             && git_remote_autotag(remoteHandle) == GIT_REMOTE_DOWNLOAD_TAGS_AUTO
             && effectiveRefspecs.contains(where: Self.storesFetchedRef)
         let packsBefore = followsTags ? ObjectsBefore.packs(of: repo) : []
-        let tagsBefore = allTags || (effectiveRefspecs.contains {
+        let watchesTags = allTags || effectiveRefspecs.contains {
             !$0.hasPrefix("+") && !$0.hasPrefix("^") && Self.storesFetchedRef($0)
-        }) ? try localTagObjects() : [:]
-        let symbolicTagsBefore = allTags ? try localSymbolicTags() : [:]
+        }
+        let tagsBefore = watchesTags ? try localTagObjects() : [:]
+        let symbolicTagsBefore = watchesTags ? try localSymbolicTags() : [:]
 
         // One fetch for all of them, as git applies them; with none,
         // libgit2 takes the remote's configured refspecs, else `HEAD`.
@@ -366,7 +367,7 @@ extension Repository {
                 refspecs: effectiveRefspecs, packsBefore: packsBefore, lines: &reporter.fetchLines)
         }
         var refusedTags: [String] = []
-        if !tagsBefore.isEmpty || allTags {
+        if !tagsBefore.isEmpty || !symbolicTagsBefore.isEmpty || allTags {
             let remoteRefs = try advertisedRefs(remoteHandle)
             let settled = try settleFetchedTags(
                 before: tagsBefore, symbolicBefore: symbolicTagsBefore,
