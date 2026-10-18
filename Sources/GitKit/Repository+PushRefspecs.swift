@@ -34,6 +34,11 @@ struct PushPlan {
     /// The negative refspecs, without their `^`: a ref name or a pattern.
     var negatives: [String] = []
 
+    /// Whether a negative refspec drops updates to remote ref `name`.
+    func excludes(_ name: String) -> Bool {
+        negatives.contains { PushPlan.wildcard($0, matching: name) != nil }
+    }
+
     /// What `*` stands for where `pattern` matches `name`; a pattern
     /// without `*` matches only itself.
     static func wildcard(_ pattern: String, matching name: String) -> String? {
@@ -113,8 +118,7 @@ extension Repository {
         }
         guard !plan.negatives.isEmpty else { return refspecs }
         return refspecs.filter { refspec in
-            guard let destination = destinationRefName(fromPushRefspec: refspec) else { return true }
-            return !plan.negatives.contains { PushPlan.wildcard($0, matching: destination) != nil }
+            destinationRefName(fromPushRefspec: refspec).map { !plan.excludes($0) } ?? true
         }
     }
 

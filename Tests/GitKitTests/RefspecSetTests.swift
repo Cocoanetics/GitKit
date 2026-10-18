@@ -200,6 +200,29 @@ struct RefspecSetTests {
             """)
     }
 
+    @Test("negatives that leave none of the remote's refs refuse, as in git")
+    func negativesExcludingEverything() throws {
+        let work = try makeRepo(branches: ["dev"])
+        let bare = try makeBare()
+        defer { removing(work, bare)() }
+        try runGit(["push", "-q", bare.path, "main"], in: work)
+        let repo = try Repository.open(at: work)
+
+        let log = OutputLog()
+        #expect(throws: Libgit2Error.self) {
+            try repo.push(remote: bare.path,
+                          refspecs: ["refs/heads/*:refs/heads/*", "^refs/heads/*"],
+                          setUpstream: false, progress: { log.append($0) })
+        }
+        #expect(log.text.hasPrefix("No refs in common and none specified; doing nothing.\n"))
+
+        // With some of the remote's refs left, there is just nothing to do.
+        let quiet = OutputLog()
+        try repo.push(remote: bare.path, refspecs: ["dev", "^refs/heads/dev"],
+                      setUpstream: false, progress: { quiet.append($0) })
+        #expect(quiet.text == "Everything up-to-date\n")
+    }
+
     @Test("patterns push each local ref they match; negatives drop destinations")
     func patternsAndNegatives() throws {
         let work = try makeRepo(branches: ["dev", "wip/a", "private"])

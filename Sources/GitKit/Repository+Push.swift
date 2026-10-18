@@ -188,7 +188,10 @@ extension Repository {
                     pushRefspecs = try expandedPushRefspecs(plan, remoteRefs: remoteRefs)
                     if pushRefspecs.isEmpty {
                         git_remote_disconnect(remoteHandle)
-                        return remoteRefs.isEmpty ? .noRefsInCommon : .nothingToSend
+                        // git refuses when the negative refspecs leave
+                        // none of the remote's refs either.
+                        let common = remoteRefs.contains { !plan.excludes($0) }
+                        return common ? .nothingToSend : .noRefsInCommon
                     }
                 }
                 try withCStringArray(pushRefspecs) { copies in
