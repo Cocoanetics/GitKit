@@ -187,6 +187,21 @@ struct FetchTagsTests {
         #expect(try tagNames(clone).contains("tdangling"))
     }
 
+    @Test("an object an alternate holds counts as here already")
+    func alternateTarget() throws {
+        let (upstream, clone) = try makeUpstreamAndClone()
+        let borrower = tmp("borrower")
+        defer { [upstream, clone, borrower].forEach { try? FileManager.default.removeItem(at: $0) } }
+        let blob = try runGit(["hash-object", "-w", "--stdin"], in: upstream, input: "borrowed\n")
+        try runGit(["tag", "tborrowed", blob], in: upstream)
+        // A repository borrowing the clone's objects, which hold the blob.
+        try runGit(["hash-object", "-w", "--stdin"], in: clone, input: "borrowed\n")
+        try runGit(["clone", "-q", "--shared", clone.path, borrower.path], in: clone)
+        try runGit(["remote", "set-url", "origin", upstream.path], in: borrower)
+        _ = try fetch(borrower, tags: nil)
+        #expect(try tagNames(borrower).contains("tborrowed"))
+    }
+
     @Test("a tag fetched by a short source is the refspec's, not a followed one")
     func shortSourceTag() throws {
         let (upstream, clone) = try makeUpstreamAndClone()

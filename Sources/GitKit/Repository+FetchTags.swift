@@ -15,9 +15,9 @@ public struct FetchRejectedError: Error, LocalizedError, Sendable, Equatable {
     }
 }
 
-/// The objects a repository had before a fetch: its loose objects and
-/// the packs it had then (`objects/pack/*.idx`), a fetch writing what it
-/// downloads as a new pack.
+/// The objects a repository had before a fetch: its loose objects, the
+/// packs it had then (`objects/pack/*.idx`), a fetch writing what it
+/// downloads as a new pack, and what its alternates hold.
 final class ObjectsBefore {
     private var odb: OpaquePointer?
 
@@ -36,6 +36,35 @@ final class ObjectsBefore {
                 _ = git_odb_add_backend(odb, backend, 1)
             }
         }
+        // A fetch writes nothing into the alternates: all they hold counts.
+        for alternate in Self.alternates(of: objects) {
+            var loose: UnsafeMutablePointer<git_odb_backend>?
+            if git_odb_backend_loose(&loose, alternate.path, -1, 0, 0, 0) == 0 {
+                _ = git_odb_add_alternate(odb, loose, 2)
+            }
+            var packed: UnsafeMutablePointer<git_odb_backend>?
+            if git_odb_backend_pack(&packed, alternate.path) == 0 {
+                _ = git_odb_add_alternate(odb, packed, 1)
+            }
+        }
+    }
+
+    /// The object directories `objects/info/alternates` names, and theirs
+    /// in turn (git follows them five deep), a relative one read against
+    /// the directory that names it.
+    private static func alternates(of objects: URL, depth: Int = 0) -> [URL] {
+        guard depth < 5,
+              let text = try? String(
+                contentsOf: objects.appendingPathComponent("info/alternates"), encoding: .utf8)
+        else { return [] }
+        return text.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && !$0.hasPrefix("#") }
+            .flatMap { line -> [URL] in
+                let url = line.hasPrefix("/")
+                    ? URL(fileURLWithPath: line)
+                    : objects.appendingPathComponent(line).standardizedFileURL
+                return [url] + alternates(of: url, depth: depth + 1)
+            }
     }
 
     deinit { git_odb_free(odb) }
