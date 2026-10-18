@@ -139,6 +139,32 @@ struct FetchSummaryTests {
         #expect(try gitKitFetch(kit) == wide)
     }
 
+    @Test("the ref to merge is told from a canonically equal one by its bytes")
+    func mergeRefComparedAsBytes() throws {
+        // Two branches only canonically equal can't both live in one
+        // directory on APFS, so FETCH_HEAD is written by hand.
+        let repo = tmp("bytes")
+        try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: repo) }
+        try runGit(["init", "-q", "-b", "main"], in: repo)
+        let composed = "caf\u{E9}", decomposed = "cafe\u{301}"
+        let oid = String(repeating: "1", count: 40)
+        try Data("""
+            \(oid)\t\tbranch '\(composed)' of /srv/remote
+            \(oid)\tnot-for-merge\tbranch '\(decomposed)' of /srv/remote
+
+            """.utf8).write(to: repo.appendingPathComponent(".git/FETCH_HEAD"))
+        func line(_ name: String) -> FetchSummaryLine {
+            FetchSummaryLine(kind: .update, flag: " ", summary: "1111111..2222222",
+                             remoteRef: "refs/heads/\(name)", remote: name,
+                             localRef: "refs/remotes/origin/\(name)", local: "origin/\(name)")
+        }
+        let ordered = try Repository.open(at: repo).orderedFetchLines(
+            [line(decomposed), line(composed)], refspecs: ["+refs/heads/*:refs/remotes/origin/*"])
+        // The ref to merge comes first, though the other sorts first by bytes.
+        #expect(ordered.map { Array($0.remote.utf8) } == [Array(composed.utf8), Array(decomposed.utf8)])
+    }
+
     @Test("display widths count as git's utf8_strwidth does")
     func displayWidths() {
         #expect(DisplayWidth.of("main") == 4)

@@ -6,9 +6,16 @@ import CGitKit
 private struct RankedFetchLine {
     let rank: Int
     let refspec: Int
-    let key: String
+    /// The ref name as bytes, as git orders ref names.
+    let key: [UInt8]
     let line: FetchSummaryLine
 
+    init(rank: Int, refspec: Int, key: String, line: FetchSummaryLine) {
+        self.rank = rank
+        self.refspec = refspec
+        self.key = Array(key.utf8)
+        self.line = line
+    }
 }
 
 extension Repository {
@@ -49,7 +56,8 @@ extension Repository {
         }
 
         let entries = fetchHeadEntries()
-        let toMerge = Set(entries.filter(\.merge).map(\.name))
+        // Ref names as bytes, as git compares them.
+        let toMerge = Set(entries.filter(\.merge).map { Array($0.name.utf8) })
         var ranked: [RankedFetchLine] = []
         for line in lines.map({ Self.qualified($0, by: entries.map(\.name)) }) {
             switch line.kind {
@@ -57,7 +65,7 @@ extension Repository {
                 ranked.append(.init(rank: 0, refspec: 0, key: line.local, line: line))
             case .update:
                 if let refspec = storer(of: line.remoteRef, into: line.localRef) {
-                    ranked.append(.init(rank: toMerge.contains(line.remoteRef) ? 1 : 2,
+                    ranked.append(.init(rank: toMerge.contains(Array(line.remoteRef.utf8)) ? 1 : 2,
                                         refspec: refspec, key: line.remoteRef, line: line))
                 } else if line.remoteRef.hasPrefix("refs/tags/") {
                     // Followed tags come next…
@@ -87,7 +95,11 @@ extension Repository {
         return ranked.enumerated()
             .sorted { lhs, rhs in
                 let (a, b) = (lhs.element, rhs.element)
-                return (a.rank, a.refspec, a.key, lhs.offset) < (b.rank, b.refspec, b.key, rhs.offset)
+                if (a.rank, a.refspec) != (b.rank, b.refspec) {
+                    return (a.rank, a.refspec) < (b.rank, b.refspec)
+                }
+                if a.key != b.key { return a.key.lexicographicallyPrecedes(b.key) }
+                return lhs.offset < rhs.offset
             }
             .map(\.element.line)
     }
@@ -143,7 +155,7 @@ extension Repository {
               !source.contains("*")
         else { return false }
         return ["refs/", "refs/tags/", "refs/heads/", "refs/remotes/"]
-            .contains { $0 + source == name }
+            .contains { ($0 + source).utf8.elementsEqual(name.utf8) }
     }
 
     /// Whether `spec` sends remote ref `name` to local ref `local`, a
@@ -164,7 +176,7 @@ extension Repository {
             destination = String(cString: dst)
         }
         return ["", "refs/", "refs/heads/", "refs/tags/", "refs/remotes/"]
-            .contains { $0 + destination == local }
+            .contains { ($0 + destination).utf8.elementsEqual(local.utf8) }
     }
 
     /// `line` with a remote ref given as typed in a refspec (`main`)
@@ -174,7 +186,7 @@ extension Repository {
         guard line.kind == .update, !line.remoteRef.hasPrefix("refs/"),
               let full = names.first(where: { name in
                   ["refs/", "refs/tags/", "refs/heads/", "refs/remotes/"]
-                      .contains { $0 + line.remoteRef == name }
+                      .contains { ($0 + line.remoteRef).utf8.elementsEqual(name.utf8) }
               })
         else { return line }
         var line = line
