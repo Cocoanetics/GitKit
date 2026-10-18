@@ -457,8 +457,11 @@ extension Repository {
         }
         for i in 0..<git_diff_num_deltas(diff) {
             // A file gone from the work tree has nothing to lose: git's
-            // verify_uptodate takes it as up to date.
-            guard let delta = git_diff_get_delta(diff, i)?.pointee, delta.status != GIT_DELTA_DELETED else { continue }
+            // verify_uptodate takes it as up to date. Something else in
+            // its place (a directory) is a change.
+            guard let delta = git_diff_get_delta(diff, i)?.pointee else { continue }
+            if delta.status == GIT_DELTA_DELETED,
+               !Self.exists(workdir + String(cString: delta.old_file.path)) { continue }
             changes[String(cString: delta.new_file.path ?? delta.old_file.path)] = delta.status == GIT_DELTA_UNTRACKED
         }
         return changes

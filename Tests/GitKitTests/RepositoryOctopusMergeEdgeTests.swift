@@ -519,6 +519,20 @@ extension RepositoryOctopusMergeTests {
                 == git(["symbolic-ref", "-q", "HEAD"], in: other, check: false).stdout)
     }
 
+    @Test("a tracked file replaced by a directory is a local change, not a deletion")
+    func fileReplacedByDirectoryInWorkTree() throws {
+        let dir = try makeRepository()
+        let f = dir.appendingPathComponent("f")
+        try FileManager.default.removeItem(at: f)
+        try FileManager.default.createDirectory(at: f, withIntermediateDirectories: true)
+        let before = try state(of: dir)
+        let result = try merge(["a", "b"], in: dir)
+        #expect(result.outcome == .failed(.notUpToDate(path: "f")))
+        #expect(try state(of: dir) == before)
+        var isDirectory: ObjCBool = false
+        #expect(FileManager.default.fileExists(atPath: f.path, isDirectory: &isDirectory) && isDirectory.boolValue)
+    }
+
     @Test("refuses a bare repository before anything changes")
     func refusesBare() throws {
         let dir = try makeRepository()
