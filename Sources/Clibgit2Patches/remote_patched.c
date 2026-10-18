@@ -26,8 +26,7 @@
  * git, pruning leaves its tracking ref alone. Every call site of both
  * has the remote in scope as `remote`.
  *
- * (The same gap exists in upstream libgit2; this fix is worth offering
- * there too.)
+ * Reported upstream as libgit2/libgit2#7435.
  */
 #include "remote.h"
 #include "buf.h"

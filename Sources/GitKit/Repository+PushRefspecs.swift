@@ -98,7 +98,7 @@ extension Repository {
     /// is already being pushed to, while explicit refspecs all go out
     /// (two to one ref, and the remote refuses both). A negative refspec
     /// drops every update to a ref it names.
-    func expandedPushRefspecs(_ plan: PushPlan, remoteRefs: Set<String>?) throws -> [String] {
+    func expandedPushRefspecs(_ plan: PushPlan, remoteRefs: [String]?) throws -> [String] {
         var refspecs = plan.explicit
         // Ref names as bytes, as git compares them.
         var claimed = Set(plan.explicit.compactMap {
@@ -117,7 +117,10 @@ extension Repository {
             }
         }
         if let force = plan.matching, let remoteRefs {
-            for name in localRefs where name.hasPrefix("refs/heads/") && remoteRefs.contains(name) {
+            // Ref names as bytes, as git compares them.
+            let advertised = Set(remoteRefs.map { Array($0.utf8) })
+            for name in localRefs
+            where name.hasPrefix("refs/heads/") && advertised.contains(Array(name.utf8)) {
                 expand(force, name, name)
             }
         }
@@ -129,15 +132,15 @@ extension Repository {
 
     /// The refs a connected remote advertises (`refs/…` only, without
     /// the peeled `^{}` entries of annotated tags, as git lists them).
-    func advertisedRefs(_ remote: OpaquePointer?) throws -> Set<String> {
+    func advertisedRefs(_ remote: OpaquePointer?) throws -> [String] {
         var heads: UnsafeMutablePointer<UnsafePointer<git_remote_head>?>?
         var count = 0
         try check(git_remote_ls(&heads, &count, remote))
-        var names = Set<String>()
+        var names: [String] = []
         for index in 0..<count {
             guard let name = heads?[index]?.pointee.name else { continue }
             let refname = String(cString: name)
-            if refname.hasPrefix("refs/"), !refname.hasSuffix("^{}") { names.insert(refname) }
+            if refname.hasPrefix("refs/"), !refname.hasSuffix("^{}") { names.append(refname) }
         }
         return names
     }
