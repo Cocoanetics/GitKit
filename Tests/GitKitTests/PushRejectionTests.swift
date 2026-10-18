@@ -118,6 +118,31 @@ struct PushRejectionTests {
                 == runGit(["rev-parse", "main"], in: theirs))
     }
 
+    @Test("refused refs are listed by destination, as git lists them")
+    func rejectionOrder() throws {
+        let (remote, mine, theirs) = try makeRemoteAndClones()
+        defer { [remote, mine, theirs].forEach { try? FileManager.default.removeItem(at: $0) } }
+        for branch in ["zzz", "aaa"] {
+            try runGit(["branch", branch], in: theirs)
+            try runGit(["push", "-q", "origin", branch], in: theirs)
+            try runGit(["checkout", "-q", branch], in: theirs)
+            try runGit(["commit", "-q", "--allow-empty", "-m", "theirs \(branch)"], in: theirs)
+            try runGit(["push", "-q", "origin", branch], in: theirs)
+            try runGit(["branch", branch], in: mine)
+        }
+        try runGit(["commit", "-q", "--allow-empty", "-m", "mine"], in: mine)
+        try runGit(["branch", "-f", "zzz"], in: mine)
+        try runGit(["branch", "-f", "aaa"], in: mine)
+
+        let (output, error) = try push(mine, ["zzz", "aaa"])
+        #expect(output.hasSuffix("""
+             ! [rejected]        aaa -> aaa (fetch first)
+             ! [rejected]        zzz -> zzz (fetch first)
+
+            """))
+        #expect(error?.rejections.map(\.remoteRef) == ["refs/heads/aaa", "refs/heads/zzz"])
+    }
+
     @Test("a known remote tip the push would drop: non-fast-forward")
     func nonFastForward() throws {
         let (remote, mine, theirs) = try makeRemoteAndClones()

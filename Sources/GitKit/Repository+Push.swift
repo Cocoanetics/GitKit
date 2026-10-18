@@ -312,7 +312,11 @@ extension Repository {
                 abbreviation: reporter.abbreviation))
             rejections.append(.init(remoteRef: destination, reason: reason))
         }
-        rejected.forEach { refuse($0.refspec, $0.reason) }
+        // git lists them in the remote's ref order: by destination, as bytes.
+        rejected
+            .map { (key: Array((destinationRefName(fromPushRefspec: $0.refspec) ?? "").utf8), update: $0) }
+            .sorted { $0.key.lexicographicallyPrecedes($1.key) }
+            .forEach { refuse($0.update.refspec, $0.update.reason) }
 
         // An update the remote never reported on failed, as git counts
         // it (`[remote failure]`). Each report goes to one update.
