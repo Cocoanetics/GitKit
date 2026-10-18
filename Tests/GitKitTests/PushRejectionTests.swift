@@ -136,6 +136,25 @@ struct PushRejectionTests {
         #expect(error?.rejections == [.init(remoteRef: "refs/tags/v1", reason: .alreadyExists)])
     }
 
+    @Test("two refspecs to one of the remote's refs are refused before sending")
+    func duplicateExistingDestination() throws {
+        let (remote, mine, theirs) = try makeRemoteAndClones()
+        defer { [remote, mine, theirs].forEach { try? FileManager.default.removeItem(at: $0) } }
+        try runGit(["branch", "dev"], in: mine)
+        try runGit(["commit", "-q", "--allow-empty", "-m", "ahead"], in: mine)
+        let before = try runGit(["rev-parse", "main"], in: remote)
+
+        let repo = try Repository.open(at: mine)
+        #expect(throws: Libgit2Error.self) {
+            try repo.push(remote: "origin", refspecs: ["main:refs/heads/main", "dev:refs/heads/main"],
+                          setUpstream: false, progress: { _ in })
+        }
+        #expect(try runGit(["rev-parse", "main"], in: remote) == before)
+        #expect(repo.displayName(ofRemote: "origin") == remote.path)
+        #expect(repo.displayName(ofRemote: "https://me:secret@example.com/r.git")
+                == "https://example.com/r.git")
+    }
+
     @Test("the refs git accepts still go, and get their upstream")
     func partialPush() throws {
         let (remote, mine, theirs) = try makeRemoteAndClones()

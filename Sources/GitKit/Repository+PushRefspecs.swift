@@ -137,6 +137,32 @@ extension Repository {
         return refs
     }
 
+    /// A destination two of `refspecs` push to that the remote already
+    /// has, which git refuses outright.
+    func duplicatedDestination(in refspecs: [String], remoteRefs: [String: git_oid]) -> String? {
+        var seen = Set<String>()
+        for refspec in refspecs {
+            guard let destination = destinationRefName(fromPushRefspec: refspec) else { continue }
+            if !seen.insert(destination).inserted, remoteRefs[destination] != nil {
+                return destination
+            }
+        }
+        return nil
+    }
+
+    /// How git names `remote` in its output: a configured remote's URL,
+    /// or the URL or path as given, without the credentials it may carry
+    /// (`https://user:token@host/r` reads `https://host/r`, `git@host:r`
+    /// reads `host:r`).
+    public func displayName(ofRemote remote: String) -> String {
+        var url = remote
+        if let (handle, _) = try? lookupRemote(remote) {
+            url = git_remote_url(handle).map { String(cString: $0) } ?? remote
+            git_remote_free(handle)
+        }
+        return ProgressReporter.anonymizedURL(url)
+    }
+
     /// `refspecs` split by git's rules for an update without force: the
     /// ones to push, and the ones it refuses, with why.
     func partitionedPushRefspecs(

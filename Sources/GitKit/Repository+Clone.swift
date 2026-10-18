@@ -268,8 +268,10 @@ extension Repository {
                 opts.prune = prune ? GIT_FETCH_PRUNE : GIT_FETCH_NO_PRUNE
                 // git follows tags only when a refspec stores what it
                 // fetches (get_ref_map): `git fetch origin main`, or a
-                // fetch of a URL's HEAD, brings no tags along.
-                if !effectiveRefspecs.contains(where: Self.storesFetchedRef) {
+                // fetch of a URL's HEAD, brings no tags along. A remote
+                // set to fetch all tags (`tagOpt = --tags`) still does.
+                if git_remote_autotag(remoteHandle) == GIT_REMOTE_DOWNLOAD_TAGS_AUTO,
+                   !effectiveRefspecs.contains(where: Self.storesFetchedRef) {
                     opts.download_tags = GIT_REMOTE_DOWNLOAD_TAGS_NONE
                 }
                 try withCallbacksPayload(

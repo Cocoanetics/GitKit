@@ -136,6 +136,13 @@ struct FetchSummaryTests {
         // Nothing stored, so no tags followed (the remote has `v1`).
         #expect(throws: Failure.self) { try runGit(["rev-parse", "--verify", "v1"], in: kit) }
 
+        // A remote set to fetch all tags still does.
+        try runGit(["config", "remote.origin.tagOpt", "--tags"], in: kit)
+        _ = try gitKitFetch(kit, refspecs: ["main"])
+        #expect(try runGit(["rev-parse", "--verify", "v1"], in: kit).isEmpty == false)
+        try runGit(["config", "--unset", "remote.origin.tagOpt"], in: kit)
+        try runGit(["tag", "-d", "v1"], in: kit)
+
         // With a destination, the tag comes along, before the
         // opportunistic update of origin/dev.
         let stored = try runGit(["fetch", "origin", "dev:refs/heads/copy"], in: git)

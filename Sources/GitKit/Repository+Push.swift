@@ -192,6 +192,15 @@ extension Repository {
                     let common = remoteRefs.keys.contains { !plan.excludes($0) }
                     return common ? .nothingToSend : .noRefsInCommon
                 }
+                // git refuses two updates to one of the remote's refs
+                // before sending anything (`match_explicit`).
+                if let duplicate = duplicatedDestination(in: pushRefspecs, remoteRefs: remoteRefs) {
+                    git_remote_disconnect(remoteHandle)
+                    throw Libgit2Error(
+                        code: GIT_EINVALIDSPEC.rawValue,
+                        klass: Int32(GIT_ERROR_REFERENCE.rawValue),
+                        message: "dst ref \(duplicate) receives from more than one src")
+                }
                 // As git does, leave out the updates its rules refuse and
                 // push the rest; libgit2 would fail the whole push.
                 let (accepted, rejected) = try partitionedPushRefspecs(
