@@ -72,15 +72,22 @@ extension Repository {
         /// onto, each with whether a forced refspec does.
         func tags(for name: String) -> [(tag: String, forced: Bool)] {
             specs.compactMap { spec in
+                // A short source (`main:refs/tags/x`) fetches the ref git
+                // expands it to.
                 guard !spec.text.hasPrefix("^"), let dst = git_refspec_dst(spec.spec), dst.pointee != 0,
-                      git_refspec_src_matches(spec.spec, name) == 1
+                      Self.refspec(spec.spec, fetches: name)
                 else { return nil }
-                var buffer = git_buf()
-                defer { git_buf_dispose(&buffer) }
-                guard git_refspec_transform(&buffer, spec.spec, name) == 0, let pointer = buffer.ptr else {
-                    return nil
+                let tag: String
+                if let source = git_refspec_src(spec.spec), String(cString: source).contains("*") {
+                    var buffer = git_buf()
+                    defer { git_buf_dispose(&buffer) }
+                    guard git_refspec_transform(&buffer, spec.spec, name) == 0, let pointer = buffer.ptr else {
+                        return nil
+                    }
+                    tag = String(cString: pointer)
+                } else {
+                    tag = String(cString: dst)
                 }
-                let tag = String(cString: pointer)
                 return tag.hasPrefix("refs/tags/") ? (tag, git_refspec_force(spec.spec) == 1) : nil
             }
         }
@@ -109,17 +116,20 @@ extension Repository {
                 continue
             }
             let mapped = tags(for: name)
-            guard let tag = mapped.first?.tag, !mapped.contains(where: \.forced),
-                  var old = before[Array(tag.utf8)], git_oid_equal(&old, &remote) == 0,
-                  !refused.contains(tag)
-            else { continue }
-            try restore(tag)
-            lines.removeAll { $0.localRef.utf8.elementsEqual(tag.utf8) }
-            lines.append(.init(
-                kind: .update, flag: "!", summary: "[rejected]",
-                remoteRef: name, remote: shortRefName(name), localRef: tag, local: shortRefName(tag),
-                note: "would clobber existing tag"))
-            refused.append(tag)
+            // Each tag the ref goes to is settled on its own; a forced
+            // refspec to that same tag lets it move.
+            for tag in mapped.map(\.tag) where !mapped.contains(where: { $0.tag == tag && $0.forced }) {
+                guard var old = before[Array(tag.utf8)], git_oid_equal(&old, &remote) == 0,
+                      !refused.contains(tag)
+                else { continue }
+                try restore(tag)
+                lines.removeAll { $0.localRef.utf8.elementsEqual(tag.utf8) }
+                lines.append(.init(
+                    kind: .update, flag: "!", summary: "[rejected]",
+                    remoteRef: name, remote: shortRefName(name), localRef: tag, local: shortRefName(tag),
+                    note: "would clobber existing tag"))
+                refused.append(tag)
+            }
         }
         return (refused, excluded)
     }

@@ -193,6 +193,27 @@ struct FetchTagsTests {
         #expect(try runGit(["rev-parse", "v1"], in: clone) == runGit(["rev-parse", "v1"], in: upstream))
     }
 
+    @Test("a branch fetched into tags clobbers none of them, by a short source or into two")
+    func branchIntoTags() throws {
+        let (upstream, clone) = try makeUpstreamAndClone()
+        defer { [upstream, clone].forEach { try? FileManager.default.removeItem(at: $0) } }
+        let specs = ["main:refs/tags/x", "refs/heads/main:refs/tags/a", "refs/heads/main:refs/tags/b"]
+        _ = try fetch(clone, specs, tags: .off)
+        let before = try runGit(["rev-parse", "x"], in: clone)
+        try runGit(["commit", "-q", "--allow-empty", "-m", "four"], in: upstream)
+        let (output, error) = try fetch(clone, specs, tags: .off)
+        #expect(error == FetchRejectedError(refs: ["refs/tags/x", "refs/tags/a", "refs/tags/b"]))
+        #expect(output.contains("""
+             ! [rejected] main       -> x  (would clobber existing tag)
+             ! [rejected] main       -> a  (would clobber existing tag)
+             ! [rejected] main       -> b  (would clobber existing tag)
+
+            """))
+        for tag in ["x", "a", "b"] {
+            #expect(try runGit(["rev-parse", tag], in: clone) == before)
+        }
+    }
+
     @Test("a negative refspec keeps a tag out of --tags")
     func negativeRefspec() throws {
         let (upstream, clone) = try makeUpstreamAndClone()
