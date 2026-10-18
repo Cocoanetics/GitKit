@@ -117,7 +117,7 @@ extension Repository {
         /// is what the remote had.
         case pushed(
             accepted: [String], rejected: [(refspec: String, reason: PushRejectedError.Reason)],
-            remoteRefs: [String: git_oid])
+            remoteRefs: RemoteRefs)
         /// Nothing to send to a remote that has refs.
         case nothingToSend
         /// Nothing to send to a remote without any refs, which git refuses.
@@ -187,12 +187,12 @@ extension Repository {
                 try check(git_remote_connect(
                     remoteHandle, GIT_DIRECTION_PUSH, &callbacks, nil, nil))
                 let remoteRefs = try advertisedRefs(remoteHandle)
-                let pushRefspecs = try expandedPushRefspecs(plan, remoteRefs: Set(remoteRefs.keys))
+                let pushRefspecs = try expandedPushRefspecs(plan, remoteRefs: remoteRefs.names)
                 guard !pushRefspecs.isEmpty else {
                     git_remote_disconnect(remoteHandle)
                     // git refuses when the negative refspecs leave none
                     // of the remote's refs either.
-                    let common = remoteRefs.keys.contains { !plan.excludes($0) }
+                    let common = remoteRefs.names.contains { !plan.excludes($0) }
                     return common ? .nothingToSend : .noRefsInCommon
                 }
                 // git refuses two updates to one of the remote's refs
@@ -227,20 +227,15 @@ extension Repository {
             outReporter: { reporter = $0 })
 
         if case .noRefsInCommon = outcome {
-            reporter.write("No refs in common and none specified; doing nothing.\n"
-                           + "Perhaps you should specify a branch.\n")
-            throw Libgit2Error(
-                code: GIT_ERROR.rawValue,
-                klass: Int32(GIT_ERROR_REFERENCE.rawValue),
-                message: "failed to push some refs to "
-                    + "'\(ProgressReporter.anonymizedURL(remoteURL ?? remote))'")
+            throw noRefsInCommon(remote: remoteURL ?? remote, reporter: reporter)
         }
 
         var pushed: [String] = []
         var rejections: [PushRejectedError.Rejection] = []
         if case .pushed(let accepted, let rejected, let remoteRefs) = outcome {
             (pushed, rejections) = settle(
-                accepted, rejected: rejected, remoteRefs: remoteRefs, reporter: &reporter)
+                accepted, rejected: rejected, remoteRefs: remoteRefs,
+                typedSources: plan.typedSourcesByRefspec, reporter: &reporter)
         }
 
         // Nothing to send: git says so instead of printing a summary.
@@ -267,6 +262,18 @@ extension Repository {
         return pushed
     }
 
+    /// git's answer to a push with nothing to send to a remote without
+    /// refs (or none the negative refspecs leave): its two lines, then
+    /// the error.
+    private func noRefsInCommon(remote: String, reporter: ProgressReporter) -> Libgit2Error {
+        reporter.write("No refs in common and none specified; doing nothing.\n"
+                       + "Perhaps you should specify a branch.\n")
+        return Libgit2Error(
+            code: GIT_ERROR.rawValue,
+            klass: Int32(GIT_ERROR_REFERENCE.rawValue),
+            message: "failed to push some refs to '\(ProgressReporter.anonymizedURL(remote))'")
+    }
+
     /// What came of a push's updates: the refspecs that went through
     /// (`accepted` but those the remote refused or didn't report on) and
     /// every rejection: the remote's, git's rules', and an update the
@@ -276,7 +283,8 @@ extension Repository {
     private func settle(
         _ accepted: [String],
         rejected: [(refspec: String, reason: PushRejectedError.Reason)],
-        remoteRefs: [String: git_oid],
+        remoteRefs: RemoteRefs,
+        typedSources: [String: String],
         reporter: inout ProgressReporter
     ) -> (pushed: [String], rejections: [PushRejectedError.Rejection]) {
         var rejections: [PushRejectedError.Rejection] = []
@@ -299,6 +307,7 @@ extension Repository {
             guard let destination = destinationRefName(fromPushRefspec: refspec) else { return }
             reporter.refLines.append(rejectedSummaryLine(
                 refspec, destination: destination, reason: reason,
+                typedSource: typedSources[Self.unforced(refspec)],
                 abbreviation: reporter.abbreviation))
             rejections.append(.init(remoteRef: destination, reason: reason))
         }
@@ -328,11 +337,11 @@ extension Repository {
     /// line for an update its rules refuse.
     private func rejectedSummaryLine(
         _ refspec: String, destination: String,
-        reason: PushRejectedError.Reason, abbreviation: Int
+        reason: PushRejectedError.Reason, typedSource: String?, abbreviation: Int
     ) -> String {
         let body = refspec.hasPrefix("+") ? refspec.dropFirst() : Substring(refspec)
-        let source = String(body.split(separator: ":", maxSplits: 1,
-                                       omittingEmptySubsequences: false)[0])
+        let source = typedSource ?? String(body.split(separator: ":", maxSplits: 1,
+                                                      omittingEmptySubsequences: false)[0])
         let refs = "\(shortRefName(source)) -> \(shortRefName(destination))"
         let label = reason == .remoteFailure ? "[remote failure]" : "[rejected]"
         return pushSummaryLine("!", label, "\(refs) (\(reason.summary))",

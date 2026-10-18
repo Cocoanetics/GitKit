@@ -228,16 +228,17 @@ checked-in source file, so SwiftPM compiles it normally.
 ### Behaviour fixes, the same way
 
 The same kind of shim carries the few changes GitKit makes to how libgit2
-behaves, each worth offering upstream too:
+behaves, each reported upstream:
 
 - `ssh_exec_patched.c` and `process_patched.c` reap the `ssh` child when an
   `ssh_exec` connection closes, instead of leaving a zombie per connection
-  (#38).
+  (#38, libgit2/libgit2#7437).
 - `remote_patched.c` keeps the refs a negative fetch refspec
   (`^refs/heads/wip`) excludes out of the ref updates, `FETCH_HEAD` and
   pruning, as git does. libgit2 only leaves them out of the negotiation,
   then updates them anyway whenever their objects are present, and prunes
-  their remote-tracking refs once they're gone from the remote.
+  their remote-tracking refs once they're gone from the remote
+  (libgit2/libgit2#7435).
 
 ## The curated module and vendored headers (Windows, and why the submodule stays pristine)
 

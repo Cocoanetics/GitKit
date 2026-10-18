@@ -279,6 +279,7 @@ extension Repository {
                 // fetches (get_ref_map): `git fetch origin main`, or a
                 // fetch of a URL's HEAD, brings no tags along. A remote
                 // set to fetch all tags (`tagOpt = --tags`) still does.
+                // (libgit2/libgit2#7436)
                 if git_remote_autotag(remoteHandle) == GIT_REMOTE_DOWNLOAD_TAGS_AUTO,
                    !effectiveRefspecs.contains(where: Self.storesFetchedRef) {
                     opts.download_tags = GIT_REMOTE_DOWNLOAD_TAGS_NONE

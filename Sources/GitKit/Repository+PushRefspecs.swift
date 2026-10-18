@@ -1,6 +1,27 @@
 import Foundation
 import CGitKit
 
+/// The refs a remote advertised, looked up by name as git compares ref
+/// names: byte for byte (Swift's `String` equality is canonical, so `é`
+/// composed and decomposed would be one key).
+struct RemoteRefs {
+    /// The names, in advertised order.
+    private(set) var names: [String] = []
+    private var objects: [[UInt8]: git_oid] = [:]
+
+    var isEmpty: Bool { names.isEmpty }
+
+    mutating func add(_ name: String, _ oid: git_oid) {
+        guard objects.updateValue(oid, forKey: Array(name.utf8)) == nil else { return }
+        names.append(name)
+    }
+
+    /// The object remote ref `name` points at, if the remote has it.
+    func object(of name: String) -> git_oid? {
+        objects[Array(name.utf8)]
+    }
+}
+
 /// One push's refspecs, sorted the way git reads them: some name a ref,
 /// patterns (`refs/heads/*:refs/heads/*`) and the matching refspec `:`
 /// stand for many, and negative ones (`^refs/heads/wip`) drop updates.
@@ -25,8 +46,12 @@ struct PushPlan {
     /// becomes `refs/heads/main:refs/heads/main`).
     var explicit: [String] = []
     /// How each explicit refspec's source was typed (`HEAD`, `main`),
-    /// keyed by its destination ref, for the summary.
+    /// keyed by its destination ref, for the summary of what the remote
+    /// reports on (which goes to the first update of a ref).
     var typedSources: [String: String] = [:]
+    /// The same, keyed by the qualified refspec (without `+`), for the
+    /// summary lines of updates the remote never got to judge.
+    var typedSourcesByRefspec: [String: String] = [:]
     var patterns: [Pattern] = []
     /// Whether the matching refspec was given: `nil` if not, `true` if
     /// forced (`+:`).
@@ -82,6 +107,9 @@ extension Repository {
             } else {
                 let qualified = try qualifiedPushRefspec(refspec)
                 plan.explicit.append(qualified)
+                if let typed = typedPushSource(refspec) {
+                    plan.typedSourcesByRefspec[Self.unforced(qualified)] = typed
+                }
                 // The remote reports on the first update to a ref.
                 if let destination = destinationRefName(fromPushRefspec: qualified),
                    plan.typedSources[destination] == nil,
@@ -100,7 +128,7 @@ extension Repository {
     /// is already being pushed to, while explicit refspecs all go out
     /// (two to one ref, and the remote refuses both). A negative refspec
     /// drops every update to a ref it names.
-    func expandedPushRefspecs(_ plan: PushPlan, remoteRefs: Set<String>) throws -> [String] {
+    func expandedPushRefspecs(_ plan: PushPlan, remoteRefs: [String]?) throws -> [String] {
         var refspecs = plan.explicit
         // Ref names as bytes, as git compares them.
         var claimed = Set(plan.explicit.compactMap {
@@ -118,8 +146,11 @@ extension Repository {
                 expand(pattern.force, name, destination)
             }
         }
-        if let force = plan.matching {
-            for name in localRefs where name.hasPrefix("refs/heads/") && remoteRefs.contains(name) {
+        if let force = plan.matching, let remoteRefs {
+            // Ref names as bytes, as git compares them.
+            let advertised = Set(remoteRefs.map { Array($0.utf8) })
+            for name in localRefs
+            where name.hasPrefix("refs/heads/") && advertised.contains(Array(name.utf8)) {
                 expand(force, name, name)
             }
         }
@@ -132,26 +163,31 @@ extension Repository {
     /// The refs a connected remote advertises (`refs/…` only, without
     /// the peeled `^{}` entries of annotated tags, as git lists them),
     /// with the object each points at.
-    func advertisedRefs(_ remote: OpaquePointer?) throws -> [String: git_oid] {
+    func advertisedRefs(_ remote: OpaquePointer?) throws -> RemoteRefs {
         var heads: UnsafeMutablePointer<UnsafePointer<git_remote_head>?>?
         var count = 0
         try check(git_remote_ls(&heads, &count, remote))
-        var refs: [String: git_oid] = [:]
+        var refs = RemoteRefs()
         for index in 0..<count {
             guard let head = heads?[index]?.pointee, let name = head.name else { continue }
             let refname = String(cString: name)
-            if refname.hasPrefix("refs/"), !refname.hasSuffix("^{}") { refs[refname] = head.oid }
+            if refname.hasPrefix("refs/"), !refname.hasSuffix("^{}") { refs.add(refname, head.oid) }
         }
         return refs
     }
 
+    /// `refspec` without its `+`.
+    static func unforced(_ refspec: String) -> String {
+        refspec.hasPrefix("+") ? String(refspec.dropFirst()) : refspec
+    }
+
     /// A destination two of `refspecs` push to that the remote already
     /// has, which git refuses outright.
-    func duplicatedDestination(in refspecs: [String], remoteRefs: [String: git_oid]) -> String? {
+    func duplicatedDestination(in refspecs: [String], remoteRefs: RemoteRefs) -> String? {
         var seen = Set<[UInt8]>()  // ref names as bytes, as git compares them
         for refspec in refspecs {
             guard let destination = destinationRefName(fromPushRefspec: refspec) else { continue }
-            if !seen.insert(Array(destination.utf8)).inserted, remoteRefs[destination] != nil {
+            if !seen.insert(Array(destination.utf8)).inserted, remoteRefs.object(of: destination) != nil {
                 return destination
             }
         }
@@ -173,11 +209,11 @@ extension Repository {
 
     /// Whether pushing `refspec` leaves the remote as it is: the remote
     /// ref already points at the source, or a deletion finds no ref.
-    func isUpToDate(_ refspec: String, remoteRefs: [String: git_oid]) -> Bool {
+    func isUpToDate(_ refspec: String, remoteRefs: RemoteRefs) -> Bool {
         guard let destination = destinationRefName(fromPushRefspec: refspec) else { return false }
         let body = refspec.hasPrefix("+") ? refspec.dropFirst() : Substring(refspec)
         let source = body.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)[0]
-        guard var remote = remoteRefs[destination] else { return source.isEmpty }
+        guard var remote = remoteRefs.object(of: destination) else { return source.isEmpty }
         var object: OpaquePointer?
         guard !source.isEmpty, git_revparse_single(&object, repo, String(source)) == 0 else {
             return false
@@ -190,7 +226,7 @@ extension Repository {
     /// `refspecs` split by git's rules for an update without force: the
     /// ones to push, and the ones it refuses, with why.
     func partitionedPushRefspecs(
-        _ refspecs: [String], remoteRefs: [String: git_oid]
+        _ refspecs: [String], remoteRefs: RemoteRefs
     ) throws -> (accepted: [String], rejected: [(refspec: String, reason: PushRejectedError.Reason)]) {
         var accepted: [String] = []
         var rejected: [(refspec: String, reason: PushRejectedError.Reason)] = []
@@ -210,11 +246,11 @@ extension Repository {
     /// move, the remote's tip has to be here, both sides have to be
     /// commits, and the new commit has to descend from the old one.
     func pushRejection(
-        for refspec: String, remoteRefs: [String: git_oid]
+        for refspec: String, remoteRefs: RemoteRefs
     ) throws -> PushRejectedError.Reason? {
         guard !refspec.hasPrefix("+"),
               let destination = destinationRefName(fromPushRefspec: refspec),
-              var old = remoteRefs[destination]
+              var old = remoteRefs.object(of: destination)
         else { return nil }
         let source = refspec.split(separator: ":", maxSplits: 1,
                                    omittingEmptySubsequences: false)[0]

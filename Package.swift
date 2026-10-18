@@ -25,7 +25,7 @@ import PackageDescription
 //     compiled via translation-unit-scoped `#include` shims (Clibgit2Patches).
 //   • transports/ssh_exec.c and util/unix/process.c are shimmed the same
 //     way so the ssh_exec transport reaps its `ssh` child on close instead
-//     of leaking a zombie (issue #38); upstream libgit2 has the same gap.
+//     of leaking a zombie (issue #38; libgit2/libgit2#7437 upstream).
 //   • remote.c is shimmed the same way so a negative fetch refspec keeps
 //     the refs it excludes out of the ref updates and FETCH_HEAD, as git
 //     does; upstream libgit2 only leaves them out of the negotiation.

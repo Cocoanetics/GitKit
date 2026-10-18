@@ -89,6 +89,10 @@ struct PushRejectionTests {
         try runGit(["push", "-q", "origin", "main"], in: theirs)
         try runGit(["commit", "-q", "--allow-empty", "-m", "mine"], in: mine)
 
+        // The source as typed, as git shows it.
+        let typed = try push(mine, ["HEAD:refs/heads/main"])
+        #expect(typed.output.hasSuffix(" ! [rejected]        HEAD -> main (fetch first)\n"))
+
         let (output, error) = try push(mine, ["main"])
         let url = try runGit(["config", "remote.origin.url"], in: mine)
         #expect(output == "To \(url)\n ! [rejected]        main -> main (fetch first)\n")
