@@ -51,16 +51,23 @@ public enum OctopusPathMerge: Sendable, Equatable {
     case notHandled(path: String, base: String, ours: String, theirs: String)
     /// `Adding <path>`, a path their side adds where the other side has
     /// a file over a directory (or a directory over a file), then git's
-    /// update-index refusing `<file>`, the deeper of the two: `error:
-    /// '<file>' appears as both a file and as a directory`, `error:
-    /// <file>: cannot add to the index - missing --add option?` and
-    /// `fatal: git update-index: --cacheinfo cannot add <file>`.
-    case addedOverDirectory(path: String, file: String)
+    /// update-index refusing each of `files`, the paths below the file:
+    /// `error: '<file>' appears as both a file and as a directory`,
+    /// `error: <file>: cannot add to the index - missing --add option?`
+    /// and `fatal: git update-index: --cacheinfo cannot add <file>`.
+    case addedOverDirectory(path: String, files: [String])
+    /// `ERROR: <path>: Not merging symbolic link changes.`: both sides
+    /// changed it, one to a symbolic link. Ours stays in the work tree.
+    case symlink(path: String)
+    /// `ERROR: <path>: Not merging conflicting submodule changes.`: both
+    /// sides changed it, one to a submodule (gitlink).
+    case submodule(path: String)
 
     public var path: String {
         switch self {
         case .merged(let path), .conflict(let path), .addedInBoth(let path, _),
-             .notHandled(let path, _, _, _), .addedOverDirectory(let path, _):
+             .notHandled(let path, _, _, _), .addedOverDirectory(let path, _), .symlink(let path),
+             .submodule(let path):
             return path
         }
     }

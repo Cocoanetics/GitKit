@@ -274,6 +274,7 @@ struct RepositoryOctopusMergeTests {
         try git(["checkout", "-q", "-b", "dd", "base"], in: dir)
         try FileManager.default.createDirectory(at: dir.appendingPathComponent("d"), withIntermediateDirectories: true)
         try write("dd\n", to: "d/file", in: dir)
+        try write("dd2\n", to: "d/other", in: dir)
         try git(["add", "d"], in: dir)
         try git(["commit", "-q", "-m", "dd"], in: dir)
         try git(["checkout", "-q", "main"], in: dir)
@@ -284,10 +285,57 @@ struct RepositoryOctopusMergeTests {
             other = try twin(of: dir)
             result = try merge(heads, in: dir)
             #expect(try git(["merge", "-q", "-m", "Merge branches"] + heads, in: other, check: false).status == 1)
-            #expect(result.steps.last?.automatic == [.addedOverDirectory(path: theirPath, file: "d/file")])
-            #expect(result.outcome == .conflicts(paths: ["d/file"]))
+            // Their file: one `Adding d`, each path below it refused; their
+            // paths below our file: one each.
+            let expected: [OctopusPathMerge] = theirPath == "d"
+                ? [.addedOverDirectory(path: "d", files: ["d/file", "d/other"])]
+                : [.addedOverDirectory(path: "d/file", files: ["d/file"]),
+                   .addedOverDirectory(path: "d/other", files: ["d/other"])]
+            #expect(result.steps.last?.automatic == expected)
+            #expect(result.outcome == .conflicts(paths: ["d/file", "d/other"]))
             #expect(try state(of: dir) == state(of: other))
             #expect(try String(contentsOf: dir.appendingPathComponent("d"), encoding: .utf8) == "d\n")
+        }
+    }
+
+    @Test("leaves symbolic links and submodules both sides changed unmerged, ours in place")
+    func symlinksAndSubmodules() throws {
+        let dir = try makeRepository()
+        let a = try git(["rev-parse", "a"], in: dir).stdout, b = try git(["rev-parse", "b"], in: dir).stdout
+        for (branch, link, gitlink) in [("l1", "x", a), ("l2", "y", b)] {
+            try git(["checkout", "-q", "-b", branch, "base"], in: dir)
+            try FileManager.default.createSymbolicLink(
+                atPath: dir.appendingPathComponent("lnk").path, withDestinationPath: link)
+            try git(["add", "lnk"], in: dir)
+            try git(["update-index", "--add", "--cacheinfo", "160000,\(gitlink),sub"], in: dir)
+            try git(["commit", "-q", "-m", branch], in: dir)
+            try FileManager.default.removeItem(at: dir.appendingPathComponent("lnk"))
+        }
+        try git(["checkout", "-q", "-f", "main"], in: dir)
+        try git(["clean", "-qfdf"], in: dir)
+        let other = try twin(of: dir)
+        let result = try merge(["c", "l1", "l2"], in: dir)
+        #expect(try git(["merge", "-q", "-m", "Merge branches", "c", "l1", "l2"], in: other, check: false).status == 1)
+        #expect(result.steps.last?.automatic == [.symlink(path: "lnk"), .submodule(path: "sub")])
+        #expect(result.outcome == .conflicts(paths: ["lnk", "sub"]))
+        #expect(try state(of: dir) == state(of: other))
+        #expect(try FileManager.default.destinationOfSymbolicLink(atPath: dir.appendingPathComponent("lnk").path) == "x")
+    }
+
+    @Test("refuses to start while a merge or cherry-pick waits, as git does")
+    func refusesWhileAnotherOperationWaits() throws {
+        let dir = try makeRepository()
+        try git(["merge", "-q", "--no-commit", "--no-ff", "c"], in: dir)
+        #expect(throws: Libgit2Error.self) { try merge(["a", "b"], in: dir) }
+        try git(["merge", "--abort"], in: dir)
+        try git(["rev-parse", "c"], in: dir)
+        try Data((try git(["rev-parse", "c"], in: dir).stdout + "\n").utf8)
+            .write(to: dir.appendingPathComponent(".git/CHERRY_PICK_HEAD"))
+        do {
+            _ = try merge(["a", "b"], in: dir)
+            Issue.record("expected a refusal")
+        } catch let error as Libgit2Error {
+            #expect(error.message == "You have not concluded your cherry-pick (CHERRY_PICK_HEAD exists).")
         }
     }
 

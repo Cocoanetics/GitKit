@@ -80,14 +80,22 @@ extension Repository {
                 if oursKept != theirsKept { continue }
                 var ancestor = oursKept ? nil : baseEntries.first ?? nil
                 if baseEntries.contains(where: { $0 == nil }) { ancestor = nil }
-                if our != nil, their != nil, ancestor != nil {
+                let modes: [UInt32] = [our?.mode, their?.mode].compactMap { $0 }
+                let special = modes.contains(0o120000) || modes.contains(0o160000)
+                if our != nil, their != nil, ancestor != nil, !special {
                     var a: UnsafePointer<git_index_entry>?, o: UnsafePointer<git_index_entry>?
                     var t: UnsafePointer<git_index_entry>?
                     let conflicted = git_index_conflict_get(&a, &o, &t, merged, path) == 0
                     result.append(conflicted ? .conflict(path: path) : .merged(path: path))
                     continue
                 }
-                if our != nil, their != nil {
+                // Before anything else, git-merge-one-file refuses
+                // symbolic links, then submodules.
+                if let our, let their, [our.mode, their.mode].contains(0o120000) {
+                    result.append(.symlink(path: path))
+                } else if let our, let their, [our.mode, their.mode].contains(0o160000) {
+                    result.append(.submodule(path: path))
+                } else if our != nil, their != nil {
                     result.append(.addedInBoth(path: path, emptyBlobMissing: emptyBlobMissing))
                 } else {
                     result.append(.notHandled(path: path, base: ancestor?.hex ?? "",
@@ -99,7 +107,7 @@ extension Repository {
         }
         // A file where the other side has a directory: libgit2 leaves it
         // unmerged, and git reports their side's path.
-        let reported = Set(result.map(\.path))
+        var reported = Set(result.map(\.path))
         for path in try unmergedPaths(merged) where !reported.contains(path) {
             guard let other = paths.first(where: { $0.hasPrefix(path + "/") || path.hasPrefix($0 + "/") })
             else { continue }
@@ -107,8 +115,16 @@ extension Repository {
                 try entry(trees[0], path) != nil && entry(trees[1], path) == nil ? path : other
             }
             let file = path.count > other.count ? other : path
-            let deeper = paths.filter { $0.hasPrefix(file + "/") }
-            result.append(.addedOverDirectory(path: theirPath, file: deeper.sorted(by: Self.indexOrder).first ?? other))
+            let deeper = paths.filter { $0.hasPrefix(file + "/") }.sorted(by: Self.indexOrder)
+            guard !reported.contains(file) else { continue }
+            reported.formUnion([file] + deeper)
+            // Their file: one `Adding`, every path below it refused;
+            // their paths below the other side's file: one each.
+            if theirPath == file {
+                result.append(.addedOverDirectory(path: file, files: deeper))
+            } else {
+                result += deeper.map { .addedOverDirectory(path: $0, files: [$0]) }
+            }
             // As read-tree leaves it: the file merged, the paths below it
             // unmerged with the side that has them.
             try withTrees([ours, theirs]) { trees in
@@ -362,7 +378,23 @@ extension Repository {
         for path in keepingOurs {
             var ancestor, ours, theirs: UnsafePointer<git_index_entry>?
             guard git_index_conflict_get(&ancestor, &ours, &theirs, merged, path) == 0, let ours else { continue }
-            try write(ours.pointee.id, to: path)
+            switch ours.pointee.mode {
+            case 0o160000:
+                // A submodule stays as checkout left it.
+                continue
+            case 0o120000:
+                var oid = ours.pointee.id
+                var blob: OpaquePointer?
+                try check(git_blob_lookup(&blob, repo, &oid))
+                defer { git_blob_free(blob) }
+                let target = String(decoding: Data(bytes: git_blob_rawcontent(blob), count: Int(git_blob_rawsize(blob))),
+                                    as: UTF8.self)
+                let link = root.appendingPathComponent(path)
+                try? FileManager.default.removeItem(at: link)
+                try FileManager.default.createSymbolicLink(atPath: link.path, withDestinationPath: target)
+            default:
+                try write(ours.pointee.id, to: path)
+            }
         }
         // A merged file where unmerged paths sit below it: read-tree
         // leaves the file, and git-merge-one-file can't add the rest.

@@ -82,6 +82,19 @@ extension Repository {
         author: Signature? = nil,
         env: [String: String] = ProcessInfo.processInfo.environment
     ) throws -> OctopusMergeResult {
+        // git refuses to start a merge while another operation waits.
+        let state = git_repository_state(repo)
+        if state == Int32(GIT_REPOSITORY_STATE_MERGE.rawValue) {
+            throw Libgit2Error(code: -1, klass: 0, message: "You have not concluded your merge (MERGE_HEAD exists).")
+        }
+        if state == Int32(GIT_REPOSITORY_STATE_CHERRYPICK.rawValue)
+            || state == Int32(GIT_REPOSITORY_STATE_CHERRYPICK_SEQUENCE.rawValue) {
+            throw Libgit2Error(code: -1, klass: 0,
+                message: "You have not concluded your cherry-pick (CHERRY_PICK_HEAD exists).")
+        }
+        if state != Int32(GIT_REPOSITORY_STATE_NONE.rawValue) {
+            throw Libgit2Error(code: -1, klass: 0, message: "another operation is in progress")
+        }
         guard let head = try headOID() else {
             throw Libgit2Error(code: -1, klass: 0,
                 message: "Can merge only exactly one commit into empty head")
@@ -162,7 +175,8 @@ extension Repository {
                 conflictedPaths = try unmergedPaths(merged)
                 keepOurs = automatic.compactMap { path in
                     switch path {
-                    case .addedInBoth(let path, _), .notHandled(let path, _, _, _): return path
+                    case .addedInBoth(let path, _), .notHandled(let path, _, _, _), .symlink(let path),
+                         .submodule(let path): return path
                     default: return nil
                     }
                 }
