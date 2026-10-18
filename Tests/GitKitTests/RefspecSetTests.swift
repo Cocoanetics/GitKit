@@ -299,9 +299,12 @@ struct RefspecSetTests {
                       setUpstream: false, progress: { _ in })
         #expect(try refs("refs/heads", in: archive) == ["refs/heads/archive-1"])
 
-        // Any revision as the source, with a full destination.
-        try repo.push(remote: archive.path, refspecs: ["HEAD^{commit}:refs/heads/rev"],
-                      setUpstream: false, progress: { _ in })
+        // Any revision as the source, with a full destination; `-u`
+        // leaves it without branch config, as in git.
+        let head = try runGit(["rev-parse", "HEAD"], in: work).trimmingCharacters(in: .whitespacesAndNewlines)
+        try repo.push(remote: archive.path, refspecs: ["\(head):refs/heads/rev"],
+                      setUpstream: true, progress: { _ in })
+        #expect(throws: Failure.self) { try runGit(["config", "branch.\(head).remote"], in: work) }
         #expect(try runGit(["rev-parse", "rev"], in: archive) == runGit(["rev-parse", "HEAD"], in: work))
         #expect(throws: Libgit2Error.self) {
             try repo.push(remote: archive.path, refspecs: ["HEAD^{commit}:rev2"],
