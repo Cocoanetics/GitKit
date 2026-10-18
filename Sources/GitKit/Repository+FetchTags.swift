@@ -184,15 +184,23 @@ extension Repository {
         tips += heads.oids
 
         var dropped: [String] = []
+        var snapshot: Set<String>?
         for line in followed {
-            // A tag of something other than a commit is left as followed.
             var object: OpaquePointer?
-            guard git_revparse_single(&object, repo, line.localRef + "^{commit}") == 0,
+            guard git_revparse_single(&object, repo, line.localRef + "^{}") == 0,
                   var target = git_object_id(object)?.pointee
             else { git_object_free(object); continue }
+            let type = git_object_type(object)
             git_object_free(object)
-            let reached = tips.contains { tip in var tip = tip; return git_oid_equal(&tip, &target) == 1 }
-                || git_graph_reachable_from_any(repo, &target, tips, tips.count) == 1
+            let reached: Bool
+            if type == GIT_OBJECT_COMMIT {
+                reached = tips.contains { tip in var tip = tip; return git_oid_equal(&tip, &target) == 1 }
+                    || git_graph_reachable_from_any(repo, &target, tips, tips.count) == 1
+            } else {
+                // A tree or blob: kept when the tips' trees hold it.
+                if snapshot == nil { snapshot = tipTrees(tips) }
+                reached = snapshot?.contains(Self.hex(target)) == true
+            }
             guard !reached else { continue }
             try check(git_reference_remove(repo, line.localRef))
             dropped.append(line.localRef)
@@ -200,6 +208,37 @@ extension Repository {
         lines.removeAll { line in dropped.contains { $0.utf8.elementsEqual(line.localRef.utf8) } }
         try removeFetchHeadTags(dropped)
         return dropped
+    }
+
+    /// Every tree and blob the commits among `tips` hold, as hex IDs.
+    /// git follows a tag of a tree or blob it has once the fetch is in;
+    /// libgit2 fetched every tag's objects, so the tips' snapshots stand
+    /// in for what git would have.
+    private func tipTrees(_ tips: [git_oid]) -> Set<String> {
+        final class Found { var ids = Set<String>() }
+        let found = Found()
+        for var tip in tips {
+            var commit: OpaquePointer?
+            guard git_commit_lookup(&commit, repo, &tip) == 0 else { continue }
+            defer { git_commit_free(commit) }
+            var tree: OpaquePointer?
+            guard git_commit_tree(&tree, commit) == 0 else { continue }
+            defer { git_tree_free(tree) }
+            guard let root = git_tree_id(tree)?.pointee,
+                  found.ids.insert(Self.hex(root)).inserted
+            else { continue }
+            _ = git_tree_walk(tree, GIT_TREEWALK_PRE, { _, entry, payload in
+                guard let entry, let payload, let id = git_tree_entry_id(entry)?.pointee else { return 0 }
+                Unmanaged<Found>.fromOpaque(payload).takeUnretainedValue().ids.insert(Repository.hex(id))
+                return 0
+            }, Unmanaged.passUnretained(found).toOpaque())
+        }
+        return found.ids
+    }
+
+    static func hex(_ oid: git_oid) -> String {
+        var oid = oid
+        return String(cString: git_oid_tostr_s(&oid))
     }
 
     /// Take `tags`' not-for-merge lines out of FETCH_HEAD.

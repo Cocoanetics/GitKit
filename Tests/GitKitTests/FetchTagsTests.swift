@@ -24,14 +24,16 @@ struct FetchTagsTests {
     }
 
     @discardableResult
-    private func runGit(_ args: [String], in dir: URL) throws -> String {
+    private func runGit(_ args: [String], in dir: URL, input: String? = nil) throws -> String {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         p.arguments = ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com"] + args
         p.currentDirectoryURL = dir
-        let out = Pipe(); let err = Pipe()
-        p.standardOutput = out; p.standardError = err
+        let out = Pipe(); let err = Pipe(); let stdin = Pipe()
+        p.standardOutput = out; p.standardError = err; p.standardInput = stdin
         try p.run()
+        if let input { stdin.fileHandleForWriting.write(Data(input.utf8)) }
+        try stdin.fileHandleForWriting.close()
         p.waitUntilExit()
         let outStr = String(decoding: (try? out.fileHandleForReading.readToEnd()) ?? Data(),
                             as: UTF8.self)
@@ -151,6 +153,19 @@ struct FetchTagsTests {
         #expect(try tagNames(clone) == ["v1", "v2", "v3", "vside"])
         #expect(!output.contains("vhidden"))
         #expect(!(try fetchHead(clone)).contains { $0.contains("vhidden") })
+    }
+
+    @Test("a tag of a tree or blob is followed only when what's fetched holds it")
+    func treeAndBlobTags() throws {
+        let (upstream, clone) = try makeUpstreamAndClone()
+        defer { [upstream, clone].forEach { try? FileManager.default.removeItem(at: $0) } }
+        let blob = try runGit(["hash-object", "-w", "--stdin"], in: upstream, input: "unrelated\n")
+        try runGit(["tag", "tblob", blob], in: upstream)
+        try runGit(["tag", "tmain", "main^{tree}"], in: upstream)
+        _ = try fetch(clone, tags: nil)
+        let names = try tagNames(clone)
+        #expect(names.contains("tmain"))
+        #expect(!names.contains("tblob"))
     }
 
     @Test("--no-tags follows none, and overrides tagOpt")
