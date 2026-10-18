@@ -226,6 +226,25 @@ struct RefspecSetTests {
             try repo.push(remote: mapped.path, refspecs: ["refs/heads/*:refs/heads/x"],
                           setUpstream: false, progress: { _ in })
         }
+
+        // A pattern leaves alone a destination an explicit refspec claims,
+        // while explicit refspecs all go out, as in git.
+        try runGit(["commit", "-q", "--allow-empty", "-m", "two"], in: work)
+        let claimed = try makeBare()
+        defer { removing(claimed)() }
+        #expect(throws: Libgit2Error.self) {
+            try repo.push(remote: claimed.path,
+                          refspecs: ["main:refs/heads/x", "dev:refs/heads/x"],
+                          setUpstream: false, progress: { _ in })
+        }
+        let pushed = try repo.push(remote: claimed.path,
+                                   refspecs: ["refs/heads/dev:refs/heads/main",
+                                              "refs/heads/*:refs/heads/*"],
+                                   setUpstream: false, progress: { _ in })
+        #expect(pushed.filter { $0.hasSuffix(":refs/heads/main") }
+                == ["refs/heads/dev:refs/heads/main"])
+        #expect(try runGit(["rev-parse", "main"], in: claimed)
+                == runGit(["rev-parse", "dev"], in: work))
         #expect(throws: Libgit2Error.self) {
             try repo.push(remote: mapped.path, refspec: "refs/heads/*", setUpstream: false,
                           forceWithLease: .tracking, progress: { _ in })

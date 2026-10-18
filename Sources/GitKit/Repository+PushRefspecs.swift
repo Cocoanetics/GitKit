@@ -80,27 +80,34 @@ extension Repository {
 
     /// The refspecs to hand libgit2: the explicit ones, then each local
     /// ref a pattern matches, then, once the remote's refs are known,
-    /// the branches the matching refspec pairs up. A destination is
-    /// pushed once, and not at all if a negative refspec names it.
+    /// the branches the matching refspec pairs up. As in git, a pattern
+    /// or the matching refspec leaves alone a destination something else
+    /// is already being pushed to, while explicit refspecs all go out
+    /// (two to one ref, and the remote refuses both). A negative refspec
+    /// drops every update to a ref it names.
     func expandedPushRefspecs(_ plan: PushPlan, remoteRefs: Set<String>?) throws -> [String] {
         var refspecs = plan.explicit
+        var claimed = Set(plan.explicit.compactMap { destinationRefName(fromPushRefspec: $0) })
+        func expand(_ force: Bool, _ source: String, _ destination: String) {
+            guard claimed.insert(destination).inserted else { return }
+            refspecs.append("\(force ? "+" : "")\(source):\(destination)")
+        }
         let needsLocalRefs = !plan.patterns.isEmpty || (plan.matching != nil && remoteRefs != nil)
         let localRefs = needsLocalRefs ? try localReferenceNames() : []
         for pattern in plan.patterns {
             for name in localRefs {
                 guard let destination = pattern.destination(for: name) else { continue }
-                refspecs.append("\(pattern.force ? "+" : "")\(name):\(destination)")
+                expand(pattern.force, name, destination)
             }
         }
         if let force = plan.matching, let remoteRefs {
             for name in localRefs where name.hasPrefix("refs/heads/") && remoteRefs.contains(name) {
-                refspecs.append("\(force ? "+" : "")\(name):\(name)")
+                expand(force, name, name)
             }
         }
-        var destinations = Set<String>()
+        guard !plan.negatives.isEmpty else { return refspecs }
         return refspecs.filter { refspec in
             guard let destination = destinationRefName(fromPushRefspec: refspec) else { return true }
-            guard destinations.insert(destination).inserted else { return false }
             return !plan.negatives.contains { PushPlan.wildcard($0, matching: destination) != nil }
         }
     }
