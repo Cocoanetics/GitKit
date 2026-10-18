@@ -116,7 +116,9 @@ private struct TagMapping {
     /// whether a forced refspec does; `explicitOnly` leaves out the tag
     /// refspec `--tags` adds.
     func tags(for name: String, explicitOnly: Bool) -> [(tag: String, forced: Bool)] {
-        specs.compactMap { spec in
+        // A negative refspec excludes the ref from every mapping.
+        guard !isExcluded(name) else { return [] }
+        return specs.compactMap { spec in
             guard !spec.text.hasPrefix("^"), !(explicitOnly && spec.text == Repository.allTagsRefspec),
                   let dst = git_refspec_dst(spec.spec), dst.pointee != 0,
                   fetches(spec.spec, name)

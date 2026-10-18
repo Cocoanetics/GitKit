@@ -299,6 +299,17 @@ struct FetchTagsTests {
         #expect(output.components(separatedBy: " -> v1\n").count == 2)
     }
 
+    @Test("a negative refspec excludes a tag from an explicit refspec too")
+    func excludedExplicitSource() throws {
+        let (upstream, clone) = try makeUpstreamAndClone()
+        defer { [upstream, clone].forEach { try? FileManager.default.removeItem(at: $0) } }
+        let before = try runGit(["rev-parse", "v1"], in: clone)
+        try runGit(["tag", "-f", "v1", "main"], in: upstream)
+        let (_, error) = try fetch(clone, ["refs/tags/v1:refs/tags/v1", "^refs/tags/v1"], tags: .all)
+        #expect(error == nil)
+        #expect(try runGit(["rev-parse", "v1"], in: clone) == before)
+    }
+
     @Test("a short source is the ref git picks for it: a tag before a branch")
     func shortSourcePrefersTag() throws {
         let (upstream, clone) = try makeUpstreamAndClone()
