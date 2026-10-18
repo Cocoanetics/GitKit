@@ -193,6 +193,8 @@ struct RepositoryTests {
 
         try runGit(["switch", "-c", "local"], in: dir)
         #expect(try push("local:remote").hasSuffix(" * [new branch]      local -> remote\n"))
+        #expect(try push("HEAD:refs/heads/review").hasSuffix(
+            " * [new branch]      HEAD -> review\n"))
 
         // core.abbrev widens the IDs and the column.
         try runGit(["switch", "-q", "main"], in: dir)

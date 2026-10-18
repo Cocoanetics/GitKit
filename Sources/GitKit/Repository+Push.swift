@@ -92,6 +92,7 @@ extension Repository {
             : forcePushRefspec(qualifiedRefspec)
         reporter.repository = repo
         reporter.abbreviation = summaryAbbreviation()
+        reporter.typedSource = typedPushSource(refspec)
         let pushLease = try lease.map {
             try pushLeaseCheck(
                 $0, remote: remote, refspec: pushRefspec, isConfigured: isConfigured)
@@ -140,6 +141,15 @@ extension Repository {
             try setUpstreamForRefspec(
                 remote: remote, refspec: pushRefspec, isConfigured: isConfigured)
         }
+    }
+
+    /// The source of `refspec` as typed — `HEAD` in `HEAD:refs/heads/x`,
+    /// `main` in `+main` — or `nil` for a deletion (`:dst`).
+    private func typedPushSource(_ refspec: String) -> String? {
+        let body = refspec.hasPrefix("+") ? refspec.dropFirst() : Substring(refspec)
+        let source = body.split(separator: ":", maxSplits: 1,
+                                omittingEmptySubsequences: false).first ?? ""
+        return source.isEmpty ? nil : String(source)
     }
 
     /// `core.abbrev` as git applies it to the push summary: a number of
