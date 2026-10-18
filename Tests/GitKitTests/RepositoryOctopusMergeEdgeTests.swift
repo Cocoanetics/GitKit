@@ -378,6 +378,78 @@ extension RepositoryOctopusMergeTests {
         #expect(try String(contentsOf: dir.appendingPathComponent("sub/s"), encoding: .utf8) == "1\n")
     }
 
+    @Test("a file of HEAD's an earlier step deleted is no untracked file for a later step")
+    func staleTrackedFile() throws {
+        let dir = try makeRepository()
+        // HEAD tracks d/f where the base had a file d; `gone` deletes d/f;
+        // `back` puts d/f in place of the base's d again.
+        try git(["checkout", "-q", "-b", "root", "base"], in: dir)
+        try write("d\n", to: "d", in: dir)
+        try git(["add", "d"], in: dir)
+        try git(["commit", "-q", "-m", "root"], in: dir)
+        try git(["checkout", "-q", "-b", "hd"], in: dir)
+        try git(["rm", "-q", "d"], in: dir)
+        try FileManager.default.createDirectory(at: dir.appendingPathComponent("d"), withIntermediateDirectories: true)
+        try write("f\n", to: "d/f", in: dir)
+        try git(["add", "d"], in: dir)
+        try git(["commit", "-q", "-m", "head"], in: dir)
+        try git(["checkout", "-q", "-b", "gone"], in: dir)
+        try git(["rm", "-q", "d/f"], in: dir)
+        try git(["commit", "-q", "-m", "gone"], in: dir)
+        try git(["checkout", "-q", "-b", "other", "root"], in: dir)
+        try write("o\n", to: "o", in: dir)
+        try git(["add", "o"], in: dir)
+        try git(["commit", "-q", "-m", "other"], in: dir)
+        try git(["checkout", "-q", "-b", "back", "root"], in: dir)
+        try git(["rm", "-q", "d"], in: dir)
+        try FileManager.default.createDirectory(at: dir.appendingPathComponent("d"), withIntermediateDirectories: true)
+        try write("back\n", to: "d/f", in: dir)
+        try git(["add", "d"], in: dir)
+        try git(["commit", "-q", "-m", "back"], in: dir)
+        try git(["checkout", "-q", "hd"], in: dir)
+
+        let other = try twin(of: dir)
+        let result = try merge(["gone", "other", "back"], in: dir)
+        _ = try git(["merge", "-q", "-m", "Merge branches", "gone", "other", "back"], in: other, check: false)
+        #expect(!(result.steps.last?.automatic?.contains(.addedOverUntracked(path: "d/f")) ?? false))
+        #expect(try state(of: dir) == state(of: other))
+    }
+
+    @Test("a skip-worktree symbolic link pointing elsewhere stops the merge", arguments: [false, true])
+    func skipWorktreeSymlink(changed: Bool) throws {
+        let dir = try makeRepository()
+        try git(["checkout", "-q", "-b", "link", "base"], in: dir)
+        try FileManager.default.createSymbolicLink(
+            atPath: dir.appendingPathComponent("lnk").path, withDestinationPath: "x")
+        try git(["add", "lnk"], in: dir)
+        try git(["commit", "-q", "-m", "link"], in: dir)
+        try git(["checkout", "-q", "-b", "relink"], in: dir)
+        try FileManager.default.removeItem(at: dir.appendingPathComponent("lnk"))
+        try FileManager.default.createSymbolicLink(
+            atPath: dir.appendingPathComponent("lnk").path, withDestinationPath: "z")
+        try git(["commit", "-q", "-am", "relink"], in: dir)
+        try git(["checkout", "-q", "link"], in: dir)
+        try git(["update-index", "--skip-worktree", "lnk"], in: dir)
+        if changed {
+            try FileManager.default.removeItem(at: dir.appendingPathComponent("lnk"))
+            try FileManager.default.createSymbolicLink(
+                atPath: dir.appendingPathComponent("lnk").path, withDestinationPath: "y")
+        } else {
+            // As git does in place (a copy's new file times make git's
+            // skip-worktree check refuse, so no twin here).
+            let result = try merge(["relink", "c"], in: dir)
+            guard case .mergeCommit = result.outcome else {
+                Issue.record("expected a merge commit, got \(result.outcome)"); return
+            }
+            return
+        }
+        let other = try twin(of: dir)
+        let result = try merge(["relink", "c"], in: dir)
+        #expect(try git(["merge", "-q", "-m", "Merge branches", "relink", "c"], in: other, check: false).status == 2)
+        #expect(result.outcome == .failed(.notUpToDate(path: "lnk")))
+        #expect(try state(of: dir) == state(of: other))
+    }
+
     @Test("refuses a bare repository before anything changes")
     func refusesBare() throws {
         let dir = try makeRepository()

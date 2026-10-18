@@ -149,7 +149,7 @@ extension Repository {
             var automatic: [OctopusPathMerge]
             do {
                 automatic = try unmerged(bases: baseTrees, ours: mergedTree, theirs: theirTree, merged: merged,
-                                         mergedContent: &mergedContent)
+                                         headTree: headTree, mergedContent: &mergedContent)
             } catch {
                 git_index_free(merged)
                 throw error

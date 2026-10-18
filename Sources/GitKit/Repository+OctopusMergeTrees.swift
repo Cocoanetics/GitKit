@@ -62,7 +62,7 @@ extension Repository {
     /// ancestor, as if both had added it. `merged`, libgit2's merge,
     /// gets git's conflicts for paths it resolved otherwise.
     func unmerged(
-        bases: [git_oid], ours: git_oid, theirs: git_oid, merged: OpaquePointer?,
+        bases: [git_oid], ours: git_oid, theirs: git_oid, merged: OpaquePointer?, headTree: git_oid,
         mergedContent: inout [String: git_oid]
     ) throws -> [OctopusPathMerge] {
         var paths: Set<String> = []
@@ -127,8 +127,8 @@ extension Repository {
             }
         }
         var reported = Set(result.map(\.path))
-        try readTreeDirectoryFileCases(paths: paths, bases: bases, ours: ours, theirs: theirs,
-                                       merged: merged, result: &result, reported: &reported)
+        try readTreeDirectoryFileCases(paths: paths, bases: bases, ours: ours, theirs: theirs, merged: merged,
+                                       headTree: headTree, result: &result, reported: &reported)
 
         // A file where the other side has a directory: libgit2 leaves it
         // unmerged, and git reports their side's path.
@@ -178,7 +178,7 @@ extension Repository {
     /// and a path their side adds below a file that doesn't stay.
     private func readTreeDirectoryFileCases(
         paths: Set<String>, bases: [git_oid], ours: git_oid, theirs: git_oid, merged: OpaquePointer?,
-        result: inout [OctopusPathMerge], reported: inout Set<String>
+        headTree: git_oid, result: inout [OctopusPathMerge], reported: inout Set<String>
     ) throws {
         // A file our side deleted, the others kept, where our side now
         // has a directory: read-tree leaves it, and git-merge-one-file
@@ -228,7 +228,10 @@ extension Repository {
                 _ = git_index_conflict_remove(merged, path)
                 // A file there the index doesn't track: git-merge-one-file
                 // refuses to overwrite it, leaving their side unmerged.
-                if Self.exists(workdir + path), let their = try entry(trees[1], path) {
+                // Untracked: there on disk, and not a file of HEAD's, which
+                // an earlier step's read-tree -u would have removed.
+                let untracked = try Self.exists(workdir + path) && withTree(headTree) { try entry($0, path) == nil }
+                if untracked, let their = try entry(trees[1], path) {
                     result.append(.addedOverUntracked(path: path))
                     try conflict(path, ancestor: nil, ours: nil, theirs: their, in: merged)
                     continue
@@ -429,10 +432,21 @@ extension Repository {
             guard let entry = git_index_get_byindex(index, i)?.pointee,
                   entry.flags_extended & UInt16(GIT_INDEX_ENTRY_SKIP_WORKTREE.rawValue) != 0 else { continue }
             let path = String(cString: entry.path)
-            guard (try? FileManager.default.attributesOfItem(atPath: workdir + path))?[.type] as? FileAttributeType
-                    == .typeRegular else { continue }
+            // Gone is up to date; otherwise what's there must be what
+            // the entry records: a link's target, or a file's content.
+            guard let type = (try? FileManager.default.attributesOfItem(atPath: workdir + path))?[.type]
+                    as? FileAttributeType else { continue }
             var actual = git_oid(), expected = entry.id
-            guard git_odb_hashfile(&actual, workdir + path, GIT_OBJECT_BLOB) == 0 else { continue }
+            if entry.mode == 0o120000 {
+                guard type == .typeSymbolicLink,
+                      let target = try? FileManager.default.destinationOfSymbolicLink(atPath: workdir + path)
+                else { changes[path] = false; continue }
+                let bytes = Array(target.utf8)
+                try check(git_odb_hash(&actual, bytes, bytes.count, GIT_OBJECT_BLOB))
+            } else {
+                guard type == .typeRegular, git_odb_hashfile(&actual, workdir + path, GIT_OBJECT_BLOB) == 0
+                else { changes[path] = false; continue }
+            }
             if git_oid_equal(&actual, &expected) == 0 { changes[path] = false }
         }
         for i in 0..<git_diff_num_deltas(diff) {
