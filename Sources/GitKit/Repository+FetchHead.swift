@@ -84,13 +84,14 @@ extension Repository {
         // FETCH_HEAD holds a ref once per refspec, so the n-th refspec to
         // fetch a ref takes its n-th entry (and with it, whether it's to
         // be merged). Ref names compare as bytes, as git compares them.
+        let occurrencesByName = Dictionary(grouping: entries) { Array($0.name.utf8) }
         var taken: [[UInt8]: Int] = [:]
         for (index, refspec) in parsed.enumerated() {
             var shown = Set<[UInt8]>()
             for entry in entries
             where Self.refspec(refspec.spec, fetches: entry.name) && shown.insert(Array(entry.name.utf8)).inserted {
                 let name = Array(entry.name.utf8)
-                let occurrences = entries.filter { $0.name.utf8.elementsEqual(name) }
+                let occurrences = occurrencesByName[name] ?? [entry]
                 let occurrence = occurrences[min(taken[name, default: 0], occurrences.count - 1)]
                 taken[name, default: 0] += 1
                 guard !refspec.mapped else { continue }
