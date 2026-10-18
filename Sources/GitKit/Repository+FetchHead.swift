@@ -41,11 +41,6 @@ extension Repository {
                 return (spec, git_refspec_dst(spec).map { $0.pointee != 0 } ?? false)
             }
         defer { parsed.forEach { git_refspec_free($0.spec) } }
-        // The refspec a line comes from, by position: git lists what
-        // refspecs given on the command line fetched in their order.
-        func fetcher(of name: String, mapped: Bool) -> Int? {
-            parsed.firstIndex { $0.mapped == mapped && Self.refspec($0.spec, fetches: name) }
-        }
         // An update the refspecs asked for, as opposed to an
         // opportunistic one of another remote-tracking ref.
         func storer(of name: String, into local: String) -> Int? {
@@ -83,16 +78,28 @@ extension Repository {
                 continue
             }
         }
-        // A ref a source-only refspec fetched gets its FETCH_HEAD line,
-        // whatever else fetched it too (FETCH_HEAD lists it once per
-        // refspec; git shows it once).
-        var shown = Set<[UInt8]>()  // ref names as bytes, as git compares them
-        for entry in entries where shown.insert(Array(entry.name.utf8)).inserted {
-            guard let refspec = fetcher(of: entry.name, mapped: false) else { continue }
-            let (kind, what) = Self.fetchHeadDescription(of: entry.name)
-            ranked.append(.init(rank: entry.merge ? 1 : 2, refspec: refspec, key: entry.name, line: FetchSummaryLine(
-                kind: .fetchHead, flag: "*", summary: kind,
-                remoteRef: entry.name, remote: what, localRef: "FETCH_HEAD", local: "FETCH_HEAD")))
+        // Each source-only refspec gets a FETCH_HEAD line for each ref it
+        // fetched, in refspec order: `main dev main` lists `main` twice,
+        // as FETCH_HEAD does, while `main main:copy` lists it once.
+        // FETCH_HEAD holds a ref once per refspec, so the n-th refspec to
+        // fetch a ref takes its n-th entry (and with it, whether it's to
+        // be merged). Ref names compare as bytes, as git compares them.
+        var taken: [[UInt8]: Int] = [:]
+        for (index, refspec) in parsed.enumerated() {
+            var shown = Set<[UInt8]>()
+            for entry in entries
+            where Self.refspec(refspec.spec, fetches: entry.name) && shown.insert(Array(entry.name.utf8)).inserted {
+                let name = Array(entry.name.utf8)
+                let occurrences = entries.filter { $0.name.utf8.elementsEqual(name) }
+                let occurrence = occurrences[min(taken[name, default: 0], occurrences.count - 1)]
+                taken[name, default: 0] += 1
+                guard !refspec.mapped else { continue }
+                let (kind, what) = Self.fetchHeadDescription(of: entry.name)
+                let line = FetchSummaryLine(
+                    kind: .fetchHead, flag: "*", summary: kind,
+                    remoteRef: entry.name, remote: what, localRef: "FETCH_HEAD", local: "FETCH_HEAD")
+                ranked.append(.init(rank: occurrence.merge ? 1 : 2, refspec: index, key: entry.name, line: line))
+            }
         }
         return ranked.enumerated()
             .sorted { lhs, rhs in

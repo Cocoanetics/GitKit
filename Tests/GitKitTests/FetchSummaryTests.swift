@@ -118,6 +118,17 @@ struct FetchSummaryTests {
         #expect(output == expected)
     }
 
+    @Test("a source-only refspec given twice lists its ref twice, as git does")
+    func repeatedSourceOnlyRefspecs() throws {
+        let fixture = try makeFixture()
+        defer { fixture.remove() }
+        let (git, kit) = (fixture.git, fixture.kit)
+        for refspecs in [["main", "main"], ["main", "dev", "main"], ["main:refs/heads/copy", "main"]] {
+            let expected = try runGit(["fetch", "origin"] + refspecs, in: git)
+            #expect(try gitKitFetch(kit, refspecs: refspecs) == expected, "\(refspecs)")
+        }
+    }
+
     @Test("the ref column is sized in terminal columns but padded in bytes, as git does")
     func wideRefNames() throws {
         let fixture = try makeFixture()
