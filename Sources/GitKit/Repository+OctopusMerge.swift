@@ -125,6 +125,8 @@ extension Repository {
         var conflictedPaths: [String] = []
         // Paths git-merge-one-file leaves with our content, unmerged.
         var keepOurs: [String] = []
+        // Content merged cleanly for paths that conflict on modes alone.
+        var mergedContent: [String: git_oid] = [:]
 
         for (name, oid) in zip(heads, oids) {
             if conflicted != nil {
@@ -158,7 +160,8 @@ extension Repository {
             let merged = try mergeTrees(base: try virtualBase(bases), ours: mergedTree, theirs: theirTree)
             var automatic: [OctopusPathMerge]
             do {
-                automatic = try unmerged(bases: baseTrees, ours: mergedTree, theirs: theirTree, merged: merged)
+                automatic = try unmerged(bases: baseTrees, ours: mergedTree, theirs: theirTree, merged: merged,
+                                         mergedContent: &mergedContent)
             } catch {
                 git_index_free(merged)
                 throw error
@@ -192,7 +195,8 @@ extension Repository {
 
         try writeOrigHead(head)
         if let conflicted {
-            try checkOutConflicts(conflicted, from: headTree, theirLabel: heads.last ?? "", keepingOurs: keepOurs)
+            try checkOutConflicts(conflicted, from: headTree, theirLabel: heads.last ?? "", keepingOurs: keepOurs,
+                                  mergedContent: mergedContent)
             try writeMergeState(oids: oids, message: message, conflicts: conflictedPaths,
                                 noFastForward: noFastForward)
             return OctopusMergeResult(steps: steps, outcome: .conflicts(paths: conflictedPaths))

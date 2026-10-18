@@ -624,6 +624,41 @@ extension RepositoryOctopusMergeTests {
         #expect((try? FileManager.default.destinationOfSymbolicLink(atPath: link)) == nil)
     }
 
+    @Test("a mode only one side changed fails the content merge, as git-merge-one-file does",
+          arguments: [(false, false), (true, false), (false, true)])
+    func permissionsConflict(executableOurs: Bool, conflictingContent: Bool) throws {
+        let dir = try makeRepository()
+        func branch(_ name: String, _ text: String, executable: Bool) throws {
+            try git(["checkout", "-q", "-b", name, "base"], in: dir)
+            try write(text, to: "f", in: dir)
+            try FileManager.default.setAttributes([.posixPermissions: executable ? 0o755 : 0o644],
+                                                  ofItemAtPath: dir.appendingPathComponent("f").path)
+            try git(["commit", "-q", "-am", name], in: dir)
+        }
+        try branch("p1", "1p\n2\n3\n4\n5\n6\n7\n", executable: executableOurs)
+        try branch("p2", conflictingContent ? "1q\n2\n3\n4\n5\n6\n7\n" : "1\n2\n3\n4\n5\n6\n7p\n",
+                   executable: !executableOurs)
+        try git(["checkout", "-q", "main"], in: dir)
+        let heads = executableOurs ? ["c", "p2", "p1"] : ["c", "p1", "p2"]
+        let other = try twin(of: dir)
+        let result = try merge(heads, in: dir)
+        #expect(try git(["merge", "-q", "-m", "Merge branches"] + heads, in: other, check: false).status == 1)
+        guard case .permissionsConflict(let path, _, _, _, let content)? = result.steps.last?.automatic?.first else {
+            Issue.record("expected a permissions conflict, got \(String(describing: result.steps.last))"); return
+        }
+        #expect(path == "f" && content == conflictingContent)
+        #expect(try state(of: dir) == state(of: other))
+        if !conflictingContent {
+            #expect(try String(contentsOf: dir.appendingPathComponent("f"), encoding: .utf8)
+                    == String(contentsOf: other.appendingPathComponent("f"), encoding: .utf8))
+        }
+        let mode = { (url: URL) in
+            try FileManager.default.attributesOfItem(atPath: url.appendingPathComponent("f").path)[.posixPermissions]
+                as? Int
+        }
+        #expect(try mode(dir) == mode(other))
+    }
+
     @Test("refuses a bare repository before anything changes")
     func refusesBare() throws {
         let dir = try makeRepository()

@@ -65,6 +65,11 @@ public enum OctopusPathMerge: Sendable, Equatable {
     /// `ERROR: but permissions conflict <ours>-><theirs>.`: the same
     /// content, added with different modes (octal, as `100644`).
     case addedWithDifferentModes(path: String, ours: String, theirs: String)
+    /// `Auto-merging <path>`, then `ERROR: permissions conflict: <base>-><ours>,<theirs> in <path>`
+    /// (`content conflict, permissions conflict: …` when the content
+    /// conflicts too): both sides changed it and their modes (octal, as
+    /// `100644`) differ. The merged content, if any, is in the work tree.
+    case permissionsConflict(path: String, base: String, ours: String, theirs: String, contentConflict: Bool)
     /// `ERROR: <path>: Not merging symbolic link changes.`: both sides
     /// changed it, one to a symbolic link. Ours stays in the work tree.
     case symlink(path: String)
@@ -76,7 +81,8 @@ public enum OctopusPathMerge: Sendable, Equatable {
         switch self {
         case .merged(let path), .conflict(let path), .addedInBoth(let path, _),
              .notHandled(let path, _, _, _), .addedOverDirectory(let path, _), .symlink(let path),
-             .submodule(let path), .addedWithDifferentModes(let path, _, _), .removed(let path):
+             .submodule(let path), .addedWithDifferentModes(let path, _, _), .removed(let path),
+             .permissionsConflict(let path, _, _, _, _):
             return path
         }
     }

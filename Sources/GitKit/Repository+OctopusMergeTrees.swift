@@ -62,7 +62,8 @@ extension Repository {
     /// ancestor, as if both had added it. `merged`, libgit2's merge,
     /// gets git's conflicts for paths it resolved otherwise.
     func unmerged(
-        bases: [git_oid], ours: git_oid, theirs: git_oid, merged: OpaquePointer?
+        bases: [git_oid], ours: git_oid, theirs: git_oid, merged: OpaquePointer?,
+        mergedContent: inout [String: git_oid]
     ) throws -> [OctopusPathMerge] {
         var paths: Set<String> = []
         for base in bases {
@@ -86,6 +87,18 @@ extension Repository {
                     var a: UnsafePointer<git_index_entry>?, o: UnsafePointer<git_index_entry>?
                     var t: UnsafePointer<git_index_entry>?
                     let conflicted = git_index_conflict_get(&a, &o, &t, merged, path) == 0
+                    // Modes that differ fail git-merge-one-file however
+                    // the content merged, which stays in the work tree.
+                    if let our, let their, let ancestor, our.mode != their.mode {
+                        result.append(.permissionsConflict(
+                            path: path, base: String(ancestor.mode, radix: 8), ours: String(our.mode, radix: 8),
+                            theirs: String(their.mode, radix: 8), contentConflict: conflicted))
+                        if !conflicted, let clean = git_index_get_bypath(merged, path, 0) {
+                            mergedContent[path] = clean.pointee.id
+                        }
+                        try conflict(path, ancestor: ancestor, ours: our, theirs: their, in: merged)
+                        continue
+                    }
                     result.append(conflicted ? .conflict(path: path) : .merged(path: path))
                     continue
                 }
@@ -414,271 +427,5 @@ extension Repository {
             }
         }
         return nil
-    }
-
-    /// Whether anything is at `path`, a symbolic link counted as itself
-    /// even when what it points to is missing (lstat, not stat).
-    static func exists(_ path: String) -> Bool {
-        (try? FileManager.default.attributesOfItem(atPath: path)) != nil
-    }
-
-    /// Check out what the merge changes and nothing else, as read-tree
-    /// -u updates the entries it changes: a file deleted from the work
-    /// tree is written again only where the merge changes it.
-    func withCheckout(
-        of paths: [String], strategy: UInt32, _ body: (inout git_checkout_options) throws -> Void
-    ) throws {
-        guard !paths.isEmpty else { return } // no paths would mean every path
-        var options = git_checkout_options()
-        try check(git_checkout_options_init(&options, UInt32(GIT_CHECKOUT_OPTIONS_VERSION)))
-        options.checkout_strategy = strategy | UInt32(GIT_CHECKOUT_RECREATE_MISSING.rawValue)
-            | UInt32(GIT_CHECKOUT_DISABLE_PATHSPEC_MATCH.rawValue)
-        var strings: [UnsafeMutablePointer<CChar>?] = paths.map { strdup($0) }
-        defer { strings.forEach { free($0) } }
-        try strings.withUnsafeMutableBufferPointer { buffer in
-            options.paths = git_strarray(strings: buffer.baseAddress, count: buffer.count)
-            try body(&options)
-        }
-    }
-
-    func checkOutConflicts(
-        _ merged: OpaquePointer?, from headTree: git_oid, theirLabel: String, keepingOurs: [String]
-    ) throws {
-        // An unmerged path one side deleted has nothing to write where
-        // the work tree no longer has it; libgit2 can't recreate it.
-        let workdir = git_repository_workdir(repo).map { String(cString: $0) } ?? ""
-        let changed = try changes(from: headTree, to: merged).keys.sorted(by: Self.indexOrder)
-        let skipped = changed.filter { path in
-            var ancestor, ours, theirs: UnsafePointer<git_index_entry>?
-            guard git_index_conflict_get(&ancestor, &ours, &theirs, merged, path) == 0, ours == nil || theirs == nil
-            else { return false }
-            return !Self.exists(workdir + path)
-        }
-        let paths = changed.filter { !skipped.contains($0) }
-        try withCheckout(of: paths, strategy: UInt32(GIT_CHECKOUT_SAFE.rawValue)
-                         | UInt32(GIT_CHECKOUT_ALLOW_CONFLICTS.rawValue)) { options in
-            try "HEAD".withCString { ours in
-                try theirLabel.withCString { theirs in
-                    options.our_label = ours
-                    options.their_label = theirs
-                    // Checkout writes the merged entries, conflicts and
-                    // all, to the repository's index.
-                    try check(git_checkout_index(repo, merged, &options))
-                }
-            }
-        }
-        // Their stages go to the index all the same.
-        if !skipped.isEmpty {
-            var index: OpaquePointer?
-            try check(git_repository_index(&index, repo))
-            defer { git_index_free(index) }
-            for path in skipped {
-                var ancestor, ours, theirs: UnsafePointer<git_index_entry>?
-                guard git_index_conflict_get(&ancestor, &ours, &theirs, merged, path) == 0 else { continue }
-                _ = git_index_remove_bypath(index, path)
-                try check(git_index_conflict_add(index, ancestor, ours, theirs))
-            }
-            try check(git_index_write(index))
-        }
-        let root = URL(fileURLWithPath: workdir)
-        func write(_ oid: git_oid, to path: String) throws {
-            // Where a directory stands, git leaves it.
-            var isDirectory: ObjCBool = false
-            if FileManager.default.fileExists(atPath: root.appendingPathComponent(path).path,
-                                              isDirectory: &isDirectory), isDirectory.boolValue { return }
-            var oid = oid
-            var blob: OpaquePointer?
-            try check(git_blob_lookup(&blob, repo, &oid))
-            defer { git_blob_free(blob) }
-            let data = Data(bytes: git_blob_rawcontent(blob), count: Int(git_blob_rawsize(blob)))
-            try data.write(to: root.appendingPathComponent(path))
-        }
-        // libgit2 writes a side's file next to a directory in its way as
-        // `<path>~<label>`; git writes none.
-        for path in try unmergedPaths(merged) {
-            for label in ["HEAD", theirLabel] {
-                let side = root.appendingPathComponent(path + "~" + label)
-                if git_index_get_bypath(merged, path + "~" + label, 0) == nil {
-                    try? FileManager.default.removeItem(at: side)
-                }
-            }
-        }
-        // git-merge-one-file leaves these with our side's content.
-        for path in keepingOurs {
-            var ancestor, ours, theirs: UnsafePointer<git_index_entry>?
-            guard git_index_conflict_get(&ancestor, &ours, &theirs, merged, path) == 0, let ours else { continue }
-            switch ours.pointee.mode {
-            case 0o160000:
-                // A submodule stays as checkout left it.
-                continue
-            case 0o120000:
-                var oid = ours.pointee.id
-                var blob: OpaquePointer?
-                try check(git_blob_lookup(&blob, repo, &oid))
-                defer { git_blob_free(blob) }
-                let bytes = Data(bytes: git_blob_rawcontent(blob), count: Int(git_blob_rawsize(blob)))
-                let target = String(decoding: bytes, as: UTF8.self)
-                let link = root.appendingPathComponent(path)
-                try? FileManager.default.removeItem(at: link)
-                try FileManager.default.createSymbolicLink(atPath: link.path, withDestinationPath: target)
-            default:
-                try write(ours.pointee.id, to: path)
-            }
-        }
-        // A merged file where unmerged paths sit below it: read-tree
-        // leaves the file, and git-merge-one-file can't add the rest.
-        let unmerged = try unmergedPaths(merged)
-        for i in 0..<git_index_entrycount(merged) {
-            guard let entry = git_index_get_byindex(merged, i)?.pointee, (entry.flags >> 12) & 3 == 0 else { continue }
-            let file = String(cString: entry.path)
-            let below = unmerged.filter { $0.hasPrefix(file + "/") }
-            guard !below.isEmpty else { continue }
-            for path in below { try? FileManager.default.removeItem(at: root.appendingPathComponent(path)) }
-            let directory = root.appendingPathComponent(file)
-            if (try? FileManager.default.contentsOfDirectory(atPath: directory.path))?.isEmpty == false { continue }
-            try? FileManager.default.removeItem(at: directory)
-            try write(entry.id, to: file)
-        }
-    }
-
-    // MARK: Writing
-
-    func writeOrigHead(_ head: git_oid) throws {
-        var head = head
-        var ref: OpaquePointer?
-        try check(git_reference_create(&ref, repo, "ORIG_HEAD", &head, 1, nil))
-        git_reference_free(ref)
-    }
-
-    /// `MERGE_HEAD`, `MERGE_MSG` and `MERGE_MODE`, as git leaves them
-    /// for the commit that concludes a merge stopped by conflicts.
-    func writeMergeState(oids: [git_oid], message: String, conflicts: [String], noFastForward: Bool) throws {
-        guard let gitDir = try gitDir() else { return }
-        let dir = URL(fileURLWithPath: gitDir)
-        let heads = oids.map { oid -> String in
-            var oid = oid
-            return formatOID(&oid) + "\n"
-        }.joined()
-        try Data(heads.utf8).write(to: dir.appendingPathComponent("MERGE_HEAD"))
-        // Every line commented, as strbuf_add_commented_lines does: the
-        // path's first after a tab, any further after a space.
-        let comment = try commentString()
-        func commented(_ text: String) -> String {
-            text.split(separator: "\n", omittingEmptySubsequences: false).enumerated().map { index, line in
-                index == 0 ? "\(comment)\t\(line)\n" : line.isEmpty ? "\(comment)\n" : "\(comment) \(line)\n"
-            }.joined()
-        }
-        let text = message + "\n\n\(comment) Conflicts:\n" + conflicts.map(commented).joined()
-        try Data(text.utf8).write(to: dir.appendingPathComponent("MERGE_MSG"))
-        try Data((noFastForward ? "no-ff" : "").utf8).write(to: dir.appendingPathComponent("MERGE_MODE"))
-    }
-
-    /// What starts a comment line: the last of `core.commentChar` and
-    /// `core.commentString` configured (one setting to git), else `#`,
-    /// as is `auto` when git writes a merge's message.
-    func commentString() throws -> String {
-        var config: OpaquePointer?
-        try check(git_repository_config_snapshot(&config, repo))
-        defer { git_config_free(config) }
-        var iterator: UnsafeMutablePointer<git_config_iterator>?
-        try check(git_config_iterator_glob_new(&iterator, config, "^core\\.comment(char|string)$"))
-        defer { git_config_iterator_free(iterator) }
-        var value: String?
-        var entry: UnsafeMutablePointer<git_config_entry>?
-        while git_config_next(&entry, iterator) == 0, let entry {
-            value = entry.pointee.value.map { String(cString: $0) }
-        }
-        guard let value, !value.isEmpty, value.lowercased() != "auto" else { return "#" }
-        return value
-    }
-
-    /// Check out `tree` and commit it on HEAD with `parents`.
-    func commitMerge(
-        tree: git_oid, from headTree: git_oid, parents: [git_oid], message: String, author: Signature?,
-        env: [String: String]
-    ) throws -> String {
-        // A path the merge deletes that the work tree no longer has is
-        // only the index's business; libgit2 can't "recreate" it.
-        let workdir = git_repository_workdir(repo).map { String(cString: $0) } ?? ""
-        let changed = try diffEntries(headTree, tree)
-        let gone = changed.filter { $0.value.oid == nil && !Self.exists(workdir + $0.key) }
-        let paths = changed.keys.filter { gone[$0] == nil }.sorted(by: Self.indexOrder)
-        var commits: [OpaquePointer?] = []
-        defer { commits.forEach { git_commit_free($0) } }
-        for parent in parents {
-            var oid = parent
-            var commit: OpaquePointer?
-            try check(git_commit_lookup(&commit, repo, &oid))
-            commits.append(commit)
-        }
-        let authorSig = try SignatureResolver.resolve(role: .author, override: author, repo: repo, env: env)
-        defer { git_signature_free(authorSig) }
-        let committerSig = try SignatureResolver.resolve(role: .committer, repo: repo, env: env)
-        defer { git_signature_free(committerSig) }
-
-        return try withTree(tree) { tree in
-            try withCheckout(of: paths, strategy: UInt32(GIT_CHECKOUT_SAFE.rawValue)) { options in
-                try check(git_checkout_tree(repo, tree, &options))
-            }
-            if !gone.isEmpty {
-                var index: OpaquePointer?
-                try check(git_repository_index(&index, repo))
-                defer { git_index_free(index) }
-                for path in gone.keys { _ = git_index_remove_bypath(index, path) }
-                try check(git_index_write(index))
-            }
-            var commitOID = git_oid()
-            _ = try commits.withUnsafeMutableBufferPointer { buffer in
-                try message.withCString { text in
-                    try check(git_commit_create(
-                        &commitOID, repo, nil, authorSig, committerSig, nil,
-                        text, tree, buffer.count, buffer.baseAddress))
-                }
-            }
-            // HEAD need not be the first parent, so move it by hand.
-            let reflog = "merge: Merge made by the 'octopus' strategy."
-            var head: OpaquePointer?
-            try check(git_repository_head(&head, repo))
-            defer { git_reference_free(head) }
-            if git_reference_is_branch(head) == 1 {
-                var moved: OpaquePointer?
-                try check(git_reference_set_target(&moved, head, &commitOID, reflog))
-                git_reference_free(moved)
-            } else {
-                try check(git_repository_set_head_detached(repo, &commitOID))
-            }
-            return formatOID(&commitOID)
-        }
-    }
-
-    func mergeStats(from old: git_oid, to new: git_oid) throws
-        -> (summary: String, added: [String], deleted: [String]) {
-        try withTree(old) { old in
-            try withTree(new) { new in
-                var diff: OpaquePointer?
-                try check(git_diff_tree_to_tree(&diff, repo, old, new, nil))
-                defer { git_diff_free(diff) }
-                var stats: OpaquePointer?
-                try check(git_diff_get_stats(&stats, diff))
-                defer { git_diff_stats_free(stats) }
-                var buf = git_buf()
-                try check(git_diff_stats_to_buf(&buf, stats, GIT_DIFF_STATS_FULL, 80))
-                defer { git_buf_dispose(&buf) }
-                let summary = (buf.ptr.map { String(cString: $0) } ?? "")
-                    .trimmingCharacters(in: CharacterSet(charactersIn: "\n"))
-                var added: [String] = [], deleted: [String] = []
-                for i in 0..<git_diff_num_deltas(diff) {
-                    guard let delta = git_diff_get_delta(diff, i)?.pointee else { continue }
-                    if delta.status == GIT_DELTA_ADDED {
-                        added.append(" create mode \(String(format: "%06o", delta.new_file.mode)) "
-                                     + String(cString: delta.new_file.path))
-                    } else if delta.status == GIT_DELTA_DELETED {
-                        deleted.append(" delete mode \(String(format: "%06o", delta.old_file.mode)) "
-                                       + String(cString: delta.old_file.path))
-                    }
-                }
-                return (summary, added, deleted)
-            }
-        }
     }
 }
