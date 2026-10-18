@@ -216,6 +216,17 @@ struct RefspecSetTests {
         }
         #expect(log.text.hasPrefix("No refs in common and none specified; doing nothing.\n"))
 
+        // A remote whose only ref, an annotated tag, is excluded too.
+        let tagged = try makeBare()
+        defer { removing(tagged)() }
+        try runGit(["tag", "-a", "-m", "t", "t"], in: work)
+        try runGit(["push", "-q", tagged.path, "t"], in: work)
+        #expect(throws: Libgit2Error.self) {
+            try repo.push(remote: tagged.path,
+                          refspecs: ["refs/heads/*:refs/heads/*", "^refs/heads/*", "^refs/tags/t"],
+                          setUpstream: false, progress: { _ in })
+        }
+
         // With some of the remote's refs left, there is just nothing to do.
         let quiet = OutputLog()
         try repo.push(remote: bare.path, refspecs: ["dev", "^refs/heads/dev"],

@@ -122,7 +122,8 @@ extension Repository {
         }
     }
 
-    /// The refs a connected remote advertises (`refs/…` only).
+    /// The refs a connected remote advertises (`refs/…` only, without
+    /// the peeled `^{}` entries of annotated tags, as git lists them).
     func advertisedRefs(_ remote: OpaquePointer?) throws -> Set<String> {
         var heads: UnsafeMutablePointer<UnsafePointer<git_remote_head>?>?
         var count = 0
@@ -131,7 +132,7 @@ extension Repository {
         for index in 0..<count {
             guard let name = heads?[index]?.pointee.name else { continue }
             let refname = String(cString: name)
-            if refname.hasPrefix("refs/") { names.insert(refname) }
+            if refname.hasPrefix("refs/"), !refname.hasSuffix("^{}") { names.insert(refname) }
         }
         return names
     }
@@ -151,8 +152,9 @@ extension Repository {
     /// Whether `name` is a ref name as git takes one in a refspec: a
     /// single level is fine, and with `pattern`, one `*`.
     private func isValidRefspecName(_ name: String, pattern: Bool) -> Bool {
-        var flags = GIT_REFERENCE_FORMAT_ALLOW_ONELEVEL.rawValue
-        if pattern { flags |= GIT_REFERENCE_FORMAT_REFSPEC_PATTERN.rawValue }
+        // C enums import as Int32 on Windows, UInt32 elsewhere.
+        var flags = UInt32(GIT_REFERENCE_FORMAT_ALLOW_ONELEVEL.rawValue)
+        if pattern { flags |= UInt32(GIT_REFERENCE_FORMAT_REFSPEC_PATTERN.rawValue) }
         // Normalizing only ever shortens the name.
         var buffer = [CChar](repeating: 0, count: name.utf8.count + 1)
         return git_reference_normalize_name(&buffer, buffer.count, name, flags) == 0
