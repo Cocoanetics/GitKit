@@ -224,9 +224,9 @@ extension Repository {
         do {
             sha = try commitMerge(tree: mergedTree, from: headTree, parents: parents, message: text,
                                   author: author, env: env)
-        } catch let locked as HeadLocked {
+        } catch let failed as HeadNotUpdated {
             try writeMergeState(oids: oids, message: message, conflicts: [], noFastForward: noFastForward)
-            return .headLocked(lockFile: locked.lockFile)
+            return .headNotUpdated(lockFile: failed.lockFile, reason: failed.reason)
         }
         let stats = try mergeStats(from: headTree, to: mergedTree)
         return .mergeCommit(sha: sha, statSummary: stats.summary, addedFiles: stats.added, deletedFiles: stats.deleted)

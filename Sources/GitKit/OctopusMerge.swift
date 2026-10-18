@@ -142,11 +142,13 @@ public enum OctopusMergeOutcome: Sendable, Equatable {
     case conflicts(paths: [String])
     /// The merge gave up and changed nothing.
     case failed(OctopusMergeFailure)
-    /// The merge is made and checked out, but HEAD's ref couldn't move
-    /// for the lock another process holds (`lockFile` exists): as git
-    /// leaves it, the merged tree is staged with `MERGE_HEAD`, `MERGE_MSG`
-    /// and `MERGE_MODE` written, for `git commit` to conclude.
-    case headLocked(lockFile: String)
+    /// The merge is made and checked out, but HEAD's ref couldn't move:
+    /// its lock, `lockFile`, couldn't be created, for `reason` (as
+    /// strerror says it: `File exists` where another process holds it,
+    /// `Permission denied`, …). As git leaves it, the merged tree is
+    /// staged with `MERGE_HEAD`, `MERGE_MSG` and `MERGE_MODE` written,
+    /// for `git commit` to conclude.
+    case headNotUpdated(lockFile: String, reason: String)
 }
 
 /// An octopus merge's steps and how it ended.

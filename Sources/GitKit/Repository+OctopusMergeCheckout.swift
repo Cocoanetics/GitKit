@@ -31,8 +31,9 @@ extension Repository {
     }
 
     /// HEAD's ref couldn't be moved: `lockFile` is in the way.
-    struct HeadLocked: Error {
+    struct HeadNotUpdated: Error {
         let lockFile: String
+        let reason: String
     }
 
     /// Whether anything is at `path`, a symbolic link counted as itself
@@ -342,13 +343,16 @@ extension Repository {
                 rc = git_repository_set_head_detached(repo, &commitOID)
             }
             if rc < 0 {
-                // Another process holds the ref's lock: git leaves the
-                // merge for `git commit` to conclude.
+                // The merge is checked out but HEAD can't move (another
+                // process holds the lock, or it can't be created): git
+                // leaves the merge for `git commit` to conclude.
                 let directory = detached ? git_repository_path(repo) : git_repository_commondir(repo)
                 let lock = (directory.map { String(cString: $0) } ?? "")
                     + (detached ? "HEAD" : String(cString: git_reference_name(head))) + ".lock"
-                if Self.exists(lock) { throw HeadLocked(lockFile: lock) }
-                try check(rc)
+                let message = Libgit2Error.last(code: rc).message
+                let reason = Self.exists(lock) ? "File exists"
+                    : message.range(of: "': ", options: .backwards).map { String(message[$0.upperBound...]) } ?? message
+                throw HeadNotUpdated(lockFile: lock, reason: reason)
             }
             return formatOID(&commitOID)
         }

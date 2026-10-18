@@ -541,7 +541,7 @@ extension RepositoryOctopusMergeTests {
         let head = try git(["rev-parse", "HEAD"], in: dir).stdout
         let result = try merge(["a", "b"], in: dir)
         #expect(try git(["merge", "-q", "-m", "Merge branches", "a", "b"], in: other, check: false).status == 128)
-        guard case .headLocked(let lockFile) = result.outcome else {
+        guard case .headNotUpdated(let lockFile, "File exists") = result.outcome else {
             Issue.record("expected the lock to stop HEAD, got \(result.outcome)"); return
         }
         #expect(lockFile.hasSuffix("/.git/refs/heads/main.lock"))
@@ -551,6 +551,37 @@ extension RepositoryOctopusMergeTests {
             try String(contentsOf: url.appendingPathComponent(".git/MERGE_MSG"), encoding: .utf8)
         }
         #expect(try message(dir) == message(other))
+    }
+
+    @Test("a ref that can't be written leaves the merge staged too, with git's reason")
+    func unwritableRefs() throws {
+        let dir = try makeRepository()
+        let heads = dir.appendingPathComponent(".git/refs/heads").path
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: heads)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: heads) }
+        // Where permissions don't hold (root), there's nothing to see.
+        guard !FileManager.default.isWritableFile(atPath: heads) else { return }
+        let result = try merge(["a", "b"], in: dir)
+        guard case .headNotUpdated(let lockFile, let reason) = result.outcome else {
+            Issue.record("expected HEAD not to move, got \(result.outcome)"); return
+        }
+        #expect(lockFile.hasSuffix("/.git/refs/heads/main.lock") && reason == "Permission denied")
+        #expect(FileManager.default.fileExists(atPath: dir.appendingPathComponent(".git/MERGE_HEAD").path))
+    }
+
+    @Test("a skip-worktree file checked out through a filter is up to date")
+    func skipWorktreeThroughFilter() throws {
+        let dir = try makeRepository()
+        try write("f text eol=crlf\n", to: ".gitattributes", in: dir)
+        try git(["add", ".gitattributes"], in: dir)
+        try git(["commit", "-q", "-m", "attributes"], in: dir)
+        try FileManager.default.removeItem(at: dir.appendingPathComponent("f"))
+        try git(["checkout", "-q", "--", "f"], in: dir)
+        try git(["update-index", "--skip-worktree", "f"], in: dir)
+        let result = try merge(["a", "c"], in: dir)
+        guard case .mergeCommit = result.outcome else {
+            Issue.record("expected a merge commit, got \(result.outcome)"); return
+        }
     }
 
     @Test("a side file the user had before a conflicted checkout stays")

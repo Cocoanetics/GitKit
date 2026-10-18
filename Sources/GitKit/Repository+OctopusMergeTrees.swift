@@ -448,7 +448,10 @@ extension Repository {
                 let bytes = Array(target.utf8)
                 try check(git_odb_hash(&actual, bytes, bytes.count, GIT_OBJECT_BLOB))
             } else {
-                guard type == .typeRegular, git_odb_hashfile(&actual, workdir + path, GIT_OBJECT_BLOB) == 0
+                // Through the clean filters (eol, ident, …), as the index
+                // records the content.
+                guard type == .typeRegular,
+                      git_repository_hashfile(&actual, repo, workdir + path, GIT_OBJECT_BLOB, path) == 0
                 else { changes[path] = false; continue }
                 let executable = ((attributes[.posixPermissions] as? Int) ?? 0) & 0o100 != 0
                 if fileMode, executable != (entry.mode == 0o100755) { changes[path] = false; continue }
