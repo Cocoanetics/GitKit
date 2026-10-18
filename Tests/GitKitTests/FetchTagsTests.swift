@@ -313,6 +313,18 @@ struct FetchTagsTests {
         #expect(try runGit(["rev-parse", "x"], in: clone) == before)
     }
 
+    @Test("an object ID fetched into a tag --tags excludes still lands there")
+    func objectIDIntoExcludedTag() throws {
+        let (upstream, clone) = try makeUpstreamAndClone()
+        defer { [upstream, clone].forEach { try? FileManager.default.removeItem(at: $0) } }
+        try runGit(["tag", "-d", "v1"], in: clone)
+        let sha = try runGit(["rev-parse", "main"], in: upstream)
+        let (output, error) = try fetch(clone, ["\(sha):refs/tags/v1", "^refs/tags/v1"], tags: .all)
+        #expect(error == nil)
+        #expect(output.contains(" * [new ref]         \(sha) -> v1\n"))
+        #expect(try runGit(["rev-parse", "v1"], in: clone) == sha)
+    }
+
     @Test("the remote's HEAD fetched into a tag doesn't clobber it")
     func headIntoTag() throws {
         let (upstream, clone) = try makeUpstreamAndClone()

@@ -261,9 +261,21 @@ extension Repository {
         }
 
         // The local tags the explicit refspecs store into, from any ref.
+        // An object ID (`<oid>:refs/tags/x`) is a source too.
+        let objectIDTags = refspecs.compactMap(Self.objectIDTagRefspec)
         let explicitTags = Set(remoteRefs.names.flatMap { name in
             tags(name, true).map { Array($0.tag.utf8) }
-        })
+        } + objectIDTags.map { Array($0.0.utf8) })
+        /// The source an explicit refspec stores into `tag` from, and its
+        /// object.
+        func explicitSource(of tag: String) -> (source: String, oid: git_oid)? {
+            if let name = remoteRefs.names.first(where: { name in
+                tags(name, true).contains { $0.tag.utf8.elementsEqual(tag.utf8) }
+            }), let oid = remoteRefs.object(of: name) {
+                return (name, oid)
+            }
+            return objectIDTags.first { $0.0.utf8.elementsEqual(tag.utf8) }.map { ($0.2, $0.1) }
+        }
         var refused: [String] = []
         // Ref names as bytes, as git compares them.
         var refusedNames = Set<[UInt8]>()
@@ -276,9 +288,8 @@ extension Repository {
                 if !explicitTags.contains(Array(name.utf8)) {
                     try restore(name)
                     lines.removeAll { $0.localRef.utf8.elementsEqual(name.utf8) }
-                } else if let source = remoteRefs.names.first(where: { source in
-                    tags(source, true).contains { $0.tag.utf8.elementsEqual(name.utf8) }
-                }), var value = remoteRefs.object(of: source) {
+                } else if let (source, oid) = explicitSource(of: name) {
+                    var value = oid
                     // libgit2 ran the tag itself over it too: the explicit
                     // source's value goes back, with one line for it.
                     var ref: OpaquePointer?
@@ -289,6 +300,14 @@ extension Repository {
                         guard line.localRef.utf8.elementsEqual(name.utf8) else { return false }
                         defer { seen = true }
                         return seen || !line.remoteRef.utf8.elementsEqual(source.utf8)
+                    }
+                    // An object ID's update came in under the tag's own
+                    // name; git shows it as a new ref from that ID.
+                    if remoteRefs.object(of: source) == nil, before[Array(name.utf8)] == nil,
+                       !lines.contains(where: { $0.localRef.utf8.elementsEqual(name.utf8) }) {
+                        lines.append(.init(
+                            kind: .update, flag: "*", summary: "[new ref]",
+                            remoteRef: source, remote: source, localRef: name, local: shortRefName(name)))
                     }
                 }
                 excluded.append(name)
@@ -337,7 +356,7 @@ extension Repository {
         }
         // A source that is an object ID names no advertised ref; it moves
         // a tag only when forced, like any other.
-        for (tag, oid, source) in refspecs.compactMap(Self.objectIDTagRefspec) {
+        for (tag, oid, source) in objectIDTags {
             var new = oid
             guard var old = before[Array(tag.utf8)], git_oid_equal(&old, &new) == 0,
                   !refusedNames.contains(Array(tag.utf8))
