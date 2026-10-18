@@ -467,7 +467,7 @@ private let combinedPushNegotiationTrampoline: git_push_negotiation = {
                   let destination = update.dst_refname else { continue }
             var old = update.src
             var new = update.dst
-            box.reporter!.pushUpdates[String(cString: destination)] = ProgressReporter.PushUpdate(
+            box.reporter!.pushUpdates[Array(String(cString: destination).utf8)] = ProgressReporter.PushUpdate(
                 source: update.src_refname.map { String(cString: $0) } ?? "",
                 oldID: git_oid_is_zero(&old) == 1 ? nil : old,
                 newID: git_oid_is_zero(&new) == 1 ? nil : new)
@@ -525,9 +525,9 @@ private let combinedPushRefTrampoline: git_push_update_reference_cb = {
     guard box.reporter != nil else { return 0 }
     let refname = String(cString: refnamePtr)
     let status = statusPtr.map { String(cString: $0) } ?? ""
-    let update = box.reporter!.pushUpdates[refname]
+    let update = box.reporter!.pushUpdates[Array(refname.utf8)]
     let destination = shortRefName(refname)
-    let source = box.reporter!.typedSources[refname].map(shortRefName)
+    let source = box.reporter!.typedSources[Array(refname.utf8)].map(shortRefName)
         ?? update.map { shortRefName($0.source) } ?? destination
     let refs = source.isEmpty ? destination : "\(source) -> \(destination)"
 

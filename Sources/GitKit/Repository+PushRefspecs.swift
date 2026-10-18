@@ -25,8 +25,8 @@ struct PushPlan {
     /// becomes `refs/heads/main:refs/heads/main`).
     var explicit: [String] = []
     /// How each explicit refspec's source was typed (`HEAD`, `main`),
-    /// keyed by its destination ref, for the summary.
-    var typedSources: [String: String] = [:]
+    /// keyed by its destination ref's UTF-8 bytes, for the summary.
+    var typedSources: [[UInt8]: String] = [:]
     var patterns: [Pattern] = []
     /// Whether the matching refspec was given: `nil` if not, `true` if
     /// forced (`+:`).
@@ -84,7 +84,7 @@ extension Repository {
                 plan.explicit.append(qualified)
                 if let destination = destinationRefName(fromPushRefspec: qualified),
                    let typed = typedPushSource(refspec) {
-                    plan.typedSources[destination] = typed
+                    plan.typedSources[Array(destination.utf8)] = typed
                 }
             }
         }
