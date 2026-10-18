@@ -144,19 +144,26 @@ struct FetchSummaryTests {
         for clone in [gitCopy, kitCopy] {
             try runGit(["config", "fetch.showForcedUpdates", "false"], in: clone)
         }
-        // git versions print the warning in different places: compare
-        // the rest, and require the warning.
+        // git versions word the warning differently and print it in
+        // different places: GitKit follows git 2.54, and the summary
+        // itself has to match.
         let warning = """
             warning: fetch normally indicates which branches had a forced update,
             but that check has been disabled; to re-enable, use '--show-forced-updates'
             flag or run 'git config fetch.showForcedUpdates true'
 
             """
+        func withoutWarning(_ output: String) -> String {
+            var lines = output.split(separator: "\n", omittingEmptySubsequences: false)
+            if let start = lines.firstIndex(where: { $0.hasPrefix("warning: ") }) {
+                lines.removeSubrange(start..<min(start + 3, lines.count))
+            }
+            return lines.joined(separator: "\n")
+        }
         let unforced = try runGitIgnoringOptions(["fetch", "origin"], in: gitCopy)
         let unforcedOutput = try gitKitFetch(kitCopy)
-        #expect(unforcedOutput.contains(warning))
-        #expect(unforcedOutput.replacingOccurrences(of: warning, with: "")
-                == unforced.replacingOccurrences(of: warning, with: ""))
+        #expect(unforcedOutput.hasPrefix(warning))
+        #expect(withoutWarning(unforcedOutput) == withoutWarning(unforced))
     }
 
     @Test("a ref fetched to FETCH_HEAD alone, with its tracking ref updated")
