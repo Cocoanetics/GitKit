@@ -1,6 +1,7 @@
 /*
  * GitKit shim — a negative fetch refspec keeps the refs it excludes out
- * of the ref updates and FETCH_HEAD, not only out of the negotiation.
+ * of the ref updates, FETCH_HEAD and pruning, not only out of the
+ * negotiation.
  *
  * libgit2 honours a negative refspec (`^refs/heads/wip`) when it picks
  * the refs to fetch (fetch.c's filter_wants, through
@@ -17,8 +18,13 @@
  * the set being the fetch's refspecs, or the configured ones for the
  * opportunistic updates of a fetch given its own. A refspec of neither
  * set, like the tag auto-following probe, matches as before: as in git,
- * negative refspecs don't stop a tag from being followed. Every call
- * site has the remote in scope as `remote`.
+ * negative refspecs don't stop a tag from being followed.
+ *
+ * git_remote_prune() keeps a remote-tracking ref when it finds the
+ * remote ref the ref stands for (its one git_vector_bsearch() call);
+ * a remote ref a negative refspec excludes counts as found, so, as in
+ * git, pruning leaves its tracking ref alone. Every call site of both
+ * has the remote in scope as `remote`.
  *
  * (The same gap exists in upstream libgit2; this fix is worth offering
  * there too.)
@@ -44,11 +50,30 @@
 
 static int gitkit_refspec_src_matches(
 	const git_remote *remote, const git_refspec *spec, const char *refname);
+static int gitkit_prune_bsearch(
+	const git_remote *remote, size_t *at_pos, git_vector *v, const void *key);
 
 #define git_refspec_src_matches(spec, refname) \
 	gitkit_refspec_src_matches(remote, spec, refname)
+#define git_vector_bsearch(at_pos, v, key) \
+	gitkit_prune_bsearch(remote, at_pos, v, key)
 #include "remote.c"
+#undef git_vector_bsearch
 #undef git_refspec_src_matches
+
+static int gitkit_prune_bsearch(
+	const git_remote *remote, size_t *at_pos, git_vector *v, const void *key)
+{
+	const git_remote_head *head = key;
+	const git_refspec *spec;
+	size_t i;
+
+	git_vector_foreach(&remote->active_refspecs, i, spec) {
+		if (!spec->push && git_refspec_src_matches_negative(spec, head->name))
+			return 0;
+	}
+	return git_vector_bsearch(at_pos, v, key);
+}
 
 static const git_vector *gitkit_refspec_set(const git_remote *remote, const git_refspec *spec)
 {

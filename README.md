@@ -230,9 +230,10 @@ behaves, each worth offering upstream too:
   `ssh_exec` connection closes, instead of leaving a zombie per connection
   (#38).
 - `remote_patched.c` keeps the refs a negative fetch refspec
-  (`^refs/heads/wip`) excludes out of the ref updates and `FETCH_HEAD`, as
-  git does. libgit2 only leaves them out of the negotiation, then updates
-  them anyway whenever their objects are present.
+  (`^refs/heads/wip`) excludes out of the ref updates, `FETCH_HEAD` and
+  pruning, as git does. libgit2 only leaves them out of the negotiation,
+  then updates them anyway whenever their objects are present, and prunes
+  their remote-tracking refs once they're gone from the remote.
 
 ## The curated module and vendored headers (Windows, and why the submodule stays pristine)
 

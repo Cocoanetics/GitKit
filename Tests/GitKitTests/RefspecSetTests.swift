@@ -118,6 +118,23 @@ struct RefspecSetTests {
                 == ["refs/remotes/origin/dev", "refs/remotes/origin/private"])
     }
 
+    @Test("pruning leaves alone what a negative refspec excludes, as in git")
+    func pruneWithNegativeRefspec() throws {
+        let source = try makeRepo(branches: ["private", "gone"])
+        let dest = try makeRepo()
+        defer { removing(source, dest)() }
+        try runGit(["remote", "add", "origin", source.path], in: dest)
+        try runGit(["fetch", "-q", "origin"], in: dest)
+        try runGit(["config", "--add", "remote.origin.fetch", "^refs/heads/private"], in: dest)
+        try runGit(["branch", "-D", "private", "gone"], in: source)
+
+        try Repository.open(at: dest).fetch(remote: "origin", refspecs: [], prune: true,
+                                            progress: { _ in })
+        // (git's own fetch above may have set refs/remotes/origin/HEAD.)
+        let remaining = try refs("refs/remotes", in: dest).filter { !$0.hasSuffix("/HEAD") }
+        #expect(remaining == ["refs/remotes/origin/main", "refs/remotes/origin/private"])
+    }
+
     @Test("a negative refspec doesn't stop a tag from being followed, as in git")
     func negativeRefspecAndFollowedTags() throws {
         let source = try makeRepo()
