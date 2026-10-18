@@ -12,67 +12,6 @@ public enum PushLease: Sendable, Equatable {
     case expecting(String)
 }
 
-/// What `git push --force-with-lease` asks of the refs a push updates:
-/// each ref a lease covers must still be where the lease expects it on
-/// the remote, and is then forced; one that isn't is refused as
-/// `stale info`, and the rest of the push goes ahead.
-public struct PushLeases: Sendable, Equatable {
-    /// Where a leased ref has to be on the remote.
-    public enum Expectation: Sendable, Equatable {
-        /// Where this repository's remote-tracking ref for it says, as
-        /// the remote's fetch refspecs map it; with no such ref (or for a
-        /// URL or path), absent.
-        case tracking
-        /// At this object ID, in full.
-        case object(String)
-        /// Not there at all.
-        case absent
-    }
-
-    /// One `--force-with-lease=<ref>[:<expect>]`.
-    public struct Lease: Sendable, Equatable {
-        /// The remote ref, spelled as git takes it: `main` covers
-        /// `refs/heads/main` (and `refs/tags/main`, as git matches
-        /// abbreviations).
-        public var ref: String
-        public var expectation: Expectation
-
-        public init(ref: String, expectation: Expectation) {
-            self.ref = ref
-            self.expectation = expectation
-        }
-    }
-
-    /// The leases named, the first one that covers a ref applying to it.
-    public var leases: [Lease]
-    /// Whether every other ref pushed is leased on its remote-tracking
-    /// ref: a bare `--force-with-lease`.
-    public var trackingForRest: Bool
-
-    public init(_ leases: [Lease] = [], trackingForRest: Bool = false) {
-        self.leases = leases
-        self.trackingForRest = trackingForRest
-    }
-
-    /// What remote ref `name` is expected to be, or `nil` if no lease
-    /// covers it (git's `apply_cas`).
-    func expectation(for name: String) -> Expectation? {
-        if let lease = leases.first(where: { Self.abbreviation($0.ref, matches: name) }) {
-            return lease.expectation
-        }
-        return trackingForRest ? .tracking : nil
-    }
-
-    /// Whether `abbreviation` names full ref `name` by one of git's
-    /// rules for spelling a ref (`refname_match`), comparing bytes.
-    static func abbreviation(_ abbreviation: String, matches name: String) -> Bool {
-        let rules = [abbreviation, "refs/\(abbreviation)", "refs/tags/\(abbreviation)",
-                     "refs/heads/\(abbreviation)", "refs/remotes/\(abbreviation)",
-                     "refs/remotes/\(abbreviation)/HEAD"]
-        return rules.contains { Array($0.utf8) == Array(name.utf8) }
-    }
-}
-
 extension Repository {
 
     /// Push `refspec` to `remote`. Mirrors `git push <remote> <refspec>`
@@ -153,49 +92,6 @@ extension Repository {
             location: location, forceWithLease: nil, credentials: credentials, progress: progress)
     }
 
-    /// Push `refspecs` to `remote` in one operation, as
-    /// ``push(remote:refspecs:setUpstream:connectingTo:credentials:progress:)`` does,
-    /// with `git push --force-with-lease` semantics for the refs
-    /// `leases` covers.
-    ///
-    /// As in git, each covered ref that is to change has to be on the
-    /// remote where its lease expects it. If it is, the update is forced;
-    /// if not, it is refused as `stale info` and the rest of the push
-    /// goes ahead, the refusal reported in the ``PushRejectedError``
-    /// thrown at the end. A refspec forced with `+` is forced all the
-    /// same, as `git push --force` overrides a lease. The remote checks
-    /// each update against the value the lease was checked against, so a
-    /// ref that moves meanwhile is refused, not overwritten.
-    ///
-    /// - Parameters:
-    ///   - remote: The remote to push to: a configured remote's name
-    ///     (e.g. `"origin"`), or, as in git, a URL or path.
-    ///   - refspecs: The refspecs to push, or none for the remote's own.
-    ///   - setUpstream: When `true`, configure each pushed branch's
-    ///     upstream afterwards, as `git push -u` does.
-    ///   - leases: The `--force-with-lease` options given.
-    ///   - location: Where to connect instead, as for
-    ///     ``push(remote:refspecs:setUpstream:connectingTo:credentials:progress:)``.
-    ///   - credentials: Invoked by the transport on auth challenges.
-    ///   - progress: Sink for real-git-style progress lines (defaults to
-    ///     the process's stderr).
-    /// - Returns: The refspecs pushed, one per ref and fully qualified.
-    @discardableResult
-    public func push(
-        remote: String,
-        refspecs: [String],
-        setUpstream: Bool,
-        leases: PushLeases,
-        connectingTo location: String? = nil,
-        credentials: CredentialProvider? = nil,
-        progress: @escaping @Sendable (String) -> Void = GitProgress.standardError
-    ) throws -> [String] {
-        try pushImpl(
-            remote: remote, refspecs: refspecs, setUpstream: setUpstream,
-            location: location, forceWithLease: nil, leases: leases,
-            credentials: credentials, progress: progress)
-    }
-
     /// Push `refspec` to `remote` with `--force-with-lease` semantics.
     ///
     /// The refspec is force-pushed, but only after the remote advertises
@@ -252,7 +148,7 @@ extension Repository {
     }
 
     @discardableResult
-    private func pushImpl(
+    func pushImpl(
         remote: String,
         refspecs requested: [String],
         setUpstream: Bool,
@@ -335,24 +231,11 @@ extension Repository {
                     let common = remoteRefs.names.contains { !plan.excludes($0) }
                     return common ? .nothingToSend : .noRefsInCommon
                 }
-                // The leases settle the updates they cover: forced, or
-                // refused as stale.
-                var leased = pushRefspecs
-                var stale: [(refspec: String, reason: PushRejectedError.Reason)] = []
-                if let leases {
-                    (leased, stale) = try leasedPushRefspecs(
-                        pushRefspecs, leases: leases, remoteRefs: remoteRefs, remote: remoteHandle)
-                }
-                // As git does, leave out the updates its rules refuse and
-                // push the rest; libgit2 would fail the whole push.
-                var (accepted, rejected) = try partitionedPushRefspecs(
-                    leased, remoteRefs: remoteRefs)
-                rejected += stale
-                // The remote reports, and git lists, the updates in its
-                // ref list's order (`match_push_refs`): the refs the
-                // remote has as it advertised them, then the new ones as
-                // the refspecs named them.
-                accepted = advertisedOrder(accepted, remoteRefs: remoteRefs)
+                // As git does, leave out the updates its rules (and the
+                // leases) refuse and push the rest; libgit2 would fail the
+                // whole push.
+                let (accepted, rejected) = try settledPushRefspecs(
+                    pushRefspecs, leases: leases, remoteRefs: remoteRefs, remote: remoteHandle)
                 guard !accepted.isEmpty else {
                     git_remote_disconnect(remoteHandle)
                     return .pushed(accepted: [], rejected: rejected, remoteRefs: remoteRefs)
