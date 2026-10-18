@@ -144,8 +144,19 @@ struct FetchSummaryTests {
         for clone in [gitCopy, kitCopy] {
             try runGit(["config", "fetch.showForcedUpdates", "false"], in: clone)
         }
+        // git versions print the warning in different places: compare
+        // the rest, and require the warning.
+        let warning = """
+            warning: fetch normally indicates which branches had a forced update,
+            but that check has been disabled; to re-enable, use '--show-forced-updates'
+            flag or run 'git config fetch.showForcedUpdates true'
+
+            """
         let unforced = try runGitIgnoringOptions(["fetch", "origin"], in: gitCopy)
-        #expect(try gitKitFetch(kitCopy) == unforced)
+        let unforcedOutput = try gitKitFetch(kitCopy)
+        #expect(unforcedOutput.contains(warning))
+        #expect(unforcedOutput.replacingOccurrences(of: warning, with: "")
+                == unforced.replacingOccurrences(of: warning, with: ""))
     }
 
     @Test("a ref fetched to FETCH_HEAD alone, with its tracking ref updated")

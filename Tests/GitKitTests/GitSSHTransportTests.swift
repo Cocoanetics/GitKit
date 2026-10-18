@@ -289,22 +289,21 @@ struct GitSSHTransportTests {
             try runGit(["branch", "dev"], in: work)
             try runGit(["commit", "-q", "--allow-empty", "-m", "ahead"], in: work)
 
-            // Two sources for one new ref: receive-pack refuses one and
-            // doesn't report on the other.
+            // Two sources for one new ref. receive-pack's reports (which
+            // vary by git version) go to the first update, the last one
+            // winning, and the other stays unreported, as git shows it.
             let log = TransportLog()
             let error = #expect(throws: PushRejectedError.self) {
                 try repo.push(remote: "origin", refspecs: ["main:refs/heads/x", "dev:refs/heads/x"],
                               setUpstream: false, progress: { log.append($0) })
             }
-            #expect(log.text.hasSuffix("""
-                 ! [remote rejected] main -> x (failed to update refs)
-                 ! [remote failure]  dev -> x (remote failed to report status)
-
-                """))
-            #expect(error?.rejections == [
-                .init(remoteRef: "refs/heads/x", reason: .remoteRejected("failed to update refs")),
-                .init(remoteRef: "refs/heads/x", reason: .remoteFailure)
-            ])
+            #expect(log.text.contains(" ! [remote rejected] main -> x ("))
+            #expect(log.text.hasSuffix(" ! [remote failure]  dev -> x (remote failed to report status)\n"))
+            #expect(error?.rejections.map(\.remoteRef) == ["refs/heads/x", "refs/heads/x"])
+            if case .remoteRejected = error?.rejections.first?.reason {} else {
+                Issue.record("expected the first update refused: \(String(describing: error))")
+            }
+            #expect(error?.rejections.last?.reason == .remoteFailure)
             #expect(error?.pushed == [])
 
             // The remote moved on: git's fetch-first refusal, checked

@@ -269,9 +269,10 @@ extension Repository {
 
     /// What came of a push's updates: the refspecs that went through
     /// (`accepted` but those the remote refused or didn't report on) and
-    /// every rejection: git's rules', the remote's, and an update the
-    /// remote never reported on, which git counts as failed. All but the
-    /// remote's get their summary lines in `reporter` here.
+    /// every rejection: the remote's, git's rules', and an update the
+    /// remote never reported on, which git counts as failed. Each gets
+    /// its summary line in `reporter`, as git orders them: the updates
+    /// made, then the refused ones.
     private func settle(
         _ accepted: [String],
         rejected: [(refspec: String, reason: PushRejectedError.Reason)],
@@ -279,6 +280,21 @@ extension Repository {
         reporter: inout ProgressReporter
     ) -> (pushed: [String], rejections: [PushRejectedError.Rejection]) {
         var rejections: [PushRejectedError.Rejection] = []
+        var refusedLines: [String] = []
+        for refname in reporter.reportedRefs {
+            let status = reporter.reportStatuses[refname] ?? ""
+            guard let line = pushReportLine(refname: refname, status: status, reporter: reporter) else {
+                continue
+            }
+            if status.isEmpty {
+                reporter.refLines.append(line)
+            } else {
+                refusedLines.append(line)
+                rejections.append(.init(remoteRef: refname, reason: .remoteRejected(status)))
+            }
+        }
+        reporter.refLines += refusedLines
+        let refusedByRemote = Set(rejections.map(\.remoteRef))
         func refuse(_ refspec: String, _ reason: PushRejectedError.Reason) {
             guard let destination = destinationRefName(fromPushRefspec: refspec) else { return }
             reporter.refLines.append(rejectedSummaryLine(
@@ -287,11 +303,9 @@ extension Repository {
             rejections.append(.init(remoteRef: destination, reason: reason))
         }
         rejected.forEach { refuse($0.refspec, $0.reason) }
-        let refusedByRemote = Set(reporter.remoteRejections.map(\.remoteRef))
-        rejections += reporter.remoteRejections
 
-        // receive-pack answers once per ref, so a second update for one
-        // ref goes unreported: git's `[remote failure]`.
+        // receive-pack's reports go to the first update for each ref, so
+        // a second update for one ref goes unreported: `[remote failure]`.
         var reports = Dictionary(reporter.reportedRefs.map { ($0, 1) }, uniquingKeysWith: +)
         var unreported = Set<String>()
         for refspec in accepted where !isUpToDate(refspec, remoteRefs: remoteRefs) {

@@ -90,10 +90,12 @@ struct ProgressReporter {
     /// `main`), keyed by the destination ref; git shows it instead of
     /// the ref it resolves to.
     var typedSources: [String: String] = [:]
-    /// The updates the remote refused, with its reasons.
-    var remoteRejections: [PushRejectedError.Rejection] = []
-    /// Every ref the remote reported on, refused or not, in order.
+    /// Every ref the remote reported on, in the order of its first
+    /// report.
     var reportedRefs: [String] = []
+    /// The remote's last word on each ref it reported on: its reason
+    /// for refusing the update, or empty if it took it.
+    var reportStatuses: [String: String] = [:]
 
     /// Whether a fetch tells forced updates from fast-forwards
     /// (`fetch.showForcedUpdates`, on unless configured off).

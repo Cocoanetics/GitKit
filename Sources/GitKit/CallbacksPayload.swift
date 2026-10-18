@@ -566,50 +566,48 @@ private let combinedPushRefTrampoline: git_push_update_reference_cb = {
     let box = Unmanaged<CallbackBox>.fromOpaque(payload).takeUnretainedValue()
     guard box.reporter != nil else { return 0 }
     let refname = String(cString: refnamePtr)
-    let status = statusPtr.map { String(cString: $0) } ?? ""
-    // As in git, every report on a ref belongs to its first update; a
-    // second update to that ref stays unreported.
-    guard !box.reporter!.reportedRefs.contains(refname) else { return 0 }
-    box.reporter!.reportedRefs.append(refname)
-    let update = box.reporter!.pushUpdates[refname]
+    // As git's receive_status() does, every report on a ref goes to the
+    // ref's first update, the last report winning; a second update to
+    // that ref stays unreported. The lines are written once all are in.
+    if box.reporter!.reportStatuses[refname] == nil {
+        box.reporter!.reportedRefs.append(refname)
+    }
+    box.reporter!.reportStatuses[refname] = statusPtr.map { String(cString: $0) } ?? ""
+    // A refused ref doesn't fail the push: libgit2 still updates the
+    // tracking refs of the others, and the caller reports the refusal.
+    return 0
+}
+
+/// git's summary line for a ref the remote reported on, `status` being
+/// its reason for refusing it (empty when it took the update); `nil` for
+/// a ref that was already up to date, which git shows only with `-v`.
+func pushReportLine(refname: String, status: String, reporter: ProgressReporter) -> String? {
+    let update = reporter.pushUpdates[refname]
     let destination = shortRefName(refname)
-    let source = box.reporter!.typedSources[refname].map(shortRefName)
+    let source = reporter.typedSources[refname].map(shortRefName)
         ?? update.map { shortRefName($0.source) } ?? destination
     let refs = source.isEmpty ? destination : "\(source) -> \(destination)"
 
     // git's TRANSPORT_SUMMARY_WIDTH: room for `old...new`.
-    let width = 2 * box.reporter!.abbreviation + 3
-    let line: String
+    let width = 2 * reporter.abbreviation + 3
     if !status.isEmpty {
-        line = pushSummaryLine("!", "[remote rejected]", "\(refs) (\(status))", width: width)
-        box.reporter!.remoteRejections.append(
-            .init(remoteRef: refname, reason: .remoteRejected(status)))
-    } else if let update, update.newID == nil {
-        line = pushSummaryLine("-", "[deleted]", destination, width: width)
-    } else if var old = update?.oldID, var new = update?.newID {
-        // A ref already up to date gets no line (git shows those only
-        // with `-v`); with nothing else, the push says `Everything
-        // up-to-date`.
-        if git_oid_equal(&old, &new) == 1 { return 0 }
-        let repository = box.reporter!.repository
-        let abbrev = box.reporter!.abbreviation
-        let oldID = abbreviated(old, minimum: abbrev, in: repository)
-        let newID = abbreviated(new, minimum: abbrev, in: repository)
-        if isFastForward(from: old, to: new, in: repository) {
-            line = pushSummaryLine(" ", "\(oldID)..\(newID)", refs, width: width)
-        } else {
-            line = pushSummaryLine(
-                "+", "\(oldID)...\(newID)", "\(refs) (forced update)", width: width)
-        }
-    } else {
-        let kind = refname.hasPrefix("refs/heads/") ? "[new branch]"
-            : refname.hasPrefix("refs/tags/") ? "[new tag]" : "[new reference]"
-        line = pushSummaryLine("*", kind, refs, width: width)
+        return pushSummaryLine("!", "[remote rejected]", "\(refs) (\(status))", width: width)
     }
-    box.reporter!.refLines.append(line)
-    // A refused ref doesn't fail the push: libgit2 still updates the
-    // tracking refs of the others, and the caller reports the refusal.
-    return 0
+    if let update, update.newID == nil {
+        return pushSummaryLine("-", "[deleted]", destination, width: width)
+    }
+    if var old = update?.oldID, var new = update?.newID {
+        if git_oid_equal(&old, &new) == 1 { return nil }
+        let oldID = abbreviated(old, minimum: reporter.abbreviation, in: reporter.repository)
+        let newID = abbreviated(new, minimum: reporter.abbreviation, in: reporter.repository)
+        if isFastForward(from: old, to: new, in: reporter.repository) {
+            return pushSummaryLine(" ", "\(oldID)..\(newID)", refs, width: width)
+        }
+        return pushSummaryLine("+", "\(oldID)...\(newID)", "\(refs) (forced update)", width: width)
+    }
+    let kind = refname.hasPrefix("refs/heads/") ? "[new branch]"
+        : refname.hasPrefix("refs/tags/") ? "[new tag]" : "[new reference]"
+    return pushSummaryLine("*", kind, refs, width: width)
 }
 
 /// A ref name as git's push summary shows it (`prettify_refname`):
