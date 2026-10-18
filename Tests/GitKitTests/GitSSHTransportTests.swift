@@ -99,6 +99,14 @@ struct FakeSSHChannelError: Error, LocalizedError {
     var errorDescription: String? { message }
 }
 
+/// Collects progress text; the sink is `@Sendable`.
+final class TransportLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var buffer = ""
+    func append(_ text: String) { lock.lock(); buffer += text; lock.unlock() }
+    var text: String { lock.lock(); defer { lock.unlock() }; return buffer }
+}
+
 /// Records every channel it opens so tests can assert the custom
 /// transport (rather than `ssh_exec`) actually drove the operation.
 /// `@unchecked Sendable`: libgit2 only ever calls into one subtransport
@@ -264,6 +272,50 @@ struct GitSSHTransportTests {
             let remoteSHA = try runGit(["rev-parse", "main"], in: destBare)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             #expect(localSHA == remoteSHA)
+        }
+    }
+
+    @Test("over receive-pack, refused and unreported updates read as git's")
+    func pushRefusalsOverTheSmartProtocol() throws {
+        try SSHTransportTestLock.shared.withLock {
+            let provider = FakeSSHProvider()
+            try GitSSHTransport.register(provider)
+            defer { GitSSHTransport.unregister() }
+
+            let destBare = try makeBareDestination()
+            let work = try makeWorkRepo()
+            let repo = try Repository.open(at: work)
+            try repo.addRemote(name: "origin", url: URL(string: "ssh://localhost\(destBare.path)")!)
+            try runGit(["branch", "dev"], in: work)
+            try runGit(["commit", "-q", "--allow-empty", "-m", "ahead"], in: work)
+
+            // Two sources for one new ref: receive-pack refuses one and
+            // doesn't report on the other.
+            let log = TransportLog()
+            let error = #expect(throws: PushRejectedError.self) {
+                try repo.push(remote: "origin", refspecs: ["main:refs/heads/x", "dev:refs/heads/x"],
+                              setUpstream: false, progress: { log.append($0) })
+            }
+            #expect(log.text.hasSuffix("""
+                 ! [remote rejected] main -> x (failed to update refs)
+                 ! [remote failure]  dev -> x (remote failed to report status)
+
+                """))
+            #expect(error?.rejections == [
+                .init(remoteRef: "refs/heads/x", reason: .remoteRejected("failed to update refs")),
+                .init(remoteRef: "refs/heads/x", reason: .remoteFailure)
+            ])
+            #expect(error?.pushed == [])
+
+            // The remote moved on: git's fetch-first refusal, checked
+            // against receive-pack's advertisement.
+            let other = try makeWorkRepo()
+            try runGit(["commit", "-q", "--allow-empty", "-m", "theirs"], in: other)
+            try runGit(["push", "-q", destBare.path, "main"], in: other)
+            let rejected = #expect(throws: PushRejectedError.self) {
+                try repo.push(remote: "origin", refspecs: ["main"], setUpstream: false, progress: { _ in })
+            }
+            #expect(rejected?.rejections == [.init(remoteRef: "refs/heads/main", reason: .fetchFirst)])
         }
     }
 

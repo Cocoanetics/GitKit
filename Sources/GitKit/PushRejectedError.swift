@@ -18,6 +18,9 @@ public struct PushRejectedError: Error, LocalizedError, Sendable, Equatable {
         case needsForce
         /// The remote refused the update, for this reason.
         case remoteRejected(String)
+        /// The remote didn't report on the update (`remote failed to
+        /// report status`), as when two updates target one new ref.
+        case remoteFailure
 
         /// The parenthesised reason in the summary line.
         var summary: String {
@@ -27,6 +30,7 @@ public struct PushRejectedError: Error, LocalizedError, Sendable, Equatable {
             case .alreadyExists: "already exists"
             case .needsForce: "needs force"
             case .remoteRejected(let message): message
+            case .remoteFailure: "remote failed to report status"
             }
         }
     }

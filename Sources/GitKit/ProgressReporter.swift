@@ -92,6 +92,8 @@ struct ProgressReporter {
     var typedSources: [String: String] = [:]
     /// The updates the remote refused, with its reasons.
     var remoteRejections: [PushRejectedError.Rejection] = []
+    /// Every ref the remote reported on, refused or not, in order.
+    var reportedRefs: [String] = []
 
     /// Whether a fetch tells forced updates from fast-forwards
     /// (`fetch.showForcedUpdates`, on unless configured off).

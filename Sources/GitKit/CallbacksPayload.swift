@@ -504,9 +504,12 @@ private let combinedPushNegotiationTrampoline: git_push_negotiation = {
         for index in 0..<Int(len) {
             guard let update = updates[index]?.pointee,
                   let destination = update.dst_refname else { continue }
+            // Two updates for one ref: the remote reports on the first.
+            let name = String(cString: destination)
+            guard box.reporter!.pushUpdates[name] == nil else { continue }
             var old = update.src
             var new = update.dst
-            box.reporter!.pushUpdates[String(cString: destination)] = ProgressReporter.PushUpdate(
+            box.reporter!.pushUpdates[name] = ProgressReporter.PushUpdate(
                 source: update.src_refname.map { String(cString: $0) } ?? "",
                 oldID: git_oid_is_zero(&old) == 1 ? nil : old,
                 newID: git_oid_is_zero(&new) == 1 ? nil : new)
@@ -564,6 +567,10 @@ private let combinedPushRefTrampoline: git_push_update_reference_cb = {
     guard box.reporter != nil else { return 0 }
     let refname = String(cString: refnamePtr)
     let status = statusPtr.map { String(cString: $0) } ?? ""
+    // As in git, every report on a ref belongs to its first update; a
+    // second update to that ref stays unreported.
+    guard !box.reporter!.reportedRefs.contains(refname) else { return 0 }
+    box.reporter!.reportedRefs.append(refname)
     let update = box.reporter!.pushUpdates[refname]
     let destination = shortRefName(refname)
     let source = box.reporter!.typedSources[refname].map(shortRefName)

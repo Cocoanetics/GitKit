@@ -79,7 +79,9 @@ extension Repository {
             } else {
                 let qualified = try qualifiedPushRefspec(refspec)
                 plan.explicit.append(qualified)
+                // The remote reports on the first update to a ref.
                 if let destination = destinationRefName(fromPushRefspec: qualified),
+                   plan.typedSources[destination] == nil,
                    let typed = typedPushSource(refspec) {
                     plan.typedSources[destination] = typed
                 }
@@ -161,6 +163,22 @@ extension Repository {
             git_remote_free(handle)
         }
         return ProgressReporter.anonymizedURL(url)
+    }
+
+    /// Whether pushing `refspec` leaves the remote as it is: the remote
+    /// ref already points at the source, or a deletion finds no ref.
+    func isUpToDate(_ refspec: String, remoteRefs: [String: git_oid]) -> Bool {
+        guard let destination = destinationRefName(fromPushRefspec: refspec) else { return false }
+        let body = refspec.hasPrefix("+") ? refspec.dropFirst() : Substring(refspec)
+        let source = body.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)[0]
+        guard var remote = remoteRefs[destination] else { return source.isEmpty }
+        var object: OpaquePointer?
+        guard !source.isEmpty, git_revparse_single(&object, repo, String(source)) == 0 else {
+            return false
+        }
+        defer { git_object_free(object) }
+        guard var local = git_object_id(object)?.pointee else { return false }
+        return git_oid_equal(&local, &remote) == 1
     }
 
     /// `refspecs` split by git's rules for an update without force: the
