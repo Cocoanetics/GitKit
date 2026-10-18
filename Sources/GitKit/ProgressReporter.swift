@@ -57,16 +57,19 @@ struct ProgressReporter {
     /// What a push is about to do to each remote ref, keyed by the
     /// destination ref name — recorded at push negotiation, so the
     /// summary can print `old..new` like git.
-    var pushUpdates: [String: PushUpdate] = [:]
+    /// (Keyed, like `typedSources`, by the ref name's UTF-8 bytes: git
+    /// compares ref names byte for byte, Swift's `String` canonically.)
+    var pushUpdates: [[UInt8]: PushUpdate] = [:]
     /// The pushing repository, to tell a forced update from a
     /// fast-forward.
     var repository: OpaquePointer?
     /// How many hex digits object IDs show in the push summary
     /// (`core.abbrev`).
     var abbreviation = 7
-    /// The push's source as the caller spelled it (`HEAD`, `main`), which
-    /// git shows instead of the ref it resolves to.
-    var typedSource: String?
+    /// Each pushed ref's source as the caller spelled it (`HEAD`,
+    /// `main`), keyed by the destination ref; git shows it instead of
+    /// the ref it resolves to.
+    var typedSources: [[UInt8]: String] = [:]
 
     struct PushUpdate {
         /// The local ref being pushed, e.g. `refs/heads/main`.

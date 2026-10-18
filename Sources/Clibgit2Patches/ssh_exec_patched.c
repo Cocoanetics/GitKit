@@ -15,8 +15,7 @@
  * `ssh` is wedged. process_patched.c adds the same reap as a backstop
  * inside git_process_free() itself, for any caller that skips the wait.
  *
- * (The same gap exists in upstream libgit2; this fix is worth offering
- * there too.)
+ * Reported upstream as libgit2/libgit2#7437.
  */
 #include "common.h"
 #include "process.h"

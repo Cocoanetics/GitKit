@@ -25,7 +25,10 @@ import PackageDescription
 //     compiled via translation-unit-scoped `#include` shims (Clibgit2Patches).
 //   • transports/ssh_exec.c and util/unix/process.c are shimmed the same
 //     way so the ssh_exec transport reaps its `ssh` child on close instead
-//     of leaking a zombie (issue #38); upstream libgit2 has the same gap.
+//     of leaking a zombie (issue #38; libgit2/libgit2#7437 upstream).
+//   • remote.c is shimmed the same way so a negative fetch refspec keeps
+//     the refs it excludes out of the ref updates and FETCH_HEAD, as git
+//     does; upstream libgit2 only leaves them out of the negotiation.
 //   • Consumers only import `GitKit`.
 // =============================================================================
 
@@ -127,6 +130,10 @@ var excludes: [String] = [
     // Compiled via Sources/Clibgit2Patches/ssh_exec_patched.c, whose close
     // path reaps the `ssh` child instead of leaking a zombie (issue #38).
     "src/libgit2/transports/ssh_exec.c",
+
+    // Compiled via Sources/Clibgit2Patches/remote_patched.c, whose ref
+    // updates honour negative fetch refspecs.
+    "src/libgit2/remote.c",
 ]
 
 // Header search paths for the .c compilation, relative to Clibgit2's path

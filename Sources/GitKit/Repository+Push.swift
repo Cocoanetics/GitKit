@@ -35,7 +35,48 @@ extension Repository {
         progress: @escaping @Sendable (String) -> Void = GitProgress.standardError
     ) throws {
         try pushImpl(
-            remote: remote, refspec: refspec, setUpstream: setUpstream,
+            remote: remote, refspecs: [refspec], setUpstream: setUpstream,
+            forceWithLease: nil, credentials: credentials, progress: progress)
+    }
+
+    /// Push `refspecs` to `remote` in one operation — one connection, one
+    /// pack, one summary — as `git push <remote> <refspec>…` does.
+    ///
+    /// Besides refspecs that name a ref, it takes the other kinds git
+    /// takes:
+    /// - a pattern, `refs/heads/*:refs/heads/*` (`+` to force), pushes
+    ///   each local ref it matches;
+    /// - the matching refspec `:` (`+:` to force) pushes every local
+    ///   branch the remote also has, under the same name, which is what
+    ///   `push.default=matching` pushes;
+    /// - a negative refspec, `^refs/heads/wip` or `^refs/heads/wip/*`,
+    ///   drops any update to a remote ref it matches.
+    ///
+    /// Empty `refspecs` pushes what the remote is configured to push
+    /// (`remote.<name>.push`); without that there is nothing to push.
+    ///
+    /// - Parameters:
+    ///   - remote: The remote to push to: a configured remote's name
+    ///     (e.g. `"origin"`), or, as in git, a URL or path.
+    ///   - refspecs: The refspecs to push, or none for the remote's own.
+    ///   - setUpstream: When `true`, configure each pushed branch's
+    ///     upstream afterwards, as `git push -u` does.
+    ///   - credentials: Invoked by the transport on auth challenges.
+    ///   - progress: Sink for real-git-style progress lines (defaults to
+    ///     the process's stderr).
+    /// - Returns: The refspecs pushed, one per ref and fully qualified
+    ///   (`+refs/heads/main:refs/heads/main`), including refs that were
+    ///   already up to date; empty when there was nothing to send.
+    @discardableResult
+    public func push(
+        remote: String,
+        refspecs: [String],
+        setUpstream: Bool,
+        credentials: CredentialProvider? = nil,
+        progress: @escaping @Sendable (String) -> Void = GitProgress.standardError
+    ) throws -> [String] {
+        try pushImpl(
+            remote: remote, refspecs: refspecs, setUpstream: setUpstream,
             forceWithLease: nil, credentials: credentials, progress: progress)
     }
 
@@ -65,18 +106,29 @@ extension Repository {
         progress: @escaping @Sendable (String) -> Void = GitProgress.standardError
     ) throws {
         try pushImpl(
-            remote: remote, refspec: refspec, setUpstream: setUpstream,
+            remote: remote, refspecs: [refspec], setUpstream: setUpstream,
             forceWithLease: lease, credentials: credentials, progress: progress)
     }
 
+    /// What a push came to: refs sent, or nothing to send.
+    private enum PushOutcome {
+        /// Pushed these refspecs (some may have been up to date already).
+        case pushed([String])
+        /// Nothing to send to a remote that has refs.
+        case nothingToSend
+        /// Nothing to send to a remote without any refs, which git refuses.
+        case noRefsInCommon
+    }
+
+    @discardableResult
     private func pushImpl(
         remote: String,
-        refspec: String,
+        refspecs requested: [String],
         setUpstream: Bool,
         forceWithLease lease: PushLease?,
         credentials: CredentialProvider?,
         progress: @escaping @Sendable (String) -> Void
-    ) throws {
+    ) throws -> [String] {
         let (remoteHandle, isConfigured) = try lookupRemote(remote)
         defer { git_remote_free(remoteHandle) }
 
@@ -86,46 +138,83 @@ extension Repository {
         reporter.suppressTransferProgress =
             ProgressReporter.isLocalURL(remoteURL)
 
-        let qualifiedRefspec = try qualifiedPushRefspec(refspec)
-        let pushRefspec = lease == nil
-            ? qualifiedRefspec
-            : forcePushRefspec(qualifiedRefspec)
+        let refspecs = requested.isEmpty
+            ? try configuredPushRefspecs(remoteHandle)
+            : requested
+        var plan = try pushPlan(for: refspecs)
+        let pushLease = try lease.map { lease -> PushLeaseCheck in
+            guard plan.patterns.isEmpty, plan.matching == nil,
+                  plan.explicit.count == 1
+            else {
+                throw Libgit2Error(
+                    code: GIT_EINVALIDSPEC.rawValue,
+                    klass: Int32(GIT_ERROR_INVALID.rawValue),
+                    message: "force-with-lease requires a destination ref")
+            }
+            plan.explicit = plan.explicit.map(forcePushRefspec)
+            return try pushLeaseCheck(
+                lease, remote: remote, refspec: plan.explicit[0], isConfigured: isConfigured)
+        }
         reporter.repository = repo
         reporter.abbreviation = summaryAbbreviation()
-        reporter.typedSource = typedPushSource(refspec)
-        let pushLease = try lease.map {
-            try pushLeaseCheck(
-                $0, remote: remote, refspec: pushRefspec, isConfigured: isConfigured)
-        }
+        reporter.typedSources = plan.typedSources
 
-        try pushRefspec.withCString { cstr in
-            var copy: UnsafeMutablePointer<CChar>? = strdup(cstr)
-            defer { free(copy) }
-            try withUnsafeMutablePointer(to: &copy) { copyPtr in
-                var arr = git_strarray(strings: copyPtr, count: 1)
-                var opts = git_push_options()
-                try check(git_push_options_init(&opts, UInt32(GIT_PUSH_OPTIONS_VERSION)))
-                try withCallbacksPayload(
-                    credentials: credentials, reporter: reporter,
-                    pushLease: pushLease,
-                    {
-                        credCB, sidebandCB, _, _, pushRefCB, packCB,
-                        pushTransferCB, pushNegotiationCB, payload in
-                        opts.callbacks.credentials = credCB
-                        opts.callbacks.sideband_progress = sidebandCB
-                        opts.callbacks.push_update_reference = pushRefCB
-                        opts.callbacks.pack_progress = packCB
-                        opts.callbacks.push_transfer_progress = pushTransferCB
-                        opts.callbacks.push_negotiation = pushNegotiationCB
-                        opts.callbacks.payload = payload
+        var opts = git_push_options()
+        try check(git_push_options_init(&opts, UInt32(GIT_PUSH_OPTIONS_VERSION)))
+        let outcome = try withCallbacksPayload(
+            credentials: credentials, reporter: reporter,
+            pushLease: pushLease,
+            {
+                credCB, sidebandCB, _, _, pushRefCB, packCB,
+                pushTransferCB, pushNegotiationCB, payload -> PushOutcome in
+                opts.callbacks.credentials = credCB
+                opts.callbacks.sideband_progress = sidebandCB
+                opts.callbacks.push_update_reference = pushRefCB
+                opts.callbacks.pack_progress = packCB
+                opts.callbacks.push_transfer_progress = pushTransferCB
+                opts.callbacks.push_negotiation = pushNegotiationCB
+                opts.callbacks.payload = payload
+
+                var pushRefspecs = try expandedPushRefspecs(plan, remoteRefs: nil)
+                if plan.matching != nil || pushRefspecs.isEmpty {
+                    // The matching refspec needs to know which branches
+                    // the remote has, and so does git's answer to a push
+                    // with nothing to send: connect and ask. The push
+                    // then reuses the connection.
+                    var callbacks = opts.callbacks
+                    try check(git_remote_connect(
+                        remoteHandle, GIT_DIRECTION_PUSH, &callbacks, nil, nil))
+                    let remoteRefs = try advertisedRefs(remoteHandle)
+                    pushRefspecs = try expandedPushRefspecs(plan, remoteRefs: remoteRefs)
+                    if pushRefspecs.isEmpty {
+                        git_remote_disconnect(remoteHandle)
+                        // git refuses when the negative refspecs leave
+                        // none of the remote's refs either.
+                        let common = remoteRefs.contains { !plan.excludes($0) }
+                        return common ? .nothingToSend : .noRefsInCommon
+                    }
+                }
+                try withCStringArray(pushRefspecs) { copies in
+                    try copies.withUnsafeMutableBufferPointer { buffer in
+                        var arr = git_strarray(strings: buffer.baseAddress, count: buffer.count)
                         let rc = git_remote_push(remoteHandle, &arr, &opts)
                         if rc < 0, let failure = pushLease?.failure {
                             throw failure
                         }
                         try check(rc)
-                    },
-                    outReporter: { reporter = $0 })
-            }
+                    }
+                }
+                return .pushed(pushRefspecs)
+            },
+            outReporter: { reporter = $0 })
+
+        if case .noRefsInCommon = outcome {
+            reporter.write("No refs in common and none specified; doing nothing.\n"
+                           + "Perhaps you should specify a branch.\n")
+            throw Libgit2Error(
+                code: GIT_ERROR.rawValue,
+                klass: Int32(GIT_ERROR_REFERENCE.rawValue),
+                message: "failed to push some refs to '\(remoteURL ?? remote)'")
         }
 
         // Nothing to send: git says so instead of printing a summary.
@@ -134,19 +223,33 @@ extension Repository {
         }
         reporter.flushRefLines()
 
+        guard case .pushed(let pushed) = outcome else { return [] }
         // libgit2 doesn't have a one-shot "push -u": after a successful
         // push, write the upstream config ourselves to mirror the CLI's
         // `--set-upstream` semantics.
         if setUpstream {
-            try setUpstreamForRefspec(
-                remote: remote, refspec: pushRefspec, isConfigured: isConfigured)
+            for refspec in pushed {
+                try setUpstreamForRefspec(
+                    remote: remote, refspec: refspec, isConfigured: isConfigured)
+            }
+        }
+        return pushed
+    }
+
+    /// What `remote` is configured to push (`remote.<name>.push`).
+    private func configuredPushRefspecs(_ remote: OpaquePointer?) throws -> [String] {
+        var array = git_strarray()
+        try check(git_remote_get_push_refspecs(&array, remote))
+        defer { git_strarray_dispose(&array) }
+        return (0..<array.count).compactMap { index in
+            array.strings?[index].map { String(cString: $0) }
         }
     }
 
     /// The source of `refspec` as typed — `HEAD` in `HEAD:refs/heads/x`,
     /// `main` in `+main` — or `nil` for a deletion (`:dst`) or a pattern
     /// (`refs/heads/*`), whose updates each name their own source.
-    private func typedPushSource(_ refspec: String) -> String? {
+    func typedPushSource(_ refspec: String) -> String? {
         let body = refspec.hasPrefix("+") ? refspec.dropFirst() : Substring(refspec)
         let source = body.split(separator: ":", maxSplits: 1,
                                 omittingEmptySubsequences: false).first ?? ""
@@ -164,7 +267,7 @@ extension Repository {
 
     /// libgit2's push parser expects fully-qualified refs where the CLI
     /// accepts local branch shorthands like `main` or `topic:other`.
-    private func qualifiedPushRefspec(_ refspec: String) throws -> String {
+    func qualifiedPushRefspec(_ refspec: String) throws -> String {
         let force = refspec.hasPrefix("+")
         let body = force ? String(refspec.dropFirst()) : refspec
         let prefix = force ? "+" : ""
@@ -173,7 +276,24 @@ extension Repository {
         let src = colon.map { String(body[..<$0]) } ?? body
         guard !src.isEmpty, !src.hasPrefix("refs/") else { return refspec }
 
-        let (qualifiedSrc, dstPrefix) = try qualifiedPushSource(src)
+        let qualifiedSrc: String, dstPrefix: String
+        do {
+            (qualifiedSrc, dstPrefix) = try qualifiedPushSource(src)
+        } catch {
+            // Not a branch or tag, but maybe any other revision (`HEAD^`,
+            // an object ID), which git pushes to a destination given in
+            // full.
+            guard let colon, isRevision(src) else { throw error }
+            let dst = body[body.index(after: colon)...]
+            guard dst.hasPrefix("refs/") else {
+                throw Libgit2Error(
+                    code: GIT_EINVALIDSPEC.rawValue,
+                    klass: Int32(GIT_ERROR_INVALID.rawValue),
+                    message: "the destination you provided is not a full refname "
+                        + "(i.e., starting with \"refs/\")")
+            }
+            return refspec
+        }
         guard let colon else {
             return "\(prefix)\(qualifiedSrc):\(qualifiedSrc)"
         }
@@ -184,6 +304,13 @@ extension Repository {
             ? dst
             : "\(dstPrefix)\(dst)"
         return "\(prefix)\(qualifiedSrc):\(qualifiedDst)"
+    }
+
+    /// Whether `expression` names an object, as `git rev-parse` would.
+    private func isRevision(_ expression: String) -> Bool {
+        var object: OpaquePointer?
+        defer { git_object_free(object) }
+        return git_revparse_single(&object, repo, expression) == 0
     }
 
     private func forcePushRefspec(_ refspec: String) -> String {
@@ -224,7 +351,7 @@ extension Repository {
         return PushLeaseCheck(remoteRef: destination, expectedOID: expectedOID)
     }
 
-    private func destinationRefName(fromPushRefspec refspec: String) -> String? {
+    func destinationRefName(fromPushRefspec refspec: String) -> String? {
         let body = refspec.hasPrefix("+")
             ? String(refspec.dropFirst())
             : refspec
@@ -331,6 +458,13 @@ extension Repository {
               let upstreamBranch = localBranchName(from: dst)
         else { return }
 
+        // Only a local branch gets an upstream; a revision pushed by
+        // expression (`HEAD^`, an object ID) leaves the config alone.
+        var branch: OpaquePointer?
+        let lookupRC = git_branch_lookup(&branch, repo, localBranch, GIT_BRANCH_LOCAL)
+        guard lookupRC == 0 else { return }
+        defer { git_reference_free(branch) }
+
         // A URL or path has no remote-tracking branches to point at;
         // like git, record it as the upstream remote directly.
         guard isConfigured else {
@@ -338,11 +472,6 @@ extension Repository {
             try configSet("branch.\(localBranch).merge", "refs/heads/\(upstreamBranch)")
             return
         }
-
-        var branch: OpaquePointer?
-        let lookupRC = git_branch_lookup(&branch, repo, localBranch, GIT_BRANCH_LOCAL)
-        guard lookupRC == 0 else { return }
-        defer { git_reference_free(branch) }
 
         try check(git_branch_set_upstream(branch, "\(remote)/\(upstreamBranch)"))
     }
