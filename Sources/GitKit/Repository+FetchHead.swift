@@ -186,7 +186,7 @@ extension Repository {
     /// Whether `spec` fetches remote ref `name`: its source matches it,
     /// as written or as git expands a short name (`main` for
     /// `refs/heads/main`).
-    private static func refspec(_ spec: OpaquePointer, fetches name: String) -> Bool {
+    static func refspec(_ spec: OpaquePointer, fetches name: String) -> Bool {
         if git_refspec_src_matches(spec, name) == 1 { return true }
         guard let source = git_refspec_src(spec).map({ String(cString: $0) }),
               !source.contains("*")

@@ -148,12 +148,13 @@ extension Repository {
     }
 
     @discardableResult
-    private func pushImpl(
+    func pushImpl(
         remote: String,
         refspecs requested: [String],
         setUpstream: Bool,
         location: String?,
         forceWithLease lease: PushLease?,
+        leases: PushLeases? = nil,
         credentials: CredentialProvider?,
         progress: @escaping @Sendable (String) -> Void
     ) throws -> [String] {
@@ -230,10 +231,11 @@ extension Repository {
                     let common = remoteRefs.names.contains { !plan.excludes($0) }
                     return common ? .nothingToSend : .noRefsInCommon
                 }
-                // As git does, leave out the updates its rules refuse and
-                // push the rest; libgit2 would fail the whole push.
-                let (accepted, rejected) = try partitionedPushRefspecs(
-                    pushRefspecs, remoteRefs: remoteRefs)
+                // As git does, leave out the updates its rules (and the
+                // leases) refuse and push the rest; libgit2 would fail the
+                // whole push.
+                let (accepted, rejected) = try settledPushRefspecs(
+                    pushRefspecs, leases: leases, remoteRefs: remoteRefs, remote: remoteHandle)
                 guard !accepted.isEmpty else {
                     git_remote_disconnect(remoteHandle)
                     return .pushed(accepted: [], rejected: rejected, remoteRefs: remoteRefs)
@@ -374,7 +376,8 @@ extension Repository {
         let body = refspec.hasPrefix("+") ? refspec.dropFirst() : Substring(refspec)
         let source = typedSource ?? String(body.split(separator: ":", maxSplits: 1,
                                                       omittingEmptySubsequences: false)[0])
-        let refs = "\(shortRefName(source)) -> \(shortRefName(destination))"
+        // A deletion's source is git's `(delete)`.
+        let refs = "\(source.isEmpty ? "(delete)" : shortRefName(source)) -> \(shortRefName(destination))"
         let label = reason == .remoteFailure ? "[remote failure]" : "[rejected]"
         return pushSummaryLine("!", label, "\(refs) (\(reason.summary))",
                                width: 2 * abbreviation + 3)
