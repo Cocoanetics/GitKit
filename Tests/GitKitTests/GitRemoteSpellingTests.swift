@@ -15,12 +15,19 @@ struct GitRemoteSpellingTests {
             "git@[::1]:repo.git",
             "[fe80::1%en0]:repo.git",
             "host:path/with space.git",
+            "host:café.git",
             "git@host:~/repo.git",
             "../relative/repo"
         ]
         for remote in remotes {
             #expect(URL(string: remote)?.gitRemote == remote)
         }
+    }
+
+    @Test("escapes that were valid in the remote stay as written")
+    func validEscapesStay() {
+        #expect(URL(string: "git@host:repos%2Fteam.git")?.gitRemote == "git@host:repos%2Fteam.git")
+        #expect(URL(string: "host:100%done.git")?.gitRemote == "host:100%done.git")
     }
 
     @Test("URLs with a scheme pass through unchanged")
