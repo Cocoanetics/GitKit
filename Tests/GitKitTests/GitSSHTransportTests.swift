@@ -293,6 +293,20 @@ struct GitSSHTransportTests {
             try repo.remoteSetURL(name: "origin", url: URL(string: "git@[::2]:r.git")!)
             let updated = try runGit(["config", "--get", "remote.origin.url"], in: work)
             #expect(updated == "git@[::2]:r.git\n")
+
+            // The String forms keep the remote exactly as typed, even an
+            // escape a URL can't tell from one Foundation added.
+            try repo.remoteSetURL(name: "origin", remote: "git@host:repos%20team.git")
+            #expect(try runGit(["config", "--get", "remote.origin.url"], in: work)
+                    == "git@host:repos%20team.git\n")
+            try repo.addRemote(name: "other", remote: "git@[::1]:\(bare.path)")
+            #expect(try runGit(["config", "--get", "remote.other.url"], in: work)
+                    == "git@[::1]:\(bare.path)\n")
+            let viaString = tmp("GitSSHScpCloneString")
+            _ = try Repository.clone(fromRemote: "git@[::1]:\(bare.path)", to: viaString,
+                                     progress: { _ in })
+            #expect(FileManager.default.fileExists(
+                atPath: viaString.appendingPathComponent("file.txt").path))
         }
     }
 

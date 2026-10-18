@@ -118,10 +118,18 @@ extension Repository {
         return names
     }
 
-    /// Update an existing remote's URL.
+    /// Update an existing remote's URL. With the remote as typed, prefer
+    /// ``remoteSetURL(name:remote:)``: a `URL` can't always hold a
+    /// scp-style remote exactly (see ``URL/gitRemote``).
     public func remoteSetURL(name: String, url: URL) throws {
+        try remoteSetURL(name: name, remote: url.gitRemote)
+    }
+
+    /// Point an existing remote at `remote` — a URL, a scp-style
+    /// `[user@]host:path` or a path, stored exactly as given.
+    public func remoteSetURL(name: String, remote: String) throws {
         try check(name.withCString { n in
-            url.gitRemote.withCString { u in
+            remote.withCString { u in
                 git_remote_set_url(repo, n, u)
             }
         })

@@ -208,11 +208,20 @@ public final class Repository {
     }
 
     /// Create remote `name` pointing at `url`, with the default fetch
-    /// refspec. Mirrors `git remote add <name> <url>`.
+    /// refspec. Mirrors `git remote add <name> <url>`. With the remote as
+    /// typed, prefer ``addRemote(name:remote:)``: a `URL` can't always
+    /// hold a scp-style remote exactly (see ``URL/gitRemote``).
     public func addRemote(name: String, url: URL) throws {
-        var remote: OpaquePointer?
-        try check(git_remote_create(&remote, repo, name, url.gitRemote))
-        git_remote_free(remote)
+        try addRemote(name: name, remote: url.gitRemote)
+    }
+
+    /// Create remote `name` pointing at `remote` — a URL, a scp-style
+    /// `[user@]host:path` or a path, stored exactly as given — with the
+    /// default fetch refspec. Mirrors `git remote add <name> <url>`.
+    public func addRemote(name: String, remote: String) throws {
+        var handle: OpaquePointer?
+        try check(git_remote_create(&handle, repo, name, remote))
+        git_remote_free(handle)
     }
 
     /// Stage every tracked file that has working-tree changes —
