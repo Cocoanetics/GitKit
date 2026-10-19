@@ -531,5 +531,39 @@ extension RepositoryAmendTests {
                 }
         }
     }
+
+    @Test("an empty or multi-line comment string is refused first, as git does")
+    func invalidCommentString() throws {
+        let cases: [(key: String, value: String, empty: Bool)] = [
+            ("core.commentString", "", true), ("core.commentChar", "", true), ("core.commentChar", "a\nb", false)
+        ]
+        for (key, value, empty) in cases {
+            for unborn in [false, true] {
+                let dir = try AmendFixture.makeRepo()
+                defer { try? FileManager.default.removeItem(at: dir) }
+                if !unborn { try AmendFixture.twoCommits(dir) }
+                try AmendFixture.git(["config", key, value], in: dir)
+                let error = CommitAmendError.invalidCommentString(key: key.lowercased(), empty: empty)
+                let git = try AmendFixture.run(["commit", "--amend", "-m", "x"], in: dir)
+                #expect(git.status == 128)
+                #expect(git.err.hasPrefix("error: \(error)\nfatal: bad config variable '\(key.lowercased())'"))
+                #expect(throws: error) { try Repository.open(at: dir).amendDetailed(message: "x\n") }
+            }
+        }
+    }
+
+    @Test("the ref and reflog locks taken to restamp are all released")
+    func reflogLocksReleased() throws {
+        let dir = try AmendFixture.makeRepo()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try AmendFixture.twoCommits(dir)
+        let details = try Repository.open(at: dir).amendDetailed(message: "locked\n")
+        let entry = try #require(try Repository.open(at: dir).reflog(refName: "refs/heads/main").first)
+        #expect(entry.newSHA == details.sha)
+        let git = dir.appendingPathComponent(".git")
+        let leftovers = FileManager.default.enumerator(atPath: git.path)?
+            .compactMap { $0 as? String }.filter { $0.hasSuffix(".lock") } ?? []
+        #expect(leftovers.isEmpty)
+    }
 }
 #endif

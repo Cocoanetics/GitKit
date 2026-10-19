@@ -44,6 +44,11 @@ public enum CommitAmendError: Error, Equatable, CustomStringConvertible {
     /// `commit.cleanup` names no mode: `fatal: Invalid cleanup mode <mode>`,
     /// exit 128.
     case invalidCleanupMode(String)
+    /// `core.commentString` or `core.commentChar` (the lowercased `key`)
+    /// is empty, or holds a newline. Git prints `error: <description>` and
+    /// `fatal: bad config variable '<key>' in file …`, exit 128, before
+    /// anything else.
+    case invalidCommentString(key: String, empty: Bool)
 
     /// Real git's advice for an amend that would leave the commit empty.
     public static let emptyAmendAdvice = """
@@ -62,6 +67,8 @@ public enum CommitAmendError: Error, Equatable, CustomStringConvertible {
         case .wouldBeEmpty: return Self.emptyAmendAdvice
         case .emptyMessage: return "Aborting commit due to empty commit message."
         case .invalidCleanupMode(let mode): return "Invalid cleanup mode \(mode)"
+        case .invalidCommentString(let key, let empty):
+            return empty ? "\(key) must have at least one character" : "\(key) cannot contain newline"
         }
     }
 }
@@ -108,6 +115,13 @@ extension Repository {
         cleanup: CommitMessageCleanup? = nil,
         env: [String: String] = ProcessInfo.processInfo.environment
     ) throws -> Libgit2CommitDetails {
+        // Git rejects a bad comment string as it reads its config, first.
+        for key in ["core.commentString", "core.commentChar"] {
+            guard let value = try configGet(key) else { continue }
+            if value.isEmpty || value.contains("\n") {
+                throw CommitAmendError.invalidCommentString(key: key.lowercased(), empty: value.isEmpty)
+            }
+        }
         let old = try commitToAmend()
         defer { git_commit_free(old) }
         // Git checks the state, then the cleanup mode, then the index.
@@ -488,16 +502,49 @@ extension Repository {
         }
         git_reference_free(moved)
         // libgit2 logs the update under the config identity and "now";
-        // git logs a commit's ref update under its committer.
-        for log in detached ? ["HEAD"] : [name, "HEAD"] {
+        // git logs a commit's ref update under its committer. Rewrite the
+        // entries holding the refs' locks, as git does a ref's log, and
+        // only while the refs are still as this amend left them: another
+        // process that moved one since keeps its own entry, and one
+        // updating it now (its lock held) leaves libgit2's in place.
+        let logs = detached ? ["HEAD"] : [name, "HEAD"]
+        var locks: [OpaquePointer?] = []
+        defer { locks.forEach { gitkit_lockfile_release($0) } }
+        for ref in logs {
+            var lock: OpaquePointer?
+            let rc = gitkit_lockfile_acquire(&lock, refPath(ref))
+            if rc == GIT_ELOCKED.rawValue { return }
+            try check(rc)
+            locks.append(lock)
+        }
+        var resolved = git_oid()
+        guard git_reference_name_to_id(&resolved, repo, name) == 0,
+              git_oid_equal(&resolved, &target) != 0,
+              detached || headBranchName() == name
+        else { return }
+        for log in logs {
             try restampReflog(log, old: old, new: new, committer: committer, message: reflog)
         }
     }
 
+    /// The branch HEAD names, nil when detached or unborn.
+    private func headBranchName() -> String? {
+        var head: OpaquePointer?
+        guard git_repository_head_detached(repo) == 0, git_repository_head(&head, repo) == 0 else { return nil }
+        defer { git_reference_free(head) }
+        return String(cString: git_reference_name(head))
+    }
+
+    /// Where the loose ref `name` lives: HEAD in this worktree's git
+    /// dir, branches in the common one.
+    private func refPath(_ name: String) -> String {
+        (name == "HEAD" ? gitDirPath : commonDirPath) + name
+    }
+
     /// Replace `name`'s newest reflog entry — the `old` → `new` update
-    /// just logged with `message` — by the same entry under `committer`.
-    /// A ref without a reflog (`core.logAllRefUpdates=false`) is left
-    /// without one.
+    /// just logged with `message` — by the same entry under `committer`,
+    /// holding the log's lock. A ref without a reflog
+    /// (`core.logAllRefUpdates=false`) is left without one.
     private func restampReflog(
         _ name: String, old: git_oid, new: git_oid,
         committer: UnsafeMutablePointer<git_signature>?, message: [UInt8]
@@ -506,6 +553,10 @@ extension Repository {
         let exists = git_reference_has_log(repo, name)
         try check(min(exists, 0))
         guard exists == 1 else { return }
+        let path = (name == "HEAD" ? gitDirPath : commonDirPath) + "logs/" + name
+        var lock: OpaquePointer?
+        try check(gitkit_lockfile_acquire(&lock, path))
+        defer { gitkit_lockfile_release(lock) }
         var log: OpaquePointer?
         try check(git_reflog_read(&log, repo, name))
         defer { git_reflog_free(log) }
@@ -524,13 +575,12 @@ extension Repository {
         // reflog delete` without `--rewrite`).
         // A linked worktree keeps HEAD's log in its own git dir and
         // branch logs in the common one.
-        let url = URL(fileURLWithPath: (name == "HEAD" ? gitDirPath : commonDirPath) + "logs/" + name)
-        var lines = Array(try Data(contentsOf: url))
+        var lines = Array(try Data(contentsOf: URL(fileURLWithPath: path)))
         if lines.last == 0x0A { lines.removeLast() }
         lines = lines.lastIndex(of: 0x0A).map { Array(lines[...$0]) } ?? []
         let ids = formatOID(&old) + " " + formatOID(&new) + " "
         lines += Array(ids.utf8) + Self.reflogIdentity(committer) + [0x09] + message + [0x0A]
-        try Data(lines).write(to: url, options: .atomic)
+        try check(gitkit_lockfile_commit(lock, lines, lines.count))
     }
 
     /// `Name <email> 1767258000 +0100`, as a reflog line records its

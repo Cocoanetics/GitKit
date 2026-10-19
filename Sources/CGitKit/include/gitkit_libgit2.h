@@ -103,6 +103,18 @@ GIT_EXTERN(int) gitkit_index_lock_acquire(gitkit_index_lock **out, git_repositor
 GIT_EXTERN(void) gitkit_index_lock_release(gitkit_index_lock *lock);
 
 /*
+ * GitKit addition, implemented in Sources/Clibgit2Patches/lockfile.c: git's
+ * `<path>.lock`, created exclusively (GIT_ELOCKED when it exists).
+ * `gitkit_lockfile_commit` writes `data` to it and renames it over `path`;
+ * `gitkit_lockfile_release` removes it unless committed, and frees `lock`
+ * (it accepts NULL).
+ */
+typedef struct gitkit_lockfile gitkit_lockfile;
+GIT_EXTERN(int) gitkit_lockfile_acquire(gitkit_lockfile **out, const char *path);
+GIT_EXTERN(int) gitkit_lockfile_commit(gitkit_lockfile *lock, const void *data, size_t len);
+GIT_EXTERN(void) gitkit_lockfile_release(gitkit_lockfile *lock);
+
+/*
  * GitKit addition, implemented in Sources/Clibgit2Patches/reencode.c: git's
  * reencode_string_len(), converting `in_len` bytes from charset `from` to `to`
  * with iconv. On success returns 0 and a NUL-terminated `*out` (release with
