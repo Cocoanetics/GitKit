@@ -142,8 +142,9 @@ extension RepositoryOctopusMergeTests {
         guard case .mergeCommit(_, let summary, _, _, let lines) = result.outcome else {
             Issue.record("expected a merge commit, got \(result.outcome)"); return
         }
-        #expect(output.contains(summary + "\n"))
-        #expect(summary.contains(" \u{754C} | 1 +"))
+        // Older gits' width tables count emoji as one column.
+        if try gitIsAtLeast(2, 54) { #expect(output.contains(summary + "\n")) }
+        #expect(summary.contains(" \u{754C} | 1 +") && summary.contains(" x\u{301}  | 1 +"))
         #expect(lines == output.split(separator: "\n").map(String.init).filter { $0.hasPrefix(" create") })
         #expect(Repository.displayWidth("\u{754C}x\u{301}\u{AD}".unicodeScalars) == 4)
     }
