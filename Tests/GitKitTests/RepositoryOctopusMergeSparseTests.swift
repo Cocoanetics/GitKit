@@ -315,5 +315,28 @@ extension RepositoryOctopusMergeTests {
         let kept = try String(contentsOf: dir.appendingPathComponent("out/sub/file"), encoding: .utf8)
         #expect(kept == "mine\n")
     }
+
+    @Test("a file standing where a submodule outside the cone is recorded stays, unmarked")
+    func sparseKeepsFileAtGitlink() throws {
+        let dir = try makeRepository()
+        let inc = dir.appendingPathComponent("inc")
+        try FileManager.default.createDirectory(at: inc, withIntermediateDirectories: true)
+        try write("1\n", to: "inc/i", in: dir)
+        try git(["add", "-A"], in: dir)
+        let head = try git(["rev-parse", "HEAD"], in: dir).stdout
+        try git(["update-index", "--add", "--cacheinfo", "160000,\(head),out/sub"], in: dir)
+        try git(["commit", "-q", "-m", "sub"], in: dir)
+        try git(["sparse-checkout", "init", "--cone"], in: dir)
+        try git(["sparse-checkout", "set", "inc"], in: dir)
+        try git(["update-index", "--no-skip-worktree", "out/sub"], in: dir)
+        try FileManager.default.createDirectory(at: dir.appendingPathComponent("out"),
+                                                withIntermediateDirectories: true)
+        try write("mine\n", to: "out/sub", in: dir)
+
+        _ = try merge(["a", "b"], in: dir)
+        let kept = try String(contentsOf: dir.appendingPathComponent("out/sub"), encoding: .utf8)
+        #expect(kept == "mine\n")
+        #expect(try git(["ls-files", "-v", "out/sub"], in: dir).stdout == "H out/sub")
+    }
 }
 #endif

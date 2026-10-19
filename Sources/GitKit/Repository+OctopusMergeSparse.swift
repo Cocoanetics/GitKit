@@ -140,12 +140,13 @@ extension Repository {
     func removeOutsideWorkTree(_ entries: [(path: String, entry: Entry)]) throws -> [String] {
         let workdir = git_repository_workdir(repo).map { String(cString: $0) } ?? ""
         var removed: [String] = []
-        for (path, entry) in entries {
+        for (path, _) in entries {
             do {
                 let present = try Self.isPresent(workdir + path)
                 try Self.removeFromWorkTree(path, in: workdir)
-                // What went, to put back; a directory with files stays.
-                if present, entry.mode != 0o160000, try !Self.isPresent(workdir + path) { removed.append(path) }
+                // Whatever went, to put back from the index as it was; a
+                // directory with files stays.
+                if present, try !Self.isPresent(workdir + path) { removed.append(path) }
             } catch {
                 putBack(removed)
                 throw error
@@ -291,8 +292,14 @@ extension Repository {
             for (path, entry) in hide {
                 let file = workdir + path
                 if try Self.isPresent(file) {
-                    if entry.mode != 0o160000,
-                       try !matches(entry, path: path, at: file, fileMode: fileMode, symlinks: symlinks) { continue }
+                    if entry.mode == 0o160000 {
+                        // A submodule's place: only its (empty) directory
+                        // goes; a file or link there is the user's.
+                        let type = try FileManager.default.attributesOfItem(atPath: file)[.type] as? FileAttributeType
+                        guard type == .typeDirectory else { continue }
+                    } else if try !matches(entry, path: path, at: file, fileMode: fileMode, symlinks: symlinks) {
+                        continue
+                    }
                     // One that can't go stays, unmarked, as git leaves it.
                     guard (try? Self.removeFromWorkTree(path, in: workdir)) != nil else { continue }
                     if try Self.isPresent(file) { continue }
