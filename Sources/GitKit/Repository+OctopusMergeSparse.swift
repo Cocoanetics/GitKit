@@ -292,14 +292,22 @@ extension Repository {
     /// files change first and the bits in one write of the index; where
     /// that fails, the files are put back as they were. A path whose name
     /// isn't UTF-8 is left as it is: a Swift string can't name its entry.
-    func reapplySparsity() throws {
-        guard let includes = try sparseIncludes() else { return }
+    /// Returns what takes the file changes back, once the index is back.
+    @discardableResult
+    func reapplySparsity() throws -> () -> Void {
+        guard let includes = try sparseIncludes() else { return {} }
         let workdir = git_repository_workdir(repo).map { String(cString: $0) } ?? ""
         let (restore, hide) = try sparseChanges(includes)
         // Written by force: the bit keeps safe checkout off them, and
         // nothing stands there.
         var made: [String] = [], hidden: [String] = [], removed: [String] = [], emptied: [String] = []
         let written = restore.filter { !$0.gitlink && !Self.exists(workdir + $0.path) }.map(\.path)
+        let undo = { [self] in
+            putBack(removed)
+            for path in emptied { try? FileManager.default.createDirectory(atPath: workdir + path,
+                                                                           withIntermediateDirectories: true) }
+            for path in written + made { try? FileManager.default.removeItem(atPath: workdir + path) }
+        }
         do {
             for (path, gitlink) in restore where gitlink && !Self.exists(workdir + path) {
                 try FileManager.default.createDirectory(atPath: workdir + path, withIntermediateDirectories: true)
@@ -331,12 +339,10 @@ extension Repository {
             }
             try setSkipWorktree(on: hidden, off: restore.map(\.path))
         } catch {
-            putBack(removed)
-            for path in emptied { try? FileManager.default.createDirectory(atPath: workdir + path,
-                                                                           withIntermediateDirectories: true) }
-            for path in written + made { try? FileManager.default.removeItem(atPath: workdir + path) }
+            undo()
             throw error
         }
+        return undo
     }
 
     /// The stage-0 entries whose skip-worktree bit `includes` changes:

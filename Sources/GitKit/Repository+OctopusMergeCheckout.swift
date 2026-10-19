@@ -540,7 +540,8 @@ extension Repository {
     /// if it can't, the checkout is taken back too.
     func commitMerge(
         tree: git_oid, from headTree: git_oid, start: git_oid, parents: [git_oid], message: String,
-        author: Signature?, env: [String: String], settle: () throws -> Void = {}, staged: () throws -> Void = {}
+        author: Signature?, env: [String: String], settle: () throws -> () -> Void = { {} },
+        staged: () throws -> Void = {}
     ) throws -> String {
         // A path the merge deletes that the work tree no longer has is
         // only the index's business; libgit2 can't "recreate" it.
@@ -575,6 +576,7 @@ extension Repository {
         let before = try snapshot(Array(changed.keys), in: workdir)
         return try withTree(tree) { tree in
             var commitOID = git_oid()
+            var unsettle: () -> Void = {}
             do {
                 let target = { (path: String) throws -> Entry? in try self.entry(tree, path) }
                 try withCheckout(of: paths, strategy: UInt32(GIT_CHECKOUT_SAFE.rawValue), target: target) { options in
@@ -598,7 +600,7 @@ extension Repository {
                             text, tree, buffer.count, buffer.baseAddress))
                     }
                 }
-                try settle()
+                unsettle = try settle()
             } catch {
                 // Only a ref that won't move leaves the merge staged.
                 rollBack(to: before, in: workdir)
@@ -652,6 +654,8 @@ extension Repository {
                 } catch {
                     removeMergeState()
                     rollBack(to: before, in: workdir)
+                    // Once the index is back, so the files it settled can be.
+                    unsettle()
                     throw error
                 }
                 throw error
