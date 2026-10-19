@@ -179,6 +179,7 @@ enum AmendFixture {
     static func expectSameRepos(
         setup: (URL) throws -> Void,
         gitArgs: [String],
+        env: [String: String] = [:],
         after: (_ viaGit: URL, _ viaKit: URL) throws -> Void = { _, _ in },
         amend: (Repository, [String: String]) throws -> Void
     ) throws {
@@ -190,7 +191,7 @@ enum AmendFixture {
         }
         try setup(viaGit)
         try setup(viaKit)
-        let env = ["GIT_COMMITTER_DATE": commitDate]
+        let env = env.merging(["GIT_COMMITTER_DATE": commitDate]) { $1 }
         let amended = try run(["commit", "-q", "--amend"] + gitArgs, in: viaGit, env: env)
         #expect(amended.status == 0, "git failed: \(amended.err)")
         try amend(try Repository.open(at: viaKit), env)

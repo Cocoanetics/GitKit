@@ -128,5 +128,25 @@ extension RepositoryAmendTests {
                 try repo.amendDetailed(message: "tagged\n", env: env)
             })
     }
+
+    @Test("with no identity configured, the committer from env moves the ref and is logged")
+    func identityFromEnvOnly() throws {
+        try AmendFixture.expectSameRepos(
+            setup: { dir in
+                try AmendFixture.twoCommits(dir)
+                // Empty values override any global identity: none is left.
+                try AmendFixture.git(["config", "user.name", ""], in: dir)
+                try AmendFixture.git(["config", "user.email", ""], in: dir)
+            },
+            gitArgs: ["-m", "from env"],
+            env: ["GIT_COMMITTER_NAME": "Env Committer", "GIT_COMMITTER_EMAIL": "env@example.com"],
+            after: { _, viaKit in
+                let line = try AmendFixture.lastLine(of: ".git/logs/HEAD", in: viaKit)
+                #expect(line.contains(" Env Committer <env@example.com> 1770026400 +0100\t"))
+            },
+            amend: { repo, env in
+                try repo.amendDetailed(message: "from env\n", env: env)
+            })
+    }
 }
 #endif
