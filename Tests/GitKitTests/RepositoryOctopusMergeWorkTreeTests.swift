@@ -72,6 +72,61 @@ extension RepositoryOctopusMergeTests {
         #expect(output.contains(summary))
     }
 
+    @Test("paths git quotes are quoted in the merge's summary, as git's are")
+    func quotedPathsInSummary() throws {
+        let dir = try makeRepository()
+        try git(["checkout", "-q", "-b", "odd", "base"], in: dir)
+        for name in ["we\nird", "tab\t\"q\"", "\u{fc}mlaut", "back\\slash"] {
+            try write("\(name)\n", to: name, in: dir)
+        }
+        try FileManager.default.setAttributes([.posixPermissions: 0o755],
+                                              ofItemAtPath: dir.appendingPathComponent("\u{fc}mlaut").path)
+        try git(["add", "-A"], in: dir)
+        try git(["commit", "-q", "-m", "odd"], in: dir)
+        try git(["checkout", "-q", "-b", "mvodd", "base"], in: dir)
+        try git(["mv", "f", "f\tg"], in: dir)
+        try git(["commit", "-q", "-m", "mv"], in: dir)
+        try git(["checkout", "-q", "main"], in: dir)
+        let other = try twin(of: dir)
+        let result = try merge(["odd", "mvodd", "c"], in: dir)
+        let output = try git(["merge", "-m", "Merge branches", "odd", "mvodd", "c"], in: other).stdout
+        guard case .mergeCommit(_, _, let added, let deleted, let lines) = result.outcome else {
+            Issue.record("expected a merge commit, got \(result.outcome)"); return
+        }
+        let gitLines = output.split(separator: "\n").map(String.init)
+        let gitSummary = gitLines.filter { $0.hasPrefix(" create") || $0.hasPrefix(" delete")
+            || $0.hasPrefix(" rename") || $0.hasPrefix(" mode change") }
+        #expect(lines == gitSummary)
+        #expect(lines.contains(" rename f => \"f\\tg\" (100%)"))
+        #expect(added.contains(" create mode 100755 \"\\303\\274mlaut\""))
+        #expect(added.contains(" create mode 100644 \"we\\nird\""))
+        #expect(added.allSatisfy { !$0.contains("\n") } && deleted.isEmpty)
+        if case .mergeCommit(_, let summary, _, _, _) = result.outcome { #expect(output.contains(summary + "\n")) }
+        #expect(Repository.quotedPath(Array("\u{fc}\u{1}".utf8), quotePath: false) == "\"\u{fc}\\001\"")
+    }
+
+    @Test("the diffstat scales its graph, names binary files and shortens long names, as git's does")
+    func diffstatWidths() throws {
+        let dir = try makeRepository()
+        try git(["checkout", "-q", "-b", "big", "base"], in: dir)
+        try write((1...150).map { "line \($0)" }.joined(separator: "\n") + "\n", to: "f", in: dir)
+        let deep = "a-rather-long-directory-name/with-another-long-subdirectory/and-yet-one-more-level"
+        try FileManager.default.createDirectory(at: dir.appendingPathComponent(deep), withIntermediateDirectories: true)
+        try write("x\ny\n", to: deep + "/file-with-a-long-name.txt", in: dir)
+        try Data([0, 1, 2, 0, 255]).write(to: dir.appendingPathComponent("blob.bin"))
+        try git(["add", "-A"], in: dir)
+        try git(["commit", "-q", "-m", "big"], in: dir)
+        try git(["checkout", "-q", "main"], in: dir)
+        let other = try twin(of: dir)
+        let result = try merge(["big", "c"], in: dir)
+        let output = try git(["merge", "-m", "Merge branches", "big", "c"], in: other).stdout
+        guard case .mergeCommit(_, let summary, _, _, _) = result.outcome else {
+            Issue.record("expected a merge commit, got \(result.outcome)"); return
+        }
+        #expect(output.contains(summary + "\n"))
+        #expect(summary.contains("Bin 0 -> 5 bytes") && summary.contains(".../"))
+    }
+
     @Test("renames read as git's diff summary writes them")
     func renameText() {
         #expect(Repository.renameText("a/b/c", "a/z/c") == "a/{b => z}/c")
