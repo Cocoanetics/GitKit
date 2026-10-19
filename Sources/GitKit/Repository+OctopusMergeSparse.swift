@@ -93,7 +93,10 @@ extension Repository {
     func sparseIncludes() throws -> ((String) -> Bool)? {
         guard try sparseCheckout() else { return nil }
         let file = String(cString: git_repository_path(repo)) + "info/sparse-checkout"
-        guard let text = try? String(contentsOfFile: file, encoding: .utf8) else { return nil }
+        // Bytes, as git reads them: one line that isn't UTF-8 (a comment,
+        // say) doesn't cost the others.
+        guard let data = FileManager.default.contents(atPath: file) else { return nil }
+        let text = String(decoding: data, as: UTF8.self)
         let ignoreCase = try ignoresCase()
         let coneMode = try configBool("core.sparsecheckoutcone", default: true)
         if coneMode, let cone = SparseCone(text, ignoreCase: ignoreCase) {
@@ -157,10 +160,12 @@ extension Repository {
         }
     }
 
-    /// What the index held at a path before ``stageOutsideWorkTree(_:)``.
+    /// An index entry at a path with its flag words: what the index held
+    /// before ``stageOutsideWorkTree(_:)``, or what it stages.
     struct StagedBefore {
         let path: String
         let entry: Entry?
+        let flags: UInt16
         let flagsExtended: UInt16
     }
 
@@ -176,9 +181,11 @@ extension Repository {
         let before = entries.map { path, _ in
             let old = git_index_get_bypath(index, path, 0)?.pointee
             return StagedBefore(path: path, entry: old.map { Entry(oid: $0.id, mode: $0.mode) },
-                                flagsExtended: old?.flags_extended ?? 0)
+                                flags: old?.flags ?? 0, flagsExtended: old?.flags_extended ?? 0)
         }
-        try write(entries.map { ($0.path, $0.entry, UInt16(GIT_INDEX_ENTRY_SKIP_WORKTREE.rawValue)) }, to: index)
+        let skip = UInt16(GIT_INDEX_ENTRY_SKIP_WORKTREE.rawValue)
+        let staged = entries.map { StagedBefore(path: $0.path, entry: $0.entry, flags: 0, flagsExtended: skip) }
+        try write(staged, to: index)
         return before
     }
 
@@ -189,21 +196,26 @@ extension Repository {
         defer { git_index_free(index) }
         guard git_index_read(index, 1) == 0 else { return }
         for old in before where old.entry == nil { _ = git_index_remove_bypath(index, old.path) }
-        let kept = before.compactMap { old in old.entry.map { (old.path, $0, old.flagsExtended) } }
-        try? write(kept, to: index)
+        // Both flag words as they were: assume-unchanged too.
+        try? write(before.filter { $0.entry != nil }, to: index)
     }
 
     private func write(
-        _ entries: [(path: String, entry: Entry, flagsExtended: UInt16)], to index: OpaquePointer?
+        _ entries: [StagedBefore], to index: OpaquePointer?
     ) throws {
-        for (path, entry, flagsExtended) in entries {
+        for staged in entries {
+            guard let entry = staged.entry else { continue }
+            let path = staged.path
             _ = git_index_remove_bypath(index, path)
             try path.withCString { name in
                 var record = git_index_entry()
                 record.path = name
                 record.id = entry.oid
                 record.mode = entry.mode
-                record.flags_extended = flagsExtended
+                // Only the bits an entry keeps (assume-unchanged); its
+                // stage and name length are the index's to set.
+                record.flags = staged.flags & UInt16(GIT_INDEX_ENTRY_VALID.rawValue)
+                record.flags_extended = staged.flagsExtended
                 try check(git_index_add(index, &record))
             }
         }
@@ -214,7 +226,12 @@ extension Repository {
     /// path that can't be looked at throws, rather than pass for absent.
     static func isPresent(_ path: String) throws -> Bool {
         #if os(Windows)
-        return exists(path)
+        do {
+            _ = try FileManager.default.attributesOfItem(atPath: path)
+            return true
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile || error.code == .fileNoSuchFile {
+            return false
+        }
         #else
         var info = stat()
         if lstat(path, &info) == 0 { return true }

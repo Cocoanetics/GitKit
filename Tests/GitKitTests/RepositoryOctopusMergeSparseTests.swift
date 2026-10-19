@@ -87,8 +87,9 @@ extension RepositoryOctopusMergeTests {
         try git(["checkout", "-q", "main"], in: dir)
         try git(["config", "core.sparseCheckout", "true"], in: dir)
         try git(["config", "core.sparseCheckoutCone", "false"], in: dir)
-        try "/*\n!/out/\n/out/keep/\n!*.log\n!docs/*.txt\n"
-            .write(to: dir.appendingPathComponent(".git/info/sparse-checkout"), atomically: true, encoding: .utf8)
+        // A comment that isn't UTF-8 costs the other lines nothing.
+        let rules = Data("# caf".utf8) + Data([0xE9, 0x0A]) + Data("/*\n!/out/\n/out/keep/\n!*.log\n!docs/*.txt\n".utf8)
+        try rules.write(to: dir.appendingPathComponent(".git/info/sparse-checkout"))
         try git(["read-tree", "-mu", "HEAD"], in: dir)
 
         let other = try twin(of: dir)
