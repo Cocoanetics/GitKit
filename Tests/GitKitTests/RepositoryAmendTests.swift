@@ -568,5 +568,35 @@ extension RepositoryAmendTests {
             .compactMap { $0 as? String }.filter { $0.hasSuffix(".lock") } ?? []
         #expect(leftovers.isEmpty)
     }
+
+    @Test("core.commentChar=auto with every candidate used is refused in any cleanup mode")
+    func noCommentCharacter() throws {
+        let message = "x\n#1\n;2\n@3\n!4\n$5\n%6\n^7\n&8\n|9\n:10\n"
+        for cleanup in [CommitMessageCleanup.strip, .whitespace, .verbatim] {
+            let dir = try AmendFixture.makeRepo()
+            defer { try? FileManager.default.removeItem(at: dir) }
+            try AmendFixture.twoCommits(dir)
+            try AmendFixture.git(["config", "core.commentChar", "auto"], in: dir)
+            let head = try AmendFixture.git(["rev-parse", "HEAD"], in: dir)
+            let git = try AmendFixture.run(["commit", "--amend", "--cleanup=\(cleanup)", "-m", message], in: dir)
+            #expect(git.status == 128)
+            #expect(git.err.hasSuffix("fatal: \(CommitAmendError.noCommentCharacter)\n"))
+            #expect(throws: CommitAmendError.noCommentCharacter) {
+                try Repository.open(at: dir).amendDetailed(message: message, cleanup: cleanup)
+            }
+            #expect(try AmendFixture.git(["rev-parse", "HEAD"], in: dir) == head)
+        }
+        // With one candidate free, git takes it: `:` lines stay under strip.
+        try AmendFixture.expectSameRepos(
+            setup: { dir in
+                try AmendFixture.twoCommits(dir)
+                try AmendFixture.git(["config", "core.commentChar", "auto"], in: dir)
+            },
+            gitArgs: ["--cleanup=strip", "-m", "x\n#1\n;2\n@3\n!4\n$5\n%6\n^7\n&8\n|9\n"],
+            amend: { repo, env in
+                try repo.amendDetailed(
+                    message: "x\n#1\n;2\n@3\n!4\n$5\n%6\n^7\n&8\n|9\n", cleanup: .strip, env: env)
+            })
+    }
 }
 #endif

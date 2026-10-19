@@ -49,6 +49,10 @@ public enum CommitAmendError: Error, Equatable, CustomStringConvertible {
     /// `fatal: bad config variable '<key>' in file …`, exit 128, before
     /// anything else.
     case invalidCommentString(key: String, empty: Bool)
+    /// The comment string is `auto` and every candidate (`#;@!$%^&|:`)
+    /// starts a line of the message: git prints `fatal: <description>`,
+    /// exit 128, whatever the cleanup mode.
+    case noCommentCharacter
 
     /// Real git's advice for an amend that would leave the commit empty.
     public static let emptyAmendAdvice = """
@@ -69,6 +73,8 @@ public enum CommitAmendError: Error, Equatable, CustomStringConvertible {
         case .invalidCleanupMode(let mode): return "Invalid cleanup mode \(mode)"
         case .invalidCommentString(let key, let empty):
             return empty ? "\(key) must have at least one character" : "\(key) cannot contain newline"
+        case .noCommentCharacter:
+            return "unable to select a comment character that is not used\nin the current commit message"
         }
     }
 }
@@ -171,6 +177,15 @@ extension Repository {
         }
         defer { if baseTree != nil { git_tree_free(baseTree) } }
 
+        let encoding = try configGet("i18n.commitEncoding").flatMap { Self.isUTF8($0) ? nil : $0 }
+        // Like git's `-m`, a given message ends its last line
+        // (`strbuf_complete_line`); a kept one stays as it is.
+        let given = message.map { Array($0.utf8) }.map { $0.isEmpty || $0.last == 0x0A ? $0 : $0 + [0x0A] }
+        let rawText = given ?? oldMessage(of: old, encoding: encoding)
+        // Git settles the comment string (`auto`'s pick) on the message
+        // as given, before its empty rule and in every cleanup mode.
+        let comment = try commentPrefix(for: rawText)
+
         if !allowEmpty, parentCount < 2 {
             let empty = baseTree.map { git_oid_equal(git_tree_id($0), &treeOID) != 0 }
                 ?? (git_tree_entrycount(newTree) == 0)
@@ -184,12 +199,7 @@ extension Repository {
             role: .committer, override: nil, repo: repo, env: env)
         defer { git_signature_free(committerSig) }
 
-        let encoding = try configGet("i18n.commitEncoding").flatMap { Self.isUTF8($0) ? nil : $0 }
-        // Like git's `-m`, a given message ends its last line
-        // (`strbuf_complete_line`); a kept one stays as it is.
-        let given = message.map { Array($0.utf8) }.map { $0.isEmpty || $0.last == 0x0A ? $0 : $0 + [0x0A] }
-        var text = try cleanedUp(given ?? oldMessage(of: old, encoding: encoding),
-                                 cleanup, allowEmpty: allowEmptyMessage)
+        var text = try cleanedUp(rawText, cleanup, comment: comment, allowEmpty: allowEmptyMessage)
         text.append(0)
 
         var commitOID = git_oid()
@@ -375,29 +385,32 @@ extension Repository {
         }
     }
 
-    /// `message` cleaned up as git's `cleanup_message()` does, refusing
-    /// one left empty unless `allowEmpty`, as git does.
+    /// `message` cleaned up as git's `cleanup_message()` does, `strip`
+    /// dropping lines that start with `comment`, refusing one left empty
+    /// unless `allowEmpty`, as git does.
     private func cleanedUp(
-        _ message: [UInt8], _ cleanup: CommitMessageCleanup, allowEmpty: Bool
+        _ message: [UInt8], _ cleanup: CommitMessageCleanup, comment: [UInt8], allowEmpty: Bool
     ) throws -> [UInt8] {
         // Verbatim, only a message of no bytes at all counts as empty.
         guard cleanup != .verbatim else {
             if message.isEmpty && !allowEmpty { throw CommitAmendError.emptyMessage }
             return message
         }
-        let comment = cleanup == .strip ? try commentPrefix(for: message) : nil
-        let cleaned = Self.stripSpace(message, commentPrefix: comment)
+        let cleaned = Self.stripSpace(message, commentPrefix: cleanup == .strip ? comment : nil)
         if cleaned.isEmpty && !allowEmpty { throw CommitAmendError.emptyMessage }
         return cleaned
     }
 
     /// `core.commentString` (else `core.commentChar`, else `#`); for
-    /// `auto`, git's pick of the first of `#;@!$%^&|:` that starts no line.
+    /// `auto`, git's pick of the first of `#;@!$%^&|:` that starts no line
+    /// (``CommitAmendError/noCommentCharacter`` when each one does).
     private func commentPrefix(for message: [UInt8]) throws -> [UInt8] {
         let configured = try configGet("core.commentString") ?? configGet("core.commentChar") ?? "#"
         guard configured == "auto" else { return Array(configured.utf8) }
         let used = Set(message.split(separator: UInt8(ascii: "\n")).compactMap(\.first))
-        let pick = "#;@!$%^&|:".utf8.first { !used.contains($0) } ?? UInt8(ascii: "#")
+        guard let pick = "#;@!$%^&|:".utf8.first(where: { !used.contains($0) }) else {
+            throw CommitAmendError.noCommentCharacter
+        }
         return [pick]
     }
 
