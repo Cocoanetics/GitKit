@@ -49,7 +49,10 @@ extension Repository {
         /// when `text` holds any other kind.
         init?(_ text: String, ignoreCase: Bool = false) {
             self.ignoreCase = ignoreCase
-            for line in text.split(separator: "\n").map({ $0.trimmingCharacters(in: .whitespaces) })
+            // Only the trailing spaces git drops go: a leading one makes
+            // the line a different (non-cone) pattern.
+            for line in text.split(separator: "\n").map({ SparsePatterns.trimmingTrailingSpaces(
+                String($0.hasSuffix("\r") ? $0.dropLast() : $0)) })
             where !line.isEmpty && !line.hasPrefix("#") {
                 if line == "/*" || line == "!/*/" { continue }
                 if line.hasPrefix("!/"), line.hasSuffix("/*/"), line.count > 5 {
@@ -80,12 +83,17 @@ extension Repository {
         try configBool("core.sparsecheckout", default: false)
     }
 
+    /// A boolean setting, `fallback` where it's unset; a value that isn't
+    /// a boolean throws, as git dies on it.
     private func configBool(_ name: String, default fallback: Bool) throws -> Bool {
         var config: OpaquePointer?
         try check(git_repository_config_snapshot(&config, repo))
         defer { git_config_free(config) }
         var value: Int32 = 0
-        return git_config_get_bool(&value, config, name) == 0 ? value != 0 : fallback
+        let rc = git_config_get_bool(&value, config, name)
+        if rc == GIT_ENOTFOUND.rawValue { return fallback }
+        try check(rc)
+        return value != 0
     }
 
     /// What the sparse-checkout file takes into the work tree: its cone

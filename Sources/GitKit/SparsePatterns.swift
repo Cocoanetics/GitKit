@@ -37,7 +37,7 @@ struct SparsePatterns {
 
     /// Trailing spaces go unless a backslash escapes them, as in
     /// gitignore.
-    private static func trimmingTrailingSpaces(_ line: String) -> String {
+    static func trimmingTrailingSpaces(_ line: String) -> String {
         var chars = Array(line)
         while chars.last == " " {
             let backslashes = chars.dropLast().reversed().prefix { $0 == "\\" }.count

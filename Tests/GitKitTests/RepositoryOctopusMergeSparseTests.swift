@@ -61,6 +61,9 @@ extension RepositoryOctopusMergeTests {
         #expect(cone.includes("top") && cone.includes("x/f") && cone.includes("x/y/z/f") && cone.includes("inc/a/b"))
         #expect(!cone.includes("x/q/f") && !cone.includes("out/f"))
         #expect(Repository.SparseCone("*.c\n") == nil)
+        // A leading space makes a line some other pattern; trailing ones go.
+        #expect(Repository.SparseCone("/*\n !/*/\n") == nil)
+        #expect(Repository.SparseCone("/*  \n!/*/\n/a/ \n")?.includes("a/b/c") == true)
         let folding = try #require(Repository.SparseCone("/*\n!/*/\n/Foo/\n", ignoreCase: true))
         #expect(folding.includes("foo/bar") && folding.includes("FOO/x/y"))
         #expect(!(try #require(Repository.SparseCone("/*\n!/*/\n/Foo/\n"))).includes("foo/bar"))
@@ -392,6 +395,18 @@ extension RepositoryOctopusMergeTests {
         #expect(repository.overwrites(added, worktree: untracked, ignoreCase: false) == nil)
         #expect(repository.overwrites(added, worktree: [Array("\u{E9}".utf8): true], ignoreCase: false)
             == .untrackedWouldBeOverwritten(path: "\u{E9}"))
+    }
+
+    @Test("a sparse-checkout setting that isn't a boolean stops the merge before anything changes")
+    func sparseSettingNotBoolean() throws {
+        let dir = try makeRepository()
+        try git(["config", "core.sparseCheckout", "maybe"], in: dir)
+        // git itself won't run now (`bad boolean config value`): read the
+        // index and the branch as files.
+        let files = ["index", "refs/heads/main"].map { dir.appendingPathComponent(".git/" + $0) }
+        let before = try files.map { try Data(contentsOf: $0) }
+        #expect(throws: Libgit2Error.self) { try merge(["a", "b"], in: dir) }
+        #expect(try files.map { try Data(contentsOf: $0) } == before)
     }
 }
 #endif
