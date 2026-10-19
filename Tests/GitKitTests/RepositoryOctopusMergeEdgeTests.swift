@@ -527,7 +527,8 @@ extension RepositoryOctopusMergeTests {
     @Test("in a sparse checkout, a skip-worktree path the merge changes stays out of the work tree")
     func sparseCheckoutStaysSparse() throws {
         let dir = try makeRepository()
-        try FileManager.default.createDirectory(at: dir.appendingPathComponent("d/e"), withIntermediateDirectories: true)
+        let nested = dir.appendingPathComponent("d/e")
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
         try write("1\n", to: "d/e/f", in: dir)
         try git(["add", "d"], in: dir)
         try git(["commit", "-q", "-m", "d"], in: dir)
