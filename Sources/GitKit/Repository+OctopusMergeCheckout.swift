@@ -248,40 +248,48 @@ extension Repository {
         let mergedEntry = { (path: String) -> Entry? in
             git_index_get_bypath(merged, path, 0).map { Entry(oid: $0.pointee.id, mode: $0.pointee.mode) }
         }
-        try withCheckout(of: paths, strategy: UInt32(GIT_CHECKOUT_SAFE.rawValue)
-                         | UInt32(GIT_CHECKOUT_ALLOW_CONFLICTS.rawValue), target: mergedEntry) { options in
-            try "HEAD".withCString { ours in
-                try theirLabel.withCString { theirs in
-                    options.our_label = ours
-                    options.their_label = theirs
-                    // Checkout writes the merged entries, conflicts and
-                    // all, to the repository's index.
-                    try check(git_checkout_index(repo, merged, &options))
+        // A failure part way puts the index and work tree back as the
+        // merge found them, as git's merge does when a strategy fails.
+        let before = try snapshot(changed + sideFiles, in: workdir)
+        do {
+            try withCheckout(of: paths, strategy: UInt32(GIT_CHECKOUT_SAFE.rawValue)
+                             | UInt32(GIT_CHECKOUT_ALLOW_CONFLICTS.rawValue), target: mergedEntry) { options in
+                try "HEAD".withCString { ours in
+                    try theirLabel.withCString { theirs in
+                        options.our_label = ours
+                        options.their_label = theirs
+                        // Checkout writes the merged entries, conflicts and
+                        // all, to the repository's index.
+                        try check(git_checkout_index(repo, merged, &options))
+                    }
                 }
             }
-        }
-        // Their stages go to the index all the same, and a path the merge
-        // deletes leaves it even where checkout kept its directory (a
-        // submodule that still holds files).
-        let deleted = changed.filter { path in
-            (0...3).allSatisfy { git_index_get_bypath(merged, path, Int32($0)) == nil }
-        }
-        if !skipped.isEmpty || !deleted.isEmpty {
-            var index: OpaquePointer?
-            try check(git_repository_index(&index, repo))
-            defer { git_index_free(index) }
-            for path in deleted { _ = git_index_remove_bypath(index, path) }
-            for path in skipped {
-                var ancestor, ours, theirs: UnsafePointer<git_index_entry>?
-                guard git_index_conflict_get(&ancestor, &ours, &theirs, merged, path) == 0 else { continue }
-                _ = git_index_remove_bypath(index, path)
-                try check(git_index_conflict_add(index, ancestor, ours, theirs))
+            // Their stages go to the index all the same, and a path the merge
+            // deletes leaves it even where checkout kept its directory (a
+            // submodule that still holds files).
+            let deleted = changed.filter { path in
+                (0...3).allSatisfy { git_index_get_bypath(merged, path, Int32($0)) == nil }
             }
-            try check(git_index_write(index))
+            if !skipped.isEmpty || !deleted.isEmpty {
+                var index: OpaquePointer?
+                try check(git_repository_index(&index, repo))
+                defer { git_index_free(index) }
+                for path in deleted { _ = git_index_remove_bypath(index, path) }
+                for path in skipped {
+                    var ancestor, ours, theirs: UnsafePointer<git_index_entry>?
+                    guard git_index_conflict_get(&ancestor, &ours, &theirs, merged, path) == 0 else { continue }
+                    _ = git_index_remove_bypath(index, path)
+                    try check(git_index_conflict_add(index, ancestor, ours, theirs))
+                }
+                try check(git_index_write(index))
+            }
+            Self.removeEmptyDirectories(removedGitlinks, in: workdir)
+            try restoreWorkTree(merged, workdir: workdir, theirLabel: theirLabel, skipped: skipped,
+                                keepingOurs: keepingOurs, mergedContent: mergedContent, preexisting: preexisting)
+        } catch {
+            rollBack(to: before, in: workdir)
+            throw error
         }
-        Self.removeEmptyDirectories(removedGitlinks, in: workdir)
-        try restoreWorkTree(merged, workdir: workdir, theirLabel: theirLabel, skipped: skipped,
-                            keepingOurs: keepingOurs, mergedContent: mergedContent, preexisting: preexisting)
     }
 
     /// The work tree as git-merge-one-file leaves it where libgit2's
@@ -540,6 +548,7 @@ extension Repository {
         // when a strategy fails.
         let before = try snapshot(Array(changed.keys), in: workdir)
         return try withTree(tree) { tree in
+            var commitOID = git_oid()
             do {
                 let target = { (path: String) throws -> Entry? in try self.entry(tree, path) }
                 try withCheckout(of: paths, strategy: UInt32(GIT_CHECKOUT_SAFE.rawValue), target: target) { options in
@@ -554,17 +563,17 @@ extension Repository {
                     Self.removeEmptyDirectories(gone.keys, in: workdir)
                 }
                 try settle()
+                _ = try commits.withUnsafeMutableBufferPointer { buffer in
+                    try message.withCString { text in
+                        try check(git_commit_create(
+                            &commitOID, repo, nil, authorSig, committerSig, nil,
+                            text, tree, buffer.count, buffer.baseAddress))
+                    }
+                }
             } catch {
+                // Only a ref that won't move leaves the merge staged.
                 rollBack(to: before, in: workdir)
                 throw error
-            }
-            var commitOID = git_oid()
-            _ = try commits.withUnsafeMutableBufferPointer { buffer in
-                try message.withCString { text in
-                    try check(git_commit_create(
-                        &commitOID, repo, nil, authorSig, committerSig, nil,
-                        text, tree, buffer.count, buffer.baseAddress))
-                }
             }
             // HEAD need not be the first parent, so move it by hand, and
             // only from where the merge began, as git's update_ref checks.

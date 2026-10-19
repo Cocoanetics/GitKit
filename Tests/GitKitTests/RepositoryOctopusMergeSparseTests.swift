@@ -344,7 +344,8 @@ extension RepositoryOctopusMergeTests {
         let dir = try makeRepository()
         try git(["config", "core.sparseCheckout", "true"], in: dir)
         try git(["config", "core.sparseCheckoutCone", "false"], in: dir)
-        let rules = Data("/*\n!/x".utf8) + Data([0xFF, 0x0A])
+        // ` #…` is a rule, not a comment: only a `#` first is.
+        let rules = Data("/*\n #".utf8) + Data([0xFF, 0x0A])
         try rules.write(to: dir.appendingPathComponent(".git/info/sparse-checkout"))
         let before = try state(of: dir)
         let error = #expect(throws: Libgit2Error.self) { try merge(["a", "b"], in: dir) }

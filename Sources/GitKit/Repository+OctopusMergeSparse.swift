@@ -100,7 +100,8 @@ extension Repository {
         guard let data = FileManager.default.contents(atPath: file) else { return nil }
         for line in data.split(separator: 0x0A) {
             let bytes = Array(line)
-            guard bytes.first(where: { $0 != 0x20 && $0 != 0x09 }) != 0x23,
+            // A comment only where `#` is the line's first byte.
+            guard bytes.first != 0x23,
                   !String(decoding: bytes, as: UTF8.self).utf8.elementsEqual(bytes) else { continue }
             throw Libgit2Error(code: -1, klass: 0, message:
                 "cannot merge: sparse-checkout rule \(Self.quotedPath(bytes)) is not valid UTF-8")
