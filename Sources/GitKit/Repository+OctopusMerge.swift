@@ -197,12 +197,14 @@ extension Repository {
 
         try writeOrigHead(head)
         if let conflicted {
+            // The merge state is written as part of the conflicted checkout,
+            // which is taken back if it can't be: the conflicts must stay
+            // concludable whatever follows.
             try checkOutConflicts(conflicted, from: headTree, theirLabel: heads.last ?? "", keepingOurs: keepOurs,
-                                  mergedContent: mergedContent)
-            // The merge state first: the conflicts are in the work tree
-            // now, and must stay concludable whatever follows.
-            try writeMergeState(oids: oids, message: message, conflicts: conflictedPaths,
-                                noFastForward: noFastForward)
+                                  mergedContent: mergedContent) {
+                try writeMergeState(oids: oids, message: message, conflicts: conflictedPaths,
+                                    noFastForward: noFastForward)
+            }
             try keepSkipWorktree(skipWorktree)
             try reapplySparsity()
             return OctopusMergeResult(steps: steps, outcome: .conflicts(paths: conflictedPaths))
@@ -229,6 +231,9 @@ extension Repository {
         let parents = (headSubsumed && !noFastForward ? [] : [head]) + oids
         // git ends a message with a newline.
         let text = message.hasSuffix("\n") ? message : message + "\n"
+        // The diffstat reads blobs that may fail to load: before anything
+        // changes, so a committed merge never ends in an error.
+        let stats = try mergeStats(from: headTree, to: mergedTree)
         let sha: String
         do {
             sha = try commitMerge(tree: mergedTree, from: headTree, start: head, parents: parents, message: text,
@@ -243,7 +248,6 @@ extension Repository {
             try writeMergeState(oids: oids, message: message, conflicts: [], noFastForward: noFastForward)
             return .headMissing(ref: missing.ref)
         }
-        let stats = try mergeStats(from: headTree, to: mergedTree)
         return .mergeCommit(sha: sha, statSummary: stats.summary, addedFiles: stats.added, deletedFiles: stats.deleted,
                             summaryLines: stats.lines)
     }

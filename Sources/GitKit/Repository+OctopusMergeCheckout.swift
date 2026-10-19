@@ -25,13 +25,21 @@ private func createScratchFile(_ path: String) -> Bool {
 // (`Repository+OctopusMerge.swift`).
 extension Repository {
 
+    /// An index path as a string, or nil where its name isn't UTF-8: a
+    /// repaired string could name another entry.
+    static func utf8Path(_ path: UnsafePointer<CChar>) -> String? {
+        let bytes = bytes(path), text = String(decoding: bytes, as: UTF8.self)
+        return text.utf8.elementsEqual(bytes) ? text : nil
+    }
+
     /// The paths `index` marks skip-worktree, which git keeps so when a
-    /// merge updates them.
+    /// merge updates them; one whose name isn't UTF-8 is left out, and
+    /// left as it is.
     func skipWorktreePaths(_ index: OpaquePointer?) -> [String] {
         (0..<git_index_entrycount(index)).compactMap { i -> String? in
             guard let entry = git_index_get_byindex(index, i)?.pointee,
                   entry.flags_extended & UInt16(GIT_INDEX_ENTRY_SKIP_WORKTREE.rawValue) != 0 else { return nil }
-            return String(cString: entry.path)
+            return Self.utf8Path(entry.path)
         }
     }
 
@@ -209,13 +217,13 @@ extension Repository {
             guard let entry = git_index_get_byindex(index, i)?.pointee,
                   entry.flags_extended & UInt16(GIT_INDEX_ENTRY_SKIP_WORKTREE.rawValue) != 0
                     || entry.flags & UInt16(GIT_INDEX_ENTRY_VALID.rawValue) != 0 else { return nil }
-            return String(cString: entry.path)
+            return Self.utf8Path(entry.path)
         }
     }
 
     func checkOutConflicts(
         _ merged: OpaquePointer?, from headTree: git_oid, theirLabel: String, keepingOurs: [String],
-        mergedContent: [String: git_oid] = [:]
+        mergedContent: [String: git_oid] = [:], persist: () throws -> Void = {}
     ) throws {
         // An unmerged path one side deleted has nothing to write where
         // the work tree no longer has it; libgit2 can't recreate it.
@@ -286,6 +294,16 @@ extension Repository {
             Self.removeEmptyDirectories(removedGitlinks, in: workdir)
             try restoreWorkTree(merged, workdir: workdir, theirLabel: theirLabel, skipped: skipped,
                                 keepingOurs: keepingOurs, mergedContent: mergedContent, preexisting: preexisting)
+            do {
+                try persist()
+            } catch {
+                // No half-written merge state either.
+                let gitDir = git_repository_path(repo).map { String(cString: $0) } ?? ""
+                for name in ["MERGE_HEAD", "MERGE_MSG", "MERGE_MODE"] {
+                    try? FileManager.default.removeItem(atPath: gitDir + name)
+                }
+                throw error
+            }
         } catch {
             rollBack(to: before, in: workdir)
             throw error
