@@ -17,13 +17,13 @@ extension Repository {
         var remaining: [String] = []
         var headSubsumed = false
         for (index, candidate) in candidates.enumerated() {
-            if let head, sameOID(head, candidate.oid) || isDescendant(head, of: candidate.oid) { continue }
-            let reachable = candidates.indices.contains { other in
-                other != index && isDescendant(candidates[other].oid, of: candidate.oid)
+            if let head, try sameOID(head, candidate.oid) || isDescendant(head, of: candidate.oid) { continue }
+            let reachable = try candidates.indices.contains { other in
+                try other != index && isDescendant(candidates[other].oid, of: candidate.oid)
             }
             if reachable { continue }
             remaining.append(candidate.spec)
-            if let head, isDescendant(candidate.oid, of: head) { headSubsumed = true }
+            if let head, try isDescendant(candidate.oid, of: head) { headSubsumed = true }
         }
         return MergeHeads(heads: remaining, headSubsumed: headSubsumed)
     }
@@ -227,7 +227,7 @@ extension Repository {
         head: git_oid, headTree: git_oid, mergedTree: git_oid, oids: [git_oid], noFastForward: Bool,
         message: String, author: Signature?, env: [String: String], settle: () throws -> Void = {}
     ) throws -> OctopusMergeOutcome {
-        let headSubsumed = oids.contains { isDescendant($0, of: head) }
+        let headSubsumed = try oids.contains { try isDescendant($0, of: head) }
         let parents = (headSubsumed && !noFastForward ? [] : [head]) + oids
         // git ends a message with a newline.
         let text = message.hasSuffix("\n") ? message : message + "\n"
@@ -236,16 +236,17 @@ extension Repository {
         let stats = try mergeStats(from: headTree, to: mergedTree)
         let sha: String
         do {
+            // A merge left staged gets its merge state while the checkout
+            // can still be taken back, should that fail.
             sha = try commitMerge(tree: mergedTree, from: headTree, start: head, parents: parents, message: text,
-                                  author: author, env: env, settle: settle)
+                                  author: author, env: env, settle: settle) {
+                try writeMergeState(oids: oids, message: message, conflicts: [], noFastForward: noFastForward)
+            }
         } catch let failed as HeadNotUpdated {
-            try writeMergeState(oids: oids, message: message, conflicts: [], noFastForward: noFastForward)
             return .headNotUpdated(lockFile: failed.lockFile, reason: failed.reason)
         } catch let moved as HeadMoved {
-            try writeMergeState(oids: oids, message: message, conflicts: [], noFastForward: noFastForward)
             return .headMoved(expected: moved.expected, actual: moved.actual)
         } catch let missing as HeadMissing {
-            try writeMergeState(oids: oids, message: message, conflicts: [], noFastForward: noFastForward)
             return .headMissing(ref: missing.ref)
         }
         return .mergeCommit(sha: sha, statSummary: stats.summary, addedFiles: stats.added, deletedFiles: stats.deleted,
@@ -351,9 +352,9 @@ extension Repository {
     }
 
     /// Whether `commit` has `ancestor` in its history (and isn't it).
-    func isDescendant(_ commit: git_oid, of ancestor: git_oid) -> Bool {
+    func isDescendant(_ commit: git_oid, of ancestor: git_oid) throws -> Bool {
         var commit = commit, ancestor = ancestor
-        return git_graph_descendant_of(repo, &commit, &ancestor) == 1
+        return try check(git_graph_descendant_of(repo, &commit, &ancestor)) == 1
     }
 
     /// `git merge-base --all <one> <others>…`: the best common ancestors

@@ -45,5 +45,30 @@ extension RepositoryOctopusMergeTests {
         #expect(outcome == .headMissing(ref: "refs/heads/main"))
         #expect(FileManager.default.fileExists(atPath: dir.appendingPathComponent(".git/MERGE_HEAD").path))
     }
+
+    @Test("a merge left staged whose merge state can't be written is taken back, index and work tree")
+    func stagedMergeStateUnwritable() throws {
+        let dir = try makeRepository()
+        func oid(_ name: String) throws -> git_oid {
+            var oid = git_oid()
+            _ = try git(["rev-parse", name], in: dir).stdout.withCString { git_oid_fromstr(&oid, $0) }
+            return oid
+        }
+        let start = try oid("HEAD"), tree = try oid("HEAD^{tree}"), heads = [try oid("a"), try oid("b")]
+        let merged = try oid("a^{tree}"), startSHA = try git(["rev-parse", "HEAD"], in: dir).stdout
+        try git(["update-ref", "refs/heads/main", "b"], in: dir)
+        // MERGE_MSG can't be written where a directory stands.
+        try FileManager.default.createDirectory(at: dir.appendingPathComponent(".git/MERGE_MSG"),
+                                                withIntermediateDirectories: false)
+        let repository = try Repository.open(at: dir)
+        #expect(throws: (any Error).self) {
+            try repository.conclude(head: start, headTree: tree, mergedTree: merged, oids: heads,
+                                    noFastForward: true, message: "Merge", author: nil, env: Self.identity)
+        }
+        #expect(!FileManager.default.fileExists(atPath: dir.appendingPathComponent(".git/MERGE_HEAD").path))
+        #expect(try git(["diff", "--cached", "--name-only", startSHA], in: dir).stdout.isEmpty)
+        #expect(try git(["diff", "--name-only", startSHA], in: dir).stdout.isEmpty)
+        #expect(try git(["ls-files", "--others", "--exclude-standard"], in: dir).stdout.isEmpty)
+    }
 }
 #endif

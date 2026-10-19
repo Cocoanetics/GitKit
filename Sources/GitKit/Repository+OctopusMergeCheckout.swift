@@ -298,10 +298,7 @@ extension Repository {
                 try persist()
             } catch {
                 // No half-written merge state either.
-                let gitDir = git_repository_path(repo).map { String(cString: $0) } ?? ""
-                for name in ["MERGE_HEAD", "MERGE_MSG", "MERGE_MODE"] {
-                    try? FileManager.default.removeItem(atPath: gitDir + name)
-                }
+                removeMergeState()
                 throw error
             }
         } catch {
@@ -461,6 +458,15 @@ extension Repository {
         try Data((noFastForward ? "no-ff" : "").utf8).write(to: dir.appendingPathComponent("MERGE_MODE"))
     }
 
+    /// Take away whatever of `MERGE_HEAD`, `MERGE_MSG` and `MERGE_MODE`
+    /// was written. Best effort, on the way to an error.
+    func removeMergeState() {
+        let gitDir = git_repository_path(repo).map { String(cString: $0) } ?? ""
+        for name in ["MERGE_HEAD", "MERGE_MSG", "MERGE_MODE"] {
+            try? FileManager.default.removeItem(atPath: gitDir + name)
+        }
+    }
+
     /// What starts a comment line: the last of `core.commentChar` and
     /// `core.commentString` configured (one setting to git), else `#`,
     /// as is `auto` when git writes a merge's message.
@@ -529,10 +535,12 @@ extension Repository {
     }
 
     /// Check out `tree` and commit it on HEAD with `parents`, moving
-    /// HEAD from `start`, the commit the merge began at.
+    /// HEAD from `start`, the commit the merge began at. Where HEAD's ref
+    /// won't move, `staged` writes what leaves the merge for `git commit`;
+    /// if it can't, the checkout is taken back too.
     func commitMerge(
         tree: git_oid, from headTree: git_oid, start: git_oid, parents: [git_oid], message: String,
-        author: Signature?, env: [String: String], settle: () throws -> Void = {}
+        author: Signature?, env: [String: String], settle: () throws -> Void = {}, staged: () throws -> Void = {}
     ) throws -> String {
         // A path the merge deletes that the work tree no longer has is
         // only the index's business; libgit2 can't "recreate" it.
@@ -596,43 +604,56 @@ extension Repository {
                 rollBack(to: before, in: workdir)
                 throw error
             }
-            // HEAD need not be the first parent, so move it by hand, and
-            // only from where the merge began, as git's update_ref checks.
-            let reflog = "merge: Merge made by the 'octopus' strategy."
-            var head: OpaquePointer?
-            let headRC = git_repository_head(&head, repo)
-            defer { git_reference_free(head) }
-            if headRC == GIT_EUNBORNBRANCH.rawValue || headRC == GIT_ENOTFOUND.rawValue {
-                // The branch HEAD names went away meanwhile.
-                throw HeadMissing(ref: symbolicHeadTarget() ?? "HEAD")
-            }
-            try check(headRC)
-            // A symbolic HEAD moves whatever it names (a branch, or any
-            // other ref); only a detached HEAD is set itself.
-            let detached = git_repository_head_detached(repo) != 0
-            let name = detached ? "HEAD" : String(cString: git_reference_name(head))
-            var expected = start
-            var moved: OpaquePointer?
-            let rc = git_reference_create_matching(&moved, repo, name, &commitOID, 1, &expected, reflog)
-            git_reference_free(moved)
-            if rc == GIT_EMODIFIED.rawValue {
-                // Where it is now, read again: `head` may be older.
-                var actual = git_oid()
-                let lookup = git_reference_name_to_id(&actual, repo, name)
-                if lookup == GIT_ENOTFOUND.rawValue { throw HeadMissing(ref: name) }
-                if lookup != 0, let target = git_reference_target(head) { actual = target.pointee }
-                throw HeadMoved(expected: formatOID(&expected), actual: formatOID(&actual))
-            }
-            if rc < 0 {
-                // The merge is checked out but HEAD can't move (another
-                // process holds the lock, or it can't be created): git
-                // leaves the merge for `git commit` to conclude.
-                let directory = detached ? git_repository_path(repo) : git_repository_commondir(repo)
-                let lock = (directory.map { String(cString: $0) } ?? "") + name + ".lock"
-                let message = Libgit2Error.last(code: rc).message
-                let reason = Self.exists(lock) ? "File exists"
-                    : message.range(of: "': ", options: .backwards).map { String(message[$0.upperBound...]) } ?? message
-                throw HeadNotUpdated(lockFile: lock, reason: reason)
+            do {
+                // HEAD need not be the first parent, so move it by hand, and
+                // only from where the merge began, as git's update_ref checks.
+                let reflog = "merge: Merge made by the 'octopus' strategy."
+                var head: OpaquePointer?
+                let headRC = git_repository_head(&head, repo)
+                defer { git_reference_free(head) }
+                if headRC == GIT_EUNBORNBRANCH.rawValue || headRC == GIT_ENOTFOUND.rawValue {
+                    // The branch HEAD names went away meanwhile.
+                    throw HeadMissing(ref: symbolicHeadTarget() ?? "HEAD")
+                }
+                try check(headRC)
+                // A symbolic HEAD moves whatever it names (a branch, or any
+                // other ref); only a detached HEAD is set itself.
+                let detached = git_repository_head_detached(repo) != 0
+                let name = detached ? "HEAD" : String(cString: git_reference_name(head))
+                var expected = start
+                var moved: OpaquePointer?
+                let rc = git_reference_create_matching(&moved, repo, name, &commitOID, 1, &expected, reflog)
+                git_reference_free(moved)
+                if rc == GIT_EMODIFIED.rawValue {
+                    // Where it is now, read again: `head` may be older.
+                    var actual = git_oid()
+                    let lookup = git_reference_name_to_id(&actual, repo, name)
+                    if lookup == GIT_ENOTFOUND.rawValue { throw HeadMissing(ref: name) }
+                    if lookup != 0, let target = git_reference_target(head) { actual = target.pointee }
+                    throw HeadMoved(expected: formatOID(&expected), actual: formatOID(&actual))
+                }
+                if rc < 0 {
+                    // The merge is checked out but HEAD can't move (another
+                    // process holds the lock, or it can't be created): git
+                    // leaves the merge for `git commit` to conclude.
+                    let directory = detached ? git_repository_path(repo) : git_repository_commondir(repo)
+                    let lock = (directory.map { String(cString: $0) } ?? "") + name + ".lock"
+                    let message = Libgit2Error.last(code: rc).message
+                    let reason = Self.exists(lock) ? "File exists"
+                        : message.range(of: "': ", options: .backwards).map { String(message[$0.upperBound...]) } ?? message
+                    throw HeadNotUpdated(lockFile: lock, reason: reason)
+                }
+            } catch let error where error is HeadNotUpdated || error is HeadMoved || error is HeadMissing {
+                // The merge stays staged only with its merge state, so
+                // `git commit` can conclude it.
+                do {
+                    try staged()
+                } catch {
+                    removeMergeState()
+                    rollBack(to: before, in: workdir)
+                    throw error
+                }
+                throw error
             }
             return formatOID(&commitOID)
         }
