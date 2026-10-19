@@ -244,5 +244,35 @@ extension RepositoryOctopusMergeTests {
         guard try gitIsAtLeast(2, 54) else { return }
         #expect(try git(["ls-files", "-v"], in: dir).stdout == git(["ls-files", "-v"], in: other).stdout)
     }
+
+    @Test("an excluded file that can't be removed stops the merge before HEAD moves")
+    func sparseRemovalFailureStops() throws {
+        let dir = try makeRepository()
+        for file in ["inc/i", "out/o"] {
+            let folder = dir.appendingPathComponent(file).deletingLastPathComponent()
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try write("1\n", to: file, in: dir)
+        }
+        try git(["add", "-A"], in: dir)
+        try git(["commit", "-q", "-m", "tree"], in: dir)
+        try git(["checkout", "-q", "-b", "upd"], in: dir)
+        try write("2\n", to: "out/o", in: dir)
+        try git(["commit", "-q", "-am", "upd"], in: dir)
+        try git(["checkout", "-q", "main"], in: dir)
+        try git(["sparse-checkout", "init", "--cone"], in: dir)
+        try git(["sparse-checkout", "set", "inc"], in: dir)
+        try git(["update-index", "--no-skip-worktree", "out/o"], in: dir)
+        try git(["checkout", "--", "out/o"], in: dir)
+        let out = dir.appendingPathComponent("out").path
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: out)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: out) }
+        // Where permissions don't hold (root), there's nothing to see.
+        guard !FileManager.default.isWritableFile(atPath: out) else { return }
+        let head = try git(["rev-parse", "HEAD"], in: dir).stdout
+        #expect(throws: (any Error).self) { try merge(["c", "upd"], in: dir) }
+        #expect(try git(["rev-parse", "HEAD"], in: dir).stdout == head)
+        let kept = try String(contentsOf: dir.appendingPathComponent("out/o"), encoding: .utf8)
+        #expect(kept == "1\n")
+    }
 }
 #endif

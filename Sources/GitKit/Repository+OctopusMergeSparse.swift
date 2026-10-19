@@ -140,21 +140,24 @@ extension Repository {
             }
         }
         try check(git_index_write(index))
+        // A stale file left there would hide behind the bit: its removal
+        // failing stops the merge before HEAD moves.
         for (path, entry) in entries {
-            Self.removeFromWorkTree(path, in: workdir, gitlink: entry.mode == 0o160000)
+            try Self.removeFromWorkTree(path, in: workdir, gitlink: entry.mode == 0o160000)
             try setSkipWorktree(true, path: path)
         }
     }
 
     /// Take `path` out of the work tree, and the directories that leaves
-    /// empty; a submodule's directory only when it's empty.
-    static func removeFromWorkTree(_ path: String, in workdir: String, gitlink: Bool = false) {
+    /// empty; a submodule's directory only when it's empty. Throws where
+    /// the file can't be removed.
+    static func removeFromWorkTree(_ path: String, in workdir: String, gitlink: Bool = false) throws {
         var url = URL(fileURLWithPath: workdir + path)
         guard exists(url.path) else { return }
         if gitlink {
             guard (try? FileManager.default.contentsOfDirectory(atPath: url.path))?.isEmpty == true else { return }
         }
-        guard (try? FileManager.default.removeItem(at: url)) != nil else { return }
+        try FileManager.default.removeItem(at: url)
         while url.deletingLastPathComponent().path.count >= workdir.count {
             url = url.deletingLastPathComponent()
             guard (try? FileManager.default.contentsOfDirectory(atPath: url.path))?.isEmpty == true else { break }
@@ -190,14 +193,16 @@ extension Repository {
                 hide.append((path, entry))
             }
         }
-        for (path, _) in restore { try setSkipWorktree(false, path: path) }
+        // Written first (by force: the bit keeps safe checkout off it, and
+        // nothing stands there), the bit cleared only then.
         for (path, gitlink) in restore where gitlink && !Self.exists(workdir + path) {
             try FileManager.default.createDirectory(atPath: workdir + path, withIntermediateDirectories: true)
         }
         try checkout(restore.filter { !$0.gitlink && !Self.exists(workdir + $0.path) }.map(\.path),
-                     strategy: UInt32(GIT_CHECKOUT_SAFE.rawValue)) { options in
+                     strategy: UInt32(GIT_CHECKOUT_FORCE.rawValue)) { options in
             try check(git_checkout_index(repo, nil, &options))
         }
+        for (path, _) in restore { try setSkipWorktree(false, path: path) }
         // Whether a file is up to date is read off its content, not the
         // index's flags (assume-unchanged), as git's verify_uptodate does.
         let fileMode = try honorsFileMode(), symlinks = try honorsSymlinks()
@@ -207,10 +212,11 @@ extension Repository {
                 if Self.exists(file), (try? FileManager.default.contentsOfDirectory(atPath: file))?.isEmpty != true {
                     continue
                 }
-                Self.removeFromWorkTree(path, in: workdir, gitlink: true)
+                guard (try? Self.removeFromWorkTree(path, in: workdir, gitlink: true)) != nil else { continue }
             } else if Self.exists(file) {
                 guard try matches(entry, path: path, at: file, fileMode: fileMode, symlinks: symlinks) else { continue }
-                Self.removeFromWorkTree(path, in: workdir)
+                // One that can't go stays, unmarked, as git leaves it.
+                guard (try? Self.removeFromWorkTree(path, in: workdir)) != nil else { continue }
             }
             try setSkipWorktree(true, path: path)
         }

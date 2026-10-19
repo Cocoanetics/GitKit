@@ -426,7 +426,7 @@ extension Repository {
     /// HEAD from `start`, the commit the merge began at.
     func commitMerge(
         tree: git_oid, from headTree: git_oid, start: git_oid, parents: [git_oid], message: String,
-        author: Signature?, env: [String: String]
+        author: Signature?, env: [String: String], settle: () throws -> Void = {}
     ) throws -> String {
         // A path the merge deletes that the work tree no longer has is
         // only the index's business; libgit2 can't "recreate" it.
@@ -468,6 +468,7 @@ extension Repository {
                 try check(git_index_write(index))
                 Self.removeEmptyDirectories(gone.keys, in: workdir)
             }
+            try settle()
             var commitOID = git_oid()
             _ = try commits.withUnsafeMutableBufferPointer { buffer in
                 try message.withCString { text in

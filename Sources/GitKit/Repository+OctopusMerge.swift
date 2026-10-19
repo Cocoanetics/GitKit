@@ -206,18 +206,22 @@ extension Repository {
             return OctopusMergeResult(steps: steps, outcome: .conflicts(paths: conflictedPaths))
         }
 
+        // The work tree is settled, sparse rules and all, before HEAD moves.
         let outcome = try conclude(head: head, headTree: headTree, mergedTree: mergedTree, oids: oids,
-                                   noFastForward: noFastForward, message: message, author: author, env: env)
-        try keepSkipWorktree(skipWorktree)
-        try reapplySparsity()
+                                   noFastForward: noFastForward, message: message, author: author, env: env) {
+            try keepSkipWorktree(skipWorktree)
+            try reapplySparsity()
+        }
         return OctopusMergeResult(steps: steps, outcome: outcome)
     }
 
     /// Commit the merged tree on HEAD, or, where another process holds
     /// HEAD's ref, leave the merge staged for `git commit`, as git does.
+    /// `settle` finishes the work tree once it's checked out, before the
+    /// commit is made and HEAD moves.
     func conclude(
         head: git_oid, headTree: git_oid, mergedTree: git_oid, oids: [git_oid], noFastForward: Bool,
-        message: String, author: Signature?, env: [String: String]
+        message: String, author: Signature?, env: [String: String], settle: () throws -> Void = {}
     ) throws -> OctopusMergeOutcome {
         let headSubsumed = oids.contains { isDescendant($0, of: head) }
         let parents = (headSubsumed && !noFastForward ? [] : [head]) + oids
@@ -226,7 +230,7 @@ extension Repository {
         let sha: String
         do {
             sha = try commitMerge(tree: mergedTree, from: headTree, start: head, parents: parents, message: text,
-                                  author: author, env: env)
+                                  author: author, env: env, settle: settle)
         } catch let failed as HeadNotUpdated {
             try writeMergeState(oids: oids, message: message, conflicts: [], noFastForward: noFastForward)
             return .headNotUpdated(lockFile: failed.lockFile, reason: failed.reason)
