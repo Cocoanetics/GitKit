@@ -1,4 +1,13 @@
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#elseif canImport(Android)
+import Android
+#endif
 import CGitKit
 
 // The octopus merge's checkout and the files it writes
@@ -195,9 +204,18 @@ extension Repository {
             defer { git_blob_free(blob) }
             if Self.exists(url.path) { try FileManager.default.removeItem(at: url) }
             if mode == 0o120000 {
-                let target = Data(bytes: git_blob_rawcontent(blob), count: Int(git_blob_rawsize(blob)))
+                // The target's bytes as they are: git allows any but NUL.
+                let bytes = UnsafeRawBufferPointer(start: git_blob_rawcontent(blob), count: Int(git_blob_rawsize(blob)))
+                var target = Array(bytes.bindMemory(to: CChar.self))
+                target.append(0)
+                #if os(Windows)
                 try FileManager.default.createSymbolicLink(atPath: url.path,
-                                                           withDestinationPath: String(decoding: target, as: UTF8.self))
+                                                           withDestinationPath: String(cString: target))
+                #else
+                guard symlink(target, url.path) == 0 else {
+                    throw Libgit2Error(code: -1, klass: 0, message: "unable to create symlink '\(path)'")
+                }
+                #endif
                 return
             }
             // Through the checkout filters (eol, smudge, …), as checkout
