@@ -129,6 +129,19 @@ extension Repository {
     func withCheckout(
         of paths: [String], strategy: UInt32, _ body: (inout git_checkout_options) throws -> Void
     ) throws {
+        // libgit2's safe checkout refuses skip-worktree and assume-
+        // unchanged entries; the preflight has found them up to date, as
+        // read-tree requires, so they are checked out by force.
+        let hidden = Set(try hiddenPaths())
+        let (forced, safe) = (paths.filter(hidden.contains), paths.filter { !hidden.contains($0) })
+        try checkout(safe, strategy: strategy, body)
+        let force = (strategy & ~UInt32(GIT_CHECKOUT_SAFE.rawValue)) | UInt32(GIT_CHECKOUT_FORCE.rawValue)
+        try checkout(forced, strategy: force, body)
+    }
+
+    private func checkout(
+        _ paths: [String], strategy: UInt32, _ body: (inout git_checkout_options) throws -> Void
+    ) throws {
         guard !paths.isEmpty else { return } // no paths would mean every path
         var options = git_checkout_options()
         try check(git_checkout_options_init(&options, UInt32(GIT_CHECKOUT_OPTIONS_VERSION)))
@@ -139,6 +152,19 @@ extension Repository {
         try strings.withUnsafeMutableBufferPointer { buffer in
             options.paths = git_strarray(strings: buffer.baseAddress, count: buffer.count)
             try body(&options)
+        }
+    }
+
+    /// The index's skip-worktree and assume-unchanged paths.
+    func hiddenPaths() throws -> [String] {
+        var index: OpaquePointer?
+        try check(git_repository_index(&index, repo))
+        defer { git_index_free(index) }
+        return (0..<git_index_entrycount(index)).compactMap { i -> String? in
+            guard let entry = git_index_get_byindex(index, i)?.pointee,
+                  entry.flags_extended & UInt16(GIT_INDEX_ENTRY_SKIP_WORKTREE.rawValue) != 0
+                    || entry.flags & UInt16(GIT_INDEX_ENTRY_VALID.rawValue) != 0 else { return nil }
+            return String(cString: entry.path)
         }
     }
 
@@ -217,6 +243,7 @@ extension Repository {
         mergedContent: [String: git_oid], preexisting: Set<String>
     ) throws {
         let modes = Self.creationModes(in: (try? gitDir()) ?? NSTemporaryDirectory())
+        let symlinks = (try? honorsSymlinks()) ?? true
         let root = URL(fileURLWithPath: workdir)
         /// Write `oid` at `path` as an entry of `mode` is: a symbolic
         /// link, a submodule's (empty) directory, or a file, executable
@@ -237,6 +264,12 @@ extension Repository {
             try check(git_blob_lookup(&blob, repo, &oid))
             defer { git_blob_free(blob) }
             if Self.exists(url.path) { try FileManager.default.removeItem(at: url) }
+            if mode == 0o120000, !symlinks {
+                // core.symlinks=false: a file holding the link's target.
+                try Data(bytes: git_blob_rawcontent(blob), count: Int(git_blob_rawsize(blob))).write(to: url)
+                try Self.setExecutable(false, at: url.path, modes: modes)
+                return
+            }
             if mode == 0o120000 {
                 // The target's bytes as they are: git allows any but NUL.
                 let bytes = UnsafeRawBufferPointer(start: git_blob_rawcontent(blob), count: Int(git_blob_rawsize(blob)))

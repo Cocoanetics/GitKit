@@ -131,5 +131,45 @@ extension RepositoryOctopusMergeTests {
             Issue.record("expected a merge commit, got \(result.outcome)"); return
         }
     }
+
+    @Test("with core.symlinks=false, links are files holding their targets, kept and checked so",
+          arguments: [false, true])
+    func linksAsFiles(hidden: Bool) throws {
+        let dir = try makeRepository()
+        try git(["config", "core.symlinks", "false"], in: dir)
+        func linkBlob(_ target: String) throws -> String {
+            try write(target, to: "blob", in: dir)
+            defer { try? FileManager.default.removeItem(at: dir.appendingPathComponent("blob")) }
+            return try git(["hash-object", "-w", "blob"], in: dir).stdout
+        }
+        try git(["checkout", "-q", "-b", "linked", "base"], in: dir)
+        try git(["update-index", "--add", "--cacheinfo", "120000,\(try linkBlob("x")),lnk"], in: dir)
+        try git(["commit", "-q", "-m", "linked"], in: dir)
+        try git(["checkout", "-q", "-f", "linked"], in: dir)
+        for (branch, target) in [("relinked", "y"), ("relinked2", "z")] {
+            try git(["checkout", "-q", "-f", "-b", branch, "linked"], in: dir)
+            try git(["update-index", "--cacheinfo", "120000,\(try linkBlob(target)),lnk"], in: dir)
+            try git(["commit", "-q", "-m", branch], in: dir)
+        }
+        try git(["checkout", "-q", "-f", "linked"], in: dir)
+        if hidden {
+            // Unchanged, as the file git checked out: up to date.
+            try git(["update-index", "--skip-worktree", "lnk"], in: dir)
+            let result = try merge(["c", "relinked"], in: dir)
+            guard case .mergeCommit = result.outcome else {
+                Issue.record("expected a merge commit, got \(result.outcome)"); return
+            }
+            return
+        }
+        // Both sides changed it: our side stays, as a file.
+        try git(["checkout", "-q", "-f", "-b", "ours", "relinked2"], in: dir)
+        let other = try twin(of: dir)
+        _ = try merge(["c", "relinked"], in: dir)
+        _ = try git(["merge", "-q", "-m", "Merge branches", "c", "relinked"], in: other, check: false)
+        #expect(try state(of: dir) == state(of: other))
+        let attributes = try FileManager.default.attributesOfItem(atPath: dir.appendingPathComponent("lnk").path)
+        #expect(attributes[.type] as? FileAttributeType == .typeRegular)
+        #expect(try String(contentsOf: dir.appendingPathComponent("lnk"), encoding: .utf8) == "z")
+    }
 }
 #endif

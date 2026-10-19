@@ -440,6 +440,7 @@ extension Repository {
         // change. A submodule's directory is the submodule's business.
         let workdir = git_repository_workdir(repo).map { String(cString: $0) } ?? ""
         let fileMode = try honorsFileMode()
+        let symlinks = try honorsSymlinks()
         for i in 0..<git_index_entrycount(index) {
             guard let entry = git_index_get_byindex(index, i)?.pointee, entry.mode != 0o160000,
                   entry.flags_extended & UInt16(GIT_INDEX_ENTRY_SKIP_WORKTREE.rawValue) != 0
@@ -450,7 +451,11 @@ extension Repository {
             guard let attributes = try? FileManager.default.attributesOfItem(atPath: workdir + path),
                   let type = attributes[.type] as? FileAttributeType else { continue }
             var actual = git_oid(), expected = entry.id
-            if entry.mode == 0o120000 {
+            if entry.mode == 0o120000, !symlinks {
+                // A link checked out as a file holding its target.
+                guard type == .typeRegular, git_odb_hashfile(&actual, workdir + path, GIT_OBJECT_BLOB) == 0
+                else { changes[path] = false; continue }
+            } else if entry.mode == 0o120000 {
                 guard type == .typeSymbolicLink, let bytes = Self.linkTarget(workdir + path)
                 else { changes[path] = false; continue }
                 try check(git_odb_hash(&actual, bytes, bytes.count, GIT_OBJECT_BLOB))
@@ -509,6 +514,16 @@ extension Repository {
             }
         }
         return nil
+    }
+
+    /// Whether links are checked out as links (core.symlinks, true unless
+    /// set false); otherwise as regular files holding their targets.
+    func honorsSymlinks() throws -> Bool {
+        var config: OpaquePointer?
+        try check(git_repository_config_snapshot(&config, repo))
+        defer { git_config_free(config) }
+        var value: Int32 = 1
+        return git_config_get_bool(&value, config, "core.symlinks") != 0 || value != 0
     }
 
     /// Whether the executable bit counts (core.filemode, true unless set).
