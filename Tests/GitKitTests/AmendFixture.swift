@@ -81,6 +81,15 @@ enum AmendFixture {
         try git(["commit", "-q", "-m", "second"], in: dir)
     }
 
+    /// Whether the system `git` is at least `major.minor`.
+    static func gitIsAtLeast(_ major: Int, _ minor: Int) throws -> Bool {
+        let version = try git(["--version"], in: FileManager.default.temporaryDirectory)
+        let numbers = version.split(separator: " ").dropFirst(2).first?
+            .split(separator: ".").prefix(2).compactMap { Int($0) } ?? []
+        guard numbers.count == 2 else { return false }
+        return numbers[0] > major || (numbers[0] == major && numbers[1] >= minor)
+    }
+
     static func lastLine(of path: String, in dir: URL) throws -> String {
         let text = String(decoding: try Data(contentsOf: dir.appendingPathComponent(path)), as: UTF8.self)
         return text.split(separator: "\n").last.map(String.init) ?? ""

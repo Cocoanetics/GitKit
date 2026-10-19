@@ -544,9 +544,12 @@ extension RepositoryAmendTests {
                 if !unborn { try AmendFixture.twoCommits(dir) }
                 try AmendFixture.git(["config", key, value], in: dir)
                 let error = CommitAmendError.invalidCommentString(key: key.lowercased(), empty: empty)
-                let git = try AmendFixture.run(["commit", "--amend", "-m", "x"], in: dir)
-                #expect(git.status == 128)
-                #expect(git.err.hasPrefix("error: \(error)\nfatal: bad config variable '\(key.lowercased())'"))
+                // git 2.45 brought core.commentString and this wording.
+                if try AmendFixture.gitIsAtLeast(2, 45) {
+                    let git = try AmendFixture.run(["commit", "--amend", "-m", "x"], in: dir)
+                    #expect(git.status == 128)
+                    #expect(git.err.hasPrefix("error: \(error)\nfatal: bad config variable '\(key.lowercased())'"))
+                }
                 #expect(throws: error) { try Repository.open(at: dir).amendDetailed(message: "x\n") }
             }
         }
