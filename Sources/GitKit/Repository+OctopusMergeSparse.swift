@@ -6,13 +6,6 @@ import CGitKit
 
 extension Repository {
 
-    /// A path the merge updates that stays out of the work tree, and the
-    /// deepest of its directories that already exists.
-    struct SparseExclusion {
-        let path: String
-        let existing: String
-    }
-
     /// The cone-mode sparse-checkout patterns: directories taken whole,
     /// and directories whose own files only are taken. Files at the top
     /// are always in.
@@ -91,7 +84,7 @@ extension Repository {
     /// stands at them: those the sparse-checkout file leaves out, as
     /// unpack-trees works skip-worktree out from it again, or, without
     /// the file, those already skip-worktree.
-    func sparseExclusions(of paths: [String], workdir: String) throws -> [SparseExclusion] {
+    func sparseExclusions(of paths: [String], workdir: String) throws -> [String] {
         guard try sparseCheckout() else { return [] }
         var index: OpaquePointer?
         try check(git_repository_index(&index, repo))
@@ -99,10 +92,8 @@ extension Repository {
         try check(git_index_read(index, 1))
         let skip = Set(skipWorktreePaths(index))
         let includes = try sparseIncludes()
-        return paths.compactMap { path in
-            let outside = includes.map { !$0(path) } ?? skip.contains(path)
-            guard outside, !Self.exists(workdir + path) else { return nil }
-            return SparseExclusion(path: path, existing: Self.deepestExisting(path, in: workdir))
+        return paths.filter { path in
+            (includes.map { !$0(path) } ?? skip.contains(path)) && !Self.exists(workdir + path)
         }
     }
 
@@ -113,32 +104,25 @@ extension Repository {
         return paths.filter { !includes($0) }
     }
 
-    /// Take away what the checkout wrote for `exclusions` that the merge
-    /// left merged, and the directories made for it; mark them
-    /// skip-worktree.
-    func leaveOutOfWorkTree(_ exclusions: [SparseExclusion], workdir: String) throws {
-        guard !exclusions.isEmpty else { return }
+    /// Put `entries` in the index, skip-worktree, without checking them
+    /// out: no file written, no checkout filter run.
+    func recordOutsideWorkTree(_ entries: [(path: String, entry: Entry)]) throws {
+        guard !entries.isEmpty else { return }
         var index: OpaquePointer?
         try check(git_repository_index(&index, repo))
         defer { git_index_free(index) }
         try check(git_index_read(index, 1))
-        let merged = exclusions.filter { git_index_get_bypath(index, $0.path, 0) != nil }
-        for exclusion in merged {
-            var url = URL(fileURLWithPath: workdir + exclusion.path)
-            try? FileManager.default.removeItem(at: url)
-            while url.deletingLastPathComponent().path.count > exclusion.existing.count {
-                url = url.deletingLastPathComponent()
-                guard (try? FileManager.default.contentsOfDirectory(atPath: url.path))?.isEmpty == true else { break }
-                try? FileManager.default.removeItem(at: url)
+        for (path, entry) in entries {
+            _ = git_index_remove_bypath(index, path)
+            try path.withCString { name in
+                var record = git_index_entry()
+                record.path = name
+                record.id = entry.oid
+                record.mode = entry.mode
+                try check(git_index_add(index, &record))
             }
         }
-        for exclusion in merged { try setSkipWorktree(true, path: exclusion.path) }
-    }
-
-    /// The deepest of `path`'s directories that exists under `workdir`.
-    static func deepestExisting(_ path: String, in workdir: String) -> String {
-        var url = URL(fileURLWithPath: workdir + path).deletingLastPathComponent()
-        while url.path.count > workdir.count, !exists(url.path) { url = url.deletingLastPathComponent() }
-        return url.path
+        try check(git_index_write(index))
+        for (path, _) in entries { try setSkipWorktree(true, path: path) }
     }
 }

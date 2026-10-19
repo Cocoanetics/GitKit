@@ -56,11 +56,11 @@ extension Repository {
         let reason: String
     }
 
-    /// Give the file at `path` the executable bits, or take them away,
-    /// keeping the permissions it was created with (the umask's): an
-    /// executable bit wherever a read bit is, as checkout makes one.
-    static func setExecutable(_ executable: Bool, at path: String, modes: CreationModes) throws {
-        let mode = executable ? modes.executable : modes.plain
+    /// Give the file at `path` the permissions checkout creates a file
+    /// with in its directory, executable or not.
+    static func setExecutable(_ executable: Bool, at path: String, modes: CreationModeCache) throws {
+        let created = modes.modes(for: path)
+        let mode = executable ? created.executable : created.plain
         let current = (try FileManager.default.attributesOfItem(atPath: path)[.posixPermissions] as? Int) ?? 0
         if mode != current { try FileManager.default.setAttributes([.posixPermissions: mode], ofItemAtPath: path) }
     }
@@ -70,6 +70,21 @@ extension Repository {
     struct CreationModes {
         let plain: Int
         let executable: Int
+    }
+
+    /// Creation modes per directory: a directory's default ACL or the
+    /// filesystem may give its new files other permissions than the
+    /// umask alone, so each file's own directory is asked.
+    final class CreationModeCache {
+        private var byDirectory: [String: CreationModes] = [:]
+
+        func modes(for file: String) -> CreationModes {
+            let directory = (file as NSString).deletingLastPathComponent
+            if let modes = byDirectory[directory] { return modes }
+            let modes = Repository.creationModes(in: directory)
+            byDirectory[directory] = modes
+            return modes
+        }
     }
 
     /// Learned from a scratch file the kernel creates as 0777 in
@@ -95,23 +110,28 @@ extension Repository {
 
     /// Check out what the merge changes and nothing else, as read-tree
     /// -u updates the entries it changes: a file deleted from the work
-    /// tree is written again only where the merge changes it.
+    /// tree is written again only where the merge changes it. `target`
+    /// gives a path's merged entry, for those a sparse checkout keeps out.
     func withCheckout(
-        of paths: [String], strategy: UInt32, _ body: (inout git_checkout_options) throws -> Void
+        of paths: [String], strategy: UInt32, target: (String) throws -> Entry?,
+        _ body: (inout git_checkout_options) throws -> Void
     ) throws {
+        // In a sparse checkout, a merged path outside it stays out of the
+        // work tree: unpack-trees updates only its index entry.
+        let workdir = git_repository_workdir(repo).map { String(cString: $0) } ?? ""
+        let outside = try sparseExclusions(of: paths, workdir: workdir).compactMap { path in
+            try target(path).map { (path, $0) }
+        }
+        let skipped = Set(outside.map(\.0))
         // libgit2's safe checkout refuses skip-worktree and assume-
         // unchanged entries; the preflight has found them up to date, as
         // read-tree requires, so they are checked out by force.
         let hidden = Set(try hiddenPaths())
-        let (forced, safe) = (paths.filter(hidden.contains), paths.filter { !hidden.contains($0) })
-        // In a sparse checkout, what lies outside it stays out of the work
-        // tree: unpack-trees updates only the index entry.
-        let workdir = git_repository_workdir(repo).map { String(cString: $0) } ?? ""
-        let outside = try sparseExclusions(of: paths, workdir: workdir)
-        try checkout(safe, strategy: strategy, body)
+        let wanted = paths.filter { !skipped.contains($0) }
+        try checkout(wanted.filter { !hidden.contains($0) }, strategy: strategy, body)
         let force = (strategy & ~UInt32(GIT_CHECKOUT_SAFE.rawValue)) | UInt32(GIT_CHECKOUT_FORCE.rawValue)
-        try checkout(forced, strategy: force, body)
-        try leaveOutOfWorkTree(outside, workdir: workdir)
+        try checkout(wanted.filter(hidden.contains), strategy: force, body)
+        try recordOutsideWorkTree(outside)
     }
 
     private func checkout(
@@ -175,8 +195,11 @@ extension Repository {
             ["HEAD", theirLabel].map { path + "~" + $0 }
         }
         let preexisting = Set(sideFiles.filter { Self.exists(workdir + $0) })
+        let mergedEntry = { (path: String) -> Entry? in
+            git_index_get_bypath(merged, path, 0).map { Entry(oid: $0.pointee.id, mode: $0.pointee.mode) }
+        }
         try withCheckout(of: paths, strategy: UInt32(GIT_CHECKOUT_SAFE.rawValue)
-                         | UInt32(GIT_CHECKOUT_ALLOW_CONFLICTS.rawValue)) { options in
+                         | UInt32(GIT_CHECKOUT_ALLOW_CONFLICTS.rawValue), target: mergedEntry) { options in
             try "HEAD".withCString { ours in
                 try theirLabel.withCString { theirs in
                     options.our_label = ours
@@ -217,7 +240,7 @@ extension Repository {
         _ merged: OpaquePointer?, workdir: String, theirLabel: String, skipped: [String], keepingOurs: [String],
         mergedContent: [String: git_oid], preexisting: Set<String>
     ) throws {
-        let modes = Self.creationModes(in: (try? gitDir()) ?? NSTemporaryDirectory())
+        let modes = CreationModeCache()
         let symlinks = (try? honorsSymlinks()) ?? true
         let root = URL(fileURLWithPath: workdir)
         /// Write `oid` at `path` as an entry of `mode` is: a symbolic
@@ -413,7 +436,8 @@ extension Repository {
         defer { git_signature_free(committerSig) }
 
         return try withTree(tree) { tree in
-            try withCheckout(of: paths, strategy: UInt32(GIT_CHECKOUT_SAFE.rawValue)) { options in
+            let target = { (path: String) throws -> Entry? in try self.entry(tree, path) }
+            try withCheckout(of: paths, strategy: UInt32(GIT_CHECKOUT_SAFE.rawValue), target: target) { options in
                 try check(git_checkout_tree(repo, tree, &options))
             }
             if !gone.isEmpty {
