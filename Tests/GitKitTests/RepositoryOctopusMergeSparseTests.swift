@@ -286,5 +286,34 @@ extension RepositoryOctopusMergeTests {
         let included = try String(contentsOf: dir.appendingPathComponent("inc/i"), encoding: .utf8)
         #expect(included == "1\n")
     }
+
+    @Test("a submodule outside the cone that the merge makes a file keeps its directory with files")
+    func sparseKeepsSubmoduleFiles() throws {
+        let dir = try makeRepository()
+        let inc = dir.appendingPathComponent("inc")
+        try FileManager.default.createDirectory(at: inc, withIntermediateDirectories: true)
+        try write("1\n", to: "inc/i", in: dir)
+        try git(["add", "-A"], in: dir)
+        let head = try git(["rev-parse", "HEAD"], in: dir).stdout
+        try git(["update-index", "--add", "--cacheinfo", "160000,\(head),out/sub"], in: dir)
+        try git(["commit", "-q", "-m", "sub"], in: dir)
+        try git(["checkout", "-q", "-b", "tofile"], in: dir)
+        try git(["rm", "-q", "--cached", "out/sub"], in: dir)
+        let blob = try git(["hash-object", "-w", "--stdin"], in: dir).stdout
+        try git(["update-index", "--add", "--cacheinfo", "100644,\(blob),out/sub"], in: dir)
+        try git(["commit", "-q", "-m", "tofile"], in: dir)
+        try git(["checkout", "-q", "-f", "main"], in: dir)
+        try git(["sparse-checkout", "init", "--cone"], in: dir)
+        try git(["sparse-checkout", "set", "inc"], in: dir)
+        // The submodule's directory, initialized, with its files.
+        try git(["update-index", "--no-skip-worktree", "out/sub"], in: dir)
+        try FileManager.default.createDirectory(at: dir.appendingPathComponent("out/sub"),
+                                                withIntermediateDirectories: true)
+        try write("mine\n", to: "out/sub/file", in: dir)
+
+        _ = try merge(["c", "tofile"], in: dir)
+        let kept = try String(contentsOf: dir.appendingPathComponent("out/sub/file"), encoding: .utf8)
+        #expect(kept == "mine\n")
+    }
 }
 #endif
