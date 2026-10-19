@@ -134,7 +134,10 @@ public enum OctopusMergeFailure: Sendable, Equatable {
 public enum OctopusMergeOutcome: Sendable, Equatable {
     /// `Merge made by the 'octopus' strategy.`: the merge commit, and the
     /// diff stat from the old HEAD to it.
-    case mergeCommit(sha: String, statSummary: String, addedFiles: [String], deletedFiles: [String])
+    /// `summaryLines` are git's ` create mode …`, ` delete mode …`,
+    /// ` rename old => new (N%)` and ` mode change …` lines, in git's order.
+    case mergeCommit(sha: String, statSummary: String, addedFiles: [String], deletedFiles: [String],
+                     summaryLines: [String])
     /// The last head left conflicts, which are in the index and the
     /// working tree for the user to resolve, with `MERGE_HEAD`,
     /// `MERGE_MSG` and `MERGE_MODE` written for the commit that

@@ -36,12 +36,43 @@ extension Repository {
         let reason: String
     }
 
-    /// A work tree file's permissions as checkout creates them: 0666 or
-    /// 0777 for an executable, less the process's umask.
-    static func fileMode(executable: Bool) -> Int {
-        let mask = umask(0)
-        umask(mask)
-        return (executable ? 0o777 : 0o666) & ~Int(mask)
+    /// Give the file at `path` the executable bits, or take them away,
+    /// keeping the permissions it was created with (the umask's): an
+    /// executable bit wherever a read bit is, as checkout makes one.
+    static func setExecutable(_ executable: Bool, at path: String) throws {
+        let current = (try FileManager.default.attributesOfItem(atPath: path)[.posixPermissions] as? Int) ?? 0o644
+        let mode = executable ? current | ((current & 0o444) >> 2) : current & ~0o111
+        if mode != current { try FileManager.default.setAttributes([.posixPermissions: mode], ofItemAtPath: path) }
+    }
+
+    /// `old => new` as git's diff summary writes a rename (pprint_rename):
+    /// a common leading directory and trailing part outside braces,
+    /// `dir/{a => b}/file`.
+    static func renameText(_ old: String, _ new: String) -> String {
+        let a = Array(old.utf8), b = Array(new.utf8)
+        let slash = UInt8(ascii: "/")
+        var prefix = 0
+        var i = 0
+        while i < a.count, i < b.count, a[i] == b[i] {
+            if a[i] == slash { prefix = i + 1 }
+            i += 1
+        }
+        // A common suffix starts at a slash, and doesn't run past the
+        // prefix (into its slash only, when there is one).
+        var suffix = 0
+        var x = a.count, y = b.count
+        let floor = prefix - (prefix > 0 ? 1 : 0)
+        while x >= floor, y >= floor {
+            let ca: UInt8 = x < a.count ? a[x] : 0, cb: UInt8 = y < b.count ? b[y] : 0
+            guard ca == cb else { break }
+            if ca == slash { suffix = a.count - x }
+            x -= 1
+            y -= 1
+        }
+        guard prefix + suffix > 0 else { return old + " => " + new }
+        func text(_ bytes: ArraySlice<UInt8>) -> String { String(decoding: bytes, as: UTF8.self) }
+        let aMid = a[prefix..<max(prefix, a.count - suffix)], bMid = b[prefix..<max(prefix, b.count - suffix)]
+        return text(a[..<prefix]) + "{" + text(aMid) + " => " + text(bMid) + "}" + text(a[(a.count - suffix)...])
     }
 
     /// Whether anything is at `path`, a symbolic link counted as itself
@@ -178,8 +209,7 @@ extension Repository {
             defer { git_buf_dispose(&buffer) }
             let data = buffer.ptr.map { Data(bytes: $0, count: buffer.size) } ?? Data()
             try data.write(to: url)
-            try FileManager.default.setAttributes([.posixPermissions: Self.fileMode(executable: mode == 0o100755)],
-                                                  ofItemAtPath: url.path)
+            try Self.setExecutable(mode == 0o100755, at: url.path)
         }
         // libgit2 writes a side's file next to a directory in its way as
         // `<path>~<label>`; git writes none.
@@ -213,8 +243,7 @@ extension Repository {
             let file = root.appendingPathComponent(path).path
             guard (try? FileManager.default.attributesOfItem(atPath: file))?[.type] as? FileAttributeType
                     == .typeRegular else { continue }
-            try FileManager.default.setAttributes(
-                [.posixPermissions: Self.fileMode(executable: ours.pointee.mode == 0o100755)], ofItemAtPath: file)
+            try Self.setExecutable(ours.pointee.mode == 0o100755, at: file)
         }
         for path in keepingOurs {
             var ancestor, ours, theirs: UnsafePointer<git_index_entry>?
@@ -374,21 +403,60 @@ extension Repository {
         }
     }
 
-    func mergeStats(from old: git_oid, to new: git_oid) throws
-        -> (summary: String, added: [String], deleted: [String]) {
+    /// A merge's diffstat: its block, created and deleted files' lines,
+    /// and every summary line in git's order.
+    struct MergeStats {
+        let summary: String
+        let added: [String]
+        let deleted: [String]
+        let lines: [String]
+    }
+
+    func mergeStats(from old: git_oid, to new: git_oid) throws -> MergeStats {
         try withTree(old) { old in
             try withTree(new) { new in
                 var diff: OpaquePointer?
                 try check(git_diff_tree_to_tree(&diff, repo, old, new, nil))
                 defer { git_diff_free(diff) }
+                // Renames found, as git's merge diffstat finds them.
+                var find = git_diff_find_options()
+                try check(git_diff_find_options_init(&find, UInt32(GIT_DIFF_FIND_OPTIONS_VERSION)))
+                find.flags = UInt32(GIT_DIFF_FIND_RENAMES.rawValue)
+                try check(git_diff_find_similar(diff, &find))
                 var stats: OpaquePointer?
                 try check(git_diff_get_stats(&stats, diff))
                 defer { git_diff_stats_free(stats) }
-                var buf = git_buf()
-                try check(git_diff_stats_to_buf(&buf, stats, GIT_DIFF_STATS_FULL, 80))
-                defer { git_buf_dispose(&buf) }
-                let summary = (buf.ptr.map { String(cString: $0) } ?? "")
-                    .trimmingCharacters(in: CharacterSet(charactersIn: "\n"))
+                func text(_ format: git_diff_stats_format_t) throws -> String {
+                    var buf = git_buf()
+                    try check(git_diff_stats_to_buf(&buf, stats, format, 80))
+                    defer { git_buf_dispose(&buf) }
+                    return (buf.ptr.map { String(cString: $0) } ?? "")
+                        .trimmingCharacters(in: CharacterSet(charactersIn: "\n"))
+                }
+                let summary = try text(GIT_DIFF_STATS_FULL)
+                // ` create mode`, ` delete mode`, ` rename … (N%)`, ` mode change`,
+                // as git's diff summary writes them (libgit2's has no renames).
+                var lines: [String] = []
+                for i in 0..<git_diff_num_deltas(diff) {
+                    guard let delta = git_diff_get_delta(diff, i)?.pointee else { continue }
+                    let oldPath = String(cString: delta.old_file.path), newPath = String(cString: delta.new_file.path)
+                    let oldMode = delta.old_file.mode, newMode = delta.new_file.mode
+                    switch delta.status {
+                    case GIT_DELTA_ADDED: lines.append(" create mode \(String(format: "%06o", newMode)) \(newPath)")
+                    case GIT_DELTA_DELETED: lines.append(" delete mode \(String(format: "%06o", oldMode)) \(oldPath)")
+                    case GIT_DELTA_RENAMED:
+                        lines.append(" rename \(Self.renameText(oldPath, newPath)) (\(delta.similarity)%)")
+                        if oldMode != newMode {
+                            lines.append(" mode change \(String(format: "%06o", oldMode)) => "
+                                         + String(format: "%06o", newMode))
+                        }
+                    default:
+                        if oldMode != newMode {
+                            lines.append(" mode change \(String(format: "%06o", oldMode)) => "
+                                         + "\(String(format: "%06o", newMode)) \(newPath)")
+                        }
+                    }
+                }
                 var added: [String] = [], deleted: [String] = []
                 for i in 0..<git_diff_num_deltas(diff) {
                     guard let delta = git_diff_get_delta(diff, i)?.pointee else { continue }
@@ -400,7 +468,7 @@ extension Repository {
                                        + String(cString: delta.old_file.path))
                     }
                 }
-                return (summary, added, deleted)
+                return MergeStats(summary: summary, added: added, deleted: deleted, lines: lines)
             }
         }
     }

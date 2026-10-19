@@ -609,7 +609,7 @@ extension RepositoryOctopusMergeTests {
         #expect(try String(contentsOf: dir.appendingPathComponent("f/x"), encoding: .utf8) == "mine\n")
     }
 
-    @Test("a file GitKit restores itself goes through the checkout filters, with the umask's mode")
+    @Test("a file GitKit restores itself goes through the checkout filters, its mode as created")
     func restoredFileThroughFilters() throws {
         let dir = try makeRepository()
         try write("f text eol=crlf\n", to: ".gitattributes", in: dir)
@@ -634,10 +634,55 @@ extension RepositoryOctopusMergeTests {
         #expect(try state(of: dir) == state(of: other))
         let bytes = { (url: URL) in try Data(contentsOf: url.appendingPathComponent("f")) }
         #expect(try bytes(dir) == bytes(other))
-        let mask = umask(0)
-        umask(mask)
-        #expect(Repository.fileMode(executable: true) == 0o777 & ~Int(mask))
-        #expect(Repository.fileMode(executable: false) == 0o666 & ~Int(mask))
+        // The executable bit goes where a read bit is, nothing widened.
+        let probe = dir.appendingPathComponent("probe").path
+        try Data().write(to: URL(fileURLWithPath: probe))
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: probe)
+        try Repository.setExecutable(true, at: probe)
+        #expect(try FileManager.default.attributesOfItem(atPath: probe)[.posixPermissions] as? Int == 0o700)
+        try Repository.setExecutable(false, at: probe)
+        #expect(try FileManager.default.attributesOfItem(atPath: probe)[.posixPermissions] as? Int == 0o600)
+    }
+
+    @Test("the merge's diffstat finds renames and mode changes, as git's does")
+    func renamesInSummary() throws {
+        let dir = try makeRepository()
+        try git(["checkout", "-q", "-b", "mv", "base"], in: dir)
+        try git(["mv", "f", "g"], in: dir)
+        try git(["commit", "-q", "-m", "mv"], in: dir)
+        try git(["checkout", "-q", "-b", "chm", "base"], in: dir)
+        try write("z\n", to: "zz", in: dir)
+        try git(["add", "zz"], in: dir)
+        try git(["commit", "-q", "-m", "zz"], in: dir)
+        try git(["checkout", "-q", "main"], in: dir)
+        try git(["merge", "-q", "--no-edit", "chm"], in: dir)
+        try git(["checkout", "-q", "-b", "chm2", "chm"], in: dir)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755],
+                                              ofItemAtPath: dir.appendingPathComponent("zz").path)
+        try git(["commit", "-q", "-am", "chmod"], in: dir)
+        try git(["checkout", "-q", "main"], in: dir)
+
+        let other = try twin(of: dir)
+        let result = try merge(["mv", "chm2", "c"], in: dir)
+        let output = try git(["merge", "-m", "Merge branches", "mv", "chm2", "c"], in: other).stdout
+        guard case .mergeCommit(_, let summary, _, _, let lines) = result.outcome else {
+            Issue.record("expected a merge commit, got \(result.outcome)"); return
+        }
+        let gitLines = output.split(separator: "\n").map(String.init)
+        let gitSummary = gitLines.filter { $0.hasPrefix(" create") || $0.hasPrefix(" delete")
+            || $0.hasPrefix(" rename") || $0.hasPrefix(" mode change") }
+        #expect(lines == gitSummary)
+        #expect(summary.contains("f => g"))
+        #expect(output.contains(summary))
+    }
+
+    @Test("renames read as git's diff summary writes them")
+    func renameText() {
+        #expect(Repository.renameText("a/b/c", "a/z/c") == "a/{b => z}/c")
+        #expect(Repository.renameText("top", "deep/top") == "top => deep/top")
+        #expect(Repository.renameText("dir/a", "dir/b") == "dir/{a => b}")
+        #expect(Repository.renameText("x/f", "y/f") == "{x => y}/f")
+        #expect(Repository.renameText("old", "new") == "old => new")
     }
 
     @Test("refuses a bare repository before anything changes")

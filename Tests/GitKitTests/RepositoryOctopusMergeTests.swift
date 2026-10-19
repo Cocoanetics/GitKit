@@ -142,7 +142,7 @@ struct RepositoryOctopusMergeTests {
         #expect(result.steps.map(\.head) == ["a", "b", "c"])
         #expect(result.steps[0].automatic == nil)
         #expect(result.steps[1].automatic == [.merged(path: "f")])
-        guard case .mergeCommit(let sha, let summary, let added, _) = result.outcome else {
+        guard case .mergeCommit(let sha, let summary, let added, _, _) = result.outcome else {
             Issue.record("expected a merge commit, got \(result.outcome)"); return
         }
         #expect(sha == (try git(["rev-parse", "HEAD"], in: dir).stdout))

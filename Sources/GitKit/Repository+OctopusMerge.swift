@@ -229,7 +229,8 @@ extension Repository {
             return .headNotUpdated(lockFile: failed.lockFile, reason: failed.reason)
         }
         let stats = try mergeStats(from: headTree, to: mergedTree)
-        return .mergeCommit(sha: sha, statSummary: stats.summary, addedFiles: stats.added, deletedFiles: stats.deleted)
+        return .mergeCommit(sha: sha, statSummary: stats.summary, addedFiles: stats.added, deletedFiles: stats.deleted,
+                            summaryLines: stats.lines)
     }
 
     /// Refuse as git does before merging at all: a bare repository, and
