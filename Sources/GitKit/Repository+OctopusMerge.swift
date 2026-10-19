@@ -222,11 +222,14 @@ extension Repository {
         let text = message.hasSuffix("\n") ? message : message + "\n"
         let sha: String
         do {
-            sha = try commitMerge(tree: mergedTree, from: headTree, parents: parents, message: text,
+            sha = try commitMerge(tree: mergedTree, from: headTree, start: head, parents: parents, message: text,
                                   author: author, env: env)
         } catch let failed as HeadNotUpdated {
             try writeMergeState(oids: oids, message: message, conflicts: [], noFastForward: noFastForward)
             return .headNotUpdated(lockFile: failed.lockFile, reason: failed.reason)
+        } catch let moved as HeadMoved {
+            try writeMergeState(oids: oids, message: message, conflicts: [], noFastForward: noFastForward)
+            return .headMoved(expected: moved.expected, actual: moved.actual)
         }
         let stats = try mergeStats(from: headTree, to: mergedTree)
         return .mergeCommit(sha: sha, statSummary: stats.summary, addedFiles: stats.added, deletedFiles: stats.deleted,

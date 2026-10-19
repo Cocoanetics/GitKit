@@ -152,6 +152,12 @@ public enum OctopusMergeOutcome: Sendable, Equatable {
     /// staged with `MERGE_HEAD`, `MERGE_MSG` and `MERGE_MODE` written,
     /// for `git commit` to conclude.
     case headNotUpdated(lockFile: String, reason: String)
+    /// The merge is made and checked out, but HEAD's ref no longer
+    /// points at `expected`, the commit the merge began at: something
+    /// moved it to `actual` meanwhile, and it is left there. As git
+    /// leaves it, the merged tree is staged with `MERGE_HEAD`,
+    /// `MERGE_MSG` and `MERGE_MODE` written.
+    case headMoved(expected: String, actual: String)
 }
 
 /// An octopus merge's steps and how it ended.
