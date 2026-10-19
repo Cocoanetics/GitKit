@@ -62,6 +62,19 @@ extension Repository {
         let actual: String
     }
 
+    /// The ref HEAD names went away while the merge was made.
+    struct HeadMissing: Error {
+        let ref: String
+    }
+
+    /// The ref a symbolic HEAD names, whether or not it exists.
+    func symbolicHeadTarget() -> String? {
+        var head: OpaquePointer?
+        guard git_reference_lookup(&head, repo, "HEAD") == 0 else { return nil }
+        defer { git_reference_free(head) }
+        return git_reference_symbolic_target(head).map { String(cString: $0) }
+    }
+
     /// Give the file at `path` the permissions checkout creates a file
     /// with in its directory, executable or not.
     static func setExecutable(_ executable: Bool, at path: String, modes: CreationModeCache) throws {
@@ -146,18 +159,26 @@ extension Repository {
         // read-tree requires, so they are checked out by force.
         let hidden = Set(try hiddenPaths())
         let wanted = paths.filter { !skipped.contains($0) }
-        // Their files go first, so one that can't stops the merge before
-        // anything else of it is written.
+        // Their files go first and their entries are staged, so either
+        // failing stops the merge before anything else of it is written;
+        // a failed checkout takes both back.
         let removed = try removeOutsideWorkTree(outside)
+        let staged: [StagedBefore]
+        do {
+            staged = try stageOutsideWorkTree(outside)
+        } catch {
+            putBack(removed)
+            throw error
+        }
         do {
             try checkout(wanted.filter { !hidden.contains($0) }, strategy: strategy, body)
             let force = (strategy & ~UInt32(GIT_CHECKOUT_SAFE.rawValue)) | UInt32(GIT_CHECKOUT_FORCE.rawValue)
             try checkout(wanted.filter(hidden.contains), strategy: force, body)
         } catch {
+            unstage(staged)
             putBack(removed)
             throw error
         }
-        try stageOutsideWorkTree(outside)
     }
 
     func checkout(
@@ -489,8 +510,13 @@ extension Repository {
             // only from where the merge began, as git's update_ref checks.
             let reflog = "merge: Merge made by the 'octopus' strategy."
             var head: OpaquePointer?
-            try check(git_repository_head(&head, repo))
+            let headRC = git_repository_head(&head, repo)
             defer { git_reference_free(head) }
+            if headRC == GIT_EUNBORNBRANCH.rawValue || headRC == GIT_ENOTFOUND.rawValue {
+                // The branch HEAD names went away meanwhile.
+                throw HeadMissing(ref: symbolicHeadTarget() ?? "HEAD")
+            }
+            try check(headRC)
             // A symbolic HEAD moves whatever it names (a branch, or any
             // other ref); only a detached HEAD is set itself.
             let detached = git_repository_head_detached(repo) != 0
@@ -502,9 +528,9 @@ extension Repository {
             if rc == GIT_EMODIFIED.rawValue {
                 // Where it is now, read again: `head` may be older.
                 var actual = git_oid()
-                if git_reference_name_to_id(&actual, repo, name) != 0, let target = git_reference_target(head) {
-                    actual = target.pointee
-                }
+                let lookup = git_reference_name_to_id(&actual, repo, name)
+                if lookup == GIT_ENOTFOUND.rawValue { throw HeadMissing(ref: name) }
+                if lookup != 0, let target = git_reference_target(head) { actual = target.pointee }
                 throw HeadMoved(expected: formatOID(&expected), actual: formatOID(&actual))
             }
             if rc < 0 {

@@ -158,6 +158,10 @@ public enum OctopusMergeOutcome: Sendable, Equatable {
     /// leaves it, the merged tree is staged with `MERGE_HEAD`,
     /// `MERGE_MSG` and `MERGE_MODE` written.
     case headMoved(expected: String, actual: String)
+    /// The merge is made and checked out, but `ref`, the branch HEAD
+    /// names, went away meanwhile. As git leaves it, the merged tree is
+    /// staged with `MERGE_HEAD`, `MERGE_MSG` and `MERGE_MODE` written.
+    case headMissing(ref: String)
 }
 
 /// An octopus merge's steps and how it ended.

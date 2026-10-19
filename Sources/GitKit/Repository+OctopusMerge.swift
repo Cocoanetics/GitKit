@@ -237,6 +237,9 @@ extension Repository {
         } catch let moved as HeadMoved {
             try writeMergeState(oids: oids, message: message, conflicts: [], noFastForward: noFastForward)
             return .headMoved(expected: moved.expected, actual: moved.actual)
+        } catch let missing as HeadMissing {
+            try writeMergeState(oids: oids, message: message, conflicts: [], noFastForward: noFastForward)
+            return .headMissing(ref: missing.ref)
         }
         let stats = try mergeStats(from: headTree, to: mergedTree)
         return .mergeCommit(sha: sha, statSummary: stats.summary, addedFiles: stats.added, deletedFiles: stats.deleted,

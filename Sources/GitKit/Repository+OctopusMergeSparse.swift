@@ -157,22 +157,53 @@ extension Repository {
         }
     }
 
+    /// What the index held at a path before ``stageOutsideWorkTree(_:)``.
+    struct StagedBefore {
+        let path: String
+        let entry: Entry?
+        let flagsExtended: UInt16
+    }
+
     /// Put `entries` in the index with their skip-worktree bit, in one
-    /// write: no file written, no checkout filter run.
-    func stageOutsideWorkTree(_ entries: [(path: String, entry: Entry)]) throws {
-        guard !entries.isEmpty else { return }
+    /// write: no file written, no checkout filter run. Returns what the
+    /// index held there, for ``unstage(_:)``.
+    func stageOutsideWorkTree(_ entries: [(path: String, entry: Entry)]) throws -> [StagedBefore] {
+        guard !entries.isEmpty else { return [] }
         var index: OpaquePointer?
         try check(git_repository_index(&index, repo))
         defer { git_index_free(index) }
         try check(git_index_read(index, 1))
-        for (path, entry) in entries {
+        let before = entries.map { path, _ in
+            let old = git_index_get_bypath(index, path, 0)?.pointee
+            return StagedBefore(path: path, entry: old.map { Entry(oid: $0.id, mode: $0.mode) },
+                                flagsExtended: old?.flags_extended ?? 0)
+        }
+        try write(entries.map { ($0.path, $0.entry, UInt16(GIT_INDEX_ENTRY_SKIP_WORKTREE.rawValue)) }, to: index)
+        return before
+    }
+
+    /// Put back what ``stageOutsideWorkTree(_:)`` replaced.
+    func unstage(_ before: [StagedBefore]) {
+        var index: OpaquePointer?
+        guard git_repository_index(&index, repo) == 0 else { return }
+        defer { git_index_free(index) }
+        guard git_index_read(index, 1) == 0 else { return }
+        for old in before where old.entry == nil { _ = git_index_remove_bypath(index, old.path) }
+        let kept = before.compactMap { old in old.entry.map { (old.path, $0, old.flagsExtended) } }
+        try? write(kept, to: index)
+    }
+
+    private func write(
+        _ entries: [(path: String, entry: Entry, flagsExtended: UInt16)], to index: OpaquePointer?
+    ) throws {
+        for (path, entry, flagsExtended) in entries {
             _ = git_index_remove_bypath(index, path)
             try path.withCString { name in
                 var record = git_index_entry()
                 record.path = name
                 record.id = entry.oid
                 record.mode = entry.mode
-                record.flags_extended = UInt16(GIT_INDEX_ENTRY_SKIP_WORKTREE.rawValue)
+                record.flags_extended = flagsExtended
                 try check(git_index_add(index, &record))
             }
         }
