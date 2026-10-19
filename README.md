@@ -46,7 +46,7 @@ Operations are synchronous, `throws` (typed ``Libgit2Error``), and return
 - **Branches & refs** — `localBranches`, `branchDelete`/`branchRename`,
   `tagList`/`tagCreate`/`tagCreateAnnotated`/`tagDelete`, `resolveOID`,
   `revParse` helpers, `lsTree`, `catFileBlob`/`objectMetadata`.
-- **Integration** — `merge` (fast-forward modes), `rebase`
+- **Integration** — `merge` (fast-forward modes), octopus merges (`mergeHeads(reducing:)`, `octopusMerge`), `rebase`
   (continue/skip/abort), `cherryPick`, `stash`
   (save/apply/pop/list/show/branch), `apply` (patches).
 - **Remotes** — `fetch` (with shallow `depth`), `unshallow`, `push` (incl.

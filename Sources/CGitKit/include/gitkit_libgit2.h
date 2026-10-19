@@ -91,4 +91,13 @@ GIT_EXTERN(int) gitkit_index_update_entry_flags(
 	uint16_t extended_set,
 	uint16_t extended_clear);
 
+/*
+ * GitKit addition, implemented in Sources/Clibgit2Patches/wildmatch_export.c:
+ * git's wildmatch, as libgit2 carries it. `flags` takes GITKIT_WM_CASEFOLD
+ * and GITKIT_WM_PATHNAME; returns 0 on a match.
+ */
+#define GITKIT_WM_CASEFOLD 1
+#define GITKIT_WM_PATHNAME 2
+GIT_EXTERN(int) gitkit_wildmatch(const char *pattern, const char *text, unsigned int flags);
+
 #endif /* GITKIT_LIBGIT2_H */
