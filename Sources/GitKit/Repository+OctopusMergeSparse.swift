@@ -106,7 +106,9 @@ extension Repository {
         // Bytes, as git reads them: a comment that isn't UTF-8 costs the
         // other lines nothing; a rule that isn't can't be matched as git
         // matches its bytes, and stops the merge before anything changes.
-        guard let data = FileManager.default.contents(atPath: file) else { return nil }
+        // No file is no rules; one that can't be read stops the merge.
+        guard try Self.isPresent(file) else { return nil }
+        let data = try Data(contentsOf: URL(fileURLWithPath: file))
         for line in data.split(separator: 0x0A) {
             let bytes = Array(line)
             // A comment only where `#` is the line's first byte.

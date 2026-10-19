@@ -580,7 +580,9 @@ extension Repository {
                     try check(git_index_write(index))
                     Self.removeEmptyDirectories(gone.keys, in: workdir)
                 }
-                try settle()
+                // The commit object first: it needs no work tree, so failing
+                // leaves nothing of `settle` to take back, and `settle`
+                // takes back its own work where it fails.
                 _ = try commits.withUnsafeMutableBufferPointer { buffer in
                     try message.withCString { text in
                         try check(git_commit_create(
@@ -588,6 +590,7 @@ extension Repository {
                             text, tree, buffer.count, buffer.baseAddress))
                     }
                 }
+                try settle()
             } catch {
                 // Only a ref that won't move leaves the merge staged.
                 rollBack(to: before, in: workdir)

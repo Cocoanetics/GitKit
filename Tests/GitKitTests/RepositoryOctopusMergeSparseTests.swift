@@ -408,5 +408,17 @@ extension RepositoryOctopusMergeTests {
         #expect(throws: Libgit2Error.self) { try merge(["a", "b"], in: dir) }
         #expect(try files.map { try Data(contentsOf: $0) } == before)
     }
+
+    @Test("a sparse-checkout file that can't be read stops the merge before anything changes")
+    func sparseFileUnreadable() throws {
+        let dir = try makeRepository()
+        try git(["config", "core.sparseCheckout", "true"], in: dir)
+        // A directory where the file should be.
+        try FileManager.default.createDirectory(at: dir.appendingPathComponent(".git/info/sparse-checkout"),
+                                                withIntermediateDirectories: true)
+        let before = try state(of: dir)
+        #expect(throws: (any Error).self) { try merge(["a", "b"], in: dir) }
+        #expect(try state(of: dir) == before)
+    }
 }
 #endif
