@@ -450,7 +450,7 @@ extension Repository {
         return git_oid_equal(&actual, &expected) != 0
     }
 
-    func workingTreeChanges(index: OpaquePointer?) throws -> [String: Bool] {
+    func workingTreeChanges(index: OpaquePointer?) throws -> [[UInt8]: Bool] {
         guard git_repository_is_bare(repo) == 0 else { return [:] }
         var options = git_diff_options()
         try check(git_diff_options_init(&options, UInt32(GIT_DIFF_OPTIONS_VERSION)))
@@ -461,7 +461,9 @@ extension Repository {
         var diff: OpaquePointer?
         try check(git_diff_index_to_workdir(&diff, repo, index, &options))
         defer { git_diff_free(diff) }
-        var changes: [String: Bool] = [:]
+        // Keyed by the names' bytes: Swift strings would take canonically
+        // equivalent names (é and e + ́) for one path.
+        var changes: [[UInt8]: Bool] = [:]
         // A skip-worktree or assume-unchanged entry's file is one diff no
         // longer looks at, but read-tree does: changed content there, or
         // a changed executable bit where core.filemode holds, is a local
@@ -475,7 +477,7 @@ extension Repository {
                     || entry.flags & UInt16(GIT_INDEX_ENTRY_VALID.rawValue) != 0 else { continue }
             let path = String(cString: entry.path)
             if try !matches(entry, path: path, at: workdir + path, fileMode: fileMode, symlinks: symlinks) {
-                changes[path] = false
+                changes[Self.bytes(entry.path)] = false
             }
         }
         for i in 0..<git_diff_num_deltas(diff) {
@@ -485,7 +487,7 @@ extension Repository {
             guard let delta = git_diff_get_delta(diff, i)?.pointee else { continue }
             if delta.status == GIT_DELTA_DELETED,
                !Self.exists(workdir + String(cString: delta.old_file.path)) { continue }
-            changes[String(cString: delta.new_file.path ?? delta.old_file.path)] = delta.status == GIT_DELTA_UNTRACKED
+            changes[Self.bytes(delta.new_file.path ?? delta.old_file.path)] = delta.status == GIT_DELTA_UNTRACKED
         }
         return changes
     }
@@ -500,25 +502,29 @@ extension Repository {
     /// With `ignoreCase` (core.ignorecase), paths compare with ASCII case
     /// folded, as git's fspathcmp does; the failure names the path as
     /// the merge writes it.
-    func overwrites(_ changes: [String: Change], worktree: [String: Bool], ignoreCase: Bool) -> OctopusMergeFailure? {
-        func fold(_ path: String) -> String {
-            ignoreCase ? String(decoding: path.utf8.map { (65...90).contains($0) ? $0 + 32 : $0 }, as: UTF8.self)
-                : path
+    func overwrites(_ changes: [String: Change], worktree: [[UInt8]: Bool], ignoreCase: Bool) -> OctopusMergeFailure? {
+        // Bytes throughout: canonically equivalent names are distinct
+        // paths to git.
+        func fold(_ path: [UInt8]) -> [UInt8] {
+            ignoreCase ? path.map { (65...90).contains($0) ? $0 + 32 : $0 } : path
         }
-        var folded: [String: Bool] = [:]
+        func starts(_ path: [UInt8], with prefix: [UInt8]) -> Bool {
+            path.count > prefix.count && path.starts(with: prefix) && path[prefix.count] == 0x2F
+        }
+        var folded: [[UInt8]: Bool] = [:]
         for (path, untracked) in worktree { folded[fold(path)] = untracked }
-        let untracked = folded.filter(\.value).keys.sorted(by: Self.indexOrder)
+        let untracked = folded.filter(\.value).keys
         for (path, change) in changes.sorted(by: { Self.indexOrder($0.key, $1.key) }) {
-            let key = fold(path)
+            let key = fold(Array(path.utf8))
             if let isUntracked = folded[key] {
                 return isUntracked ? .untrackedWouldBeOverwritten(path: path) : .notUpToDate(path: path)
             }
             guard change.oid != nil else { continue }
-            if untracked.contains(where: { $0.hasPrefix(key + "/") }) {
+            if untracked.contains(where: { starts($0, with: key) }) {
                 return .untrackedFilesInDirectory(path: path)
             }
-            if let file = untracked.first(where: { key.hasPrefix($0 + "/") }) {
-                return .untrackedWouldBeOverwritten(path: String(path.utf8.prefix(file.utf8.count))!)
+            if let file = untracked.filter({ starts(key, with: $0) }).min(by: { $0.count < $1.count }) {
+                return .untrackedWouldBeOverwritten(path: String(decoding: path.utf8.prefix(file.count), as: UTF8.self))
             }
         }
         return nil

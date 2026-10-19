@@ -64,6 +64,9 @@ extension RepositoryOctopusMergeTests {
         let folding = try #require(Repository.SparseCone("/*\n!/*/\n/Foo/\n", ignoreCase: true))
         #expect(folding.includes("foo/bar") && folding.includes("FOO/x/y"))
         #expect(!(try #require(Repository.SparseCone("/*\n!/*/\n/Foo/\n"))).includes("foo/bar"))
+        // Canonically equivalent but byte-distinct names are distinct.
+        let accented = try #require(Repository.SparseCone("/*\n!/*/\n/\u{E9}/\n"))
+        #expect(accented.includes("\u{E9}/x") && !accented.includes("e\u{301}/x"))
     }
 
     @Test("non-cone sparse-checkout patterns keep what the merge brings outside them out, as git does")
@@ -379,6 +382,16 @@ extension RepositoryOctopusMergeTests {
         #expect(try git(["ls-files", "-v", "bar"], in: dir).stdout == "S bar")
         guard try gitIsAtLeast(2, 54) else { return }
         #expect(try git(["ls-files", "-v"], in: dir).stdout == git(["ls-files", "-v"], in: other).stdout)
+    }
+
+    @Test("an untracked name canonically equivalent to one the merge adds isn't in its way")
+    func untrackedEquivalentNameDistinct() throws {
+        let repository = try Repository.open(at: try makeRepository())
+        let added = ["\u{E9}": Repository.Change(oid: String(repeating: "1", count: 40), mode: 0o100644)]
+        let untracked = [Array("e\u{301}".utf8): true]
+        #expect(repository.overwrites(added, worktree: untracked, ignoreCase: false) == nil)
+        #expect(repository.overwrites(added, worktree: [Array("\u{E9}".utf8): true], ignoreCase: false)
+            == .untrackedWouldBeOverwritten(path: "\u{E9}"))
     }
 }
 #endif

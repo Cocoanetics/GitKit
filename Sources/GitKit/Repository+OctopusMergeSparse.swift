@@ -19,26 +19,27 @@ extension Repository {
     /// and directories whose own files only are taken. Files at the top
     /// are always in.
     struct SparseCone {
-        var recursive: Set<String> = []
-        var parents: Set<String> = []
+        /// Directories by their bytes: Swift strings would take
+        /// canonically equivalent names (é and e + ́) for one.
+        var recursive: Set<[UInt8]> = []
+        var parents: Set<[UInt8]> = []
         /// core.ignoreCase: directories compared as git's strcasecmp
         /// compares them, ASCII letters folded.
         var ignoreCase = false
 
-        private func folded(_ text: String) -> String {
-            guard ignoreCase else { return text }
-            return String(String.UnicodeScalarView(text.unicodeScalars.map { scalar in
-                ("A"..."Z").contains(scalar) ? Unicode.Scalar(scalar.value + 32)! : scalar
-            }))
+        private func folded(_ text: String) -> [UInt8] {
+            let bytes = Array(text.utf8)
+            guard ignoreCase else { return bytes }
+            return bytes.map { (65...90).contains($0) ? $0 + 32 : $0 }
         }
 
         func includes(_ path: String) -> Bool {
             let path = folded(path)
-            let dirs = path.split(separator: "/", omittingEmptySubsequences: false).dropLast()
+            let dirs = path.split(separator: 0x2F, omittingEmptySubsequences: false).dropLast()
             guard !dirs.isEmpty else { return true }
-            var prefix = ""
+            var prefix: [UInt8] = []
             for dir in dirs {
-                prefix += prefix.isEmpty ? String(dir) : "/" + dir
+                prefix += prefix.isEmpty ? Array(dir) : [0x2F] + dir
                 if recursive.contains(prefix) { return true }
             }
             return parents.contains(prefix)
