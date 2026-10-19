@@ -508,5 +508,28 @@ extension RepositoryAmendTests {
             #expect(kitLog == gitLog, "\(log) differs")
         }
     }
+
+    @Test("a reflog left discontinuous by git reflog delete gets the amend under the committer")
+    func discontinuousReflog() throws {
+        try AmendFixture.expectSameRepos(
+            setup: { dir in
+                try AmendFixture.twoCommits(dir)
+                try AmendFixture.git(["reflog", "delete", "HEAD@{0}"], in: dir)
+                try AmendFixture.git(["reflog", "delete", "refs/heads/main@{0}"], in: dir)
+            },
+            gitArgs: ["-m", "after delete"], amend: { repo, env in
+                try repo.amendDetailed(message: "after delete\n", env: env)
+            })
+    }
+
+    @Test("a given message gets its last line ended, as -m does, even verbatim")
+    func verbatimGivenMessage() throws {
+        for message in ["x", "x\n\ny  "] {
+            try AmendFixture.expectSameRepos(
+                setup: AmendFixture.twoCommits, gitArgs: ["--cleanup=verbatim", "-m", message]) { repo, env in
+                    try repo.amendDetailed(message: message, cleanup: .verbatim, env: env)
+                }
+        }
+    }
 }
 #endif

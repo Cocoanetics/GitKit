@@ -171,7 +171,10 @@ extension Repository {
         defer { git_signature_free(committerSig) }
 
         let encoding = try configGet("i18n.commitEncoding").flatMap { Self.isUTF8($0) ? nil : $0 }
-        var text = try cleanedUp(message.map { Array($0.utf8) } ?? oldMessage(of: old, encoding: encoding),
+        // Like git's `-m`, a given message ends its last line
+        // (`strbuf_complete_line`); a kept one stays as it is.
+        let given = message.map { Array($0.utf8) }.map { $0.isEmpty || $0.last == 0x0A ? $0 : $0 + [0x0A] }
+        var text = try cleanedUp(given ?? oldMessage(of: old, encoding: encoding),
                                  cleanup, allowEmpty: allowEmptyMessage)
         text.append(0)
 
@@ -514,26 +517,20 @@ extension Repository {
               let logged = git_reflog_entry_message(entry),
               Self.withCString(message, { strcmp(logged, $0) }) == 0
         else { return }
-        if git_reflog_entrycount(log) == 1 {
-            // The update is the reflog's only entry (one emptied by `git
-            // reflog expire`): `append` would log the zero id as its old
-            // one, so write git's line in place of libgit2's.
-            let line = formatOID(&old) + " " + formatOID(&new) + " "
-            let entryBytes = Array(line.utf8) + Self.reflogIdentity(committer) + [0x09] + message + [0x0A]
-            // A linked worktree keeps HEAD's log in its own git dir and
-            // branch logs in the common one.
-            let dir = name == "HEAD" ? gitDirPath : commonDirPath
-            try Data(entryBytes).write(to: URL(fileURLWithPath: dir + "logs/" + name))
-            return
-        }
-        // `append` takes the old id from the entry before, so restamp only
-        // where that is the update's own.
-        guard let previous = git_reflog_entry_byindex(log, 1),
-              git_oid_equal(git_reflog_entry_id_new(previous), &old) != 0
-        else { return }
-        try check(git_reflog_drop(log, 0, 0))
-        try Self.withCString(message) { try check(git_reflog_append(log, &new, committer, $0)) }
-        try check(git_reflog_write(log))
+        // Replace the file's last line, that entry, with git's. Not
+        // drop + `append`: that takes the old id from the entry before,
+        // the zero id when there is none (a reflog emptied by `git reflog
+        // expire`) or another commit where the log is discontinuous (`git
+        // reflog delete` without `--rewrite`).
+        // A linked worktree keeps HEAD's log in its own git dir and
+        // branch logs in the common one.
+        let url = URL(fileURLWithPath: (name == "HEAD" ? gitDirPath : commonDirPath) + "logs/" + name)
+        var lines = Array(try Data(contentsOf: url))
+        if lines.last == 0x0A { lines.removeLast() }
+        lines = lines.lastIndex(of: 0x0A).map { Array(lines[...$0]) } ?? []
+        let ids = formatOID(&old) + " " + formatOID(&new) + " "
+        lines += Array(ids.utf8) + Self.reflogIdentity(committer) + [0x09] + message + [0x0A]
+        try Data(lines).write(to: url, options: .atomic)
     }
 
     /// `Name <email> 1767258000 +0100`, as a reflog line records its
