@@ -2,6 +2,15 @@
 // a path outside the sparse checkout gets its index entry, marked
 // skip-worktree, and nothing in the work tree.
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#elseif canImport(Android)
+import Android
+#endif
 import CGitKit
 
 extension Repository {
@@ -129,34 +138,58 @@ extension Repository {
         guard !entries.isEmpty else { return }
         let workdir = git_repository_workdir(repo).map { String(cString: $0) } ?? ""
         var removed: [String] = []
+        /// Put back what went, from the index still as it was.
+        func restore() {
+            try? checkout(removed, strategy: UInt32(GIT_CHECKOUT_FORCE.rawValue)) { options in
+                try check(git_checkout_index(repo, nil, &options))
+            }
+        }
         for (path, entry) in entries {
-            let present = Self.exists(workdir + path)
             do {
+                let present = try Self.isPresent(workdir + path)
                 try Self.removeFromWorkTree(path, in: workdir, gitlink: entry.mode == 0o160000)
+                if present, entry.mode != 0o160000 { removed.append(path) }
             } catch {
-                try? checkout(removed, strategy: UInt32(GIT_CHECKOUT_FORCE.rawValue)) { options in
-                    try check(git_checkout_index(repo, nil, &options))
-                }
+                restore()
                 throw error
             }
-            if present, entry.mode != 0o160000 { removed.append(path) }
         }
-        var index: OpaquePointer?
-        try check(git_repository_index(&index, repo))
-        defer { git_index_free(index) }
-        try check(git_index_read(index, 1))
-        for (path, entry) in entries {
-            _ = git_index_remove_bypath(index, path)
-            try path.withCString { name in
-                var record = git_index_entry()
-                record.path = name
-                record.id = entry.oid
-                record.mode = entry.mode
-                try check(git_index_add(index, &record))
+        // The merged entries, skip-worktree, in one write of the index.
+        do {
+            var index: OpaquePointer?
+            try check(git_repository_index(&index, repo))
+            defer { git_index_free(index) }
+            try check(git_index_read(index, 1))
+            for (path, entry) in entries {
+                _ = git_index_remove_bypath(index, path)
+                try path.withCString { name in
+                    var record = git_index_entry()
+                    record.path = name
+                    record.id = entry.oid
+                    record.mode = entry.mode
+                    record.flags_extended = UInt16(GIT_INDEX_ENTRY_SKIP_WORKTREE.rawValue)
+                    try check(git_index_add(index, &record))
+                }
             }
+            try check(git_index_write(index))
+        } catch {
+            restore()
+            throw error
         }
-        try check(git_index_write(index))
-        for (path, _) in entries { try setSkipWorktree(true, path: path) }
+    }
+
+    /// Whether anything is at `path` (lstat): nothing there is false; a
+    /// path that can't be looked at throws, rather than pass for absent.
+    static func isPresent(_ path: String) throws -> Bool {
+        #if os(Windows)
+        return exists(path)
+        #else
+        var info = stat()
+        if lstat(path, &info) == 0 { return true }
+        let code = errno
+        if code == ENOENT || code == ENOTDIR { return false }
+        throw Libgit2Error(code: -1, klass: 0, message: "unable to stat '\(path)': \(String(cString: strerror(code)))")
+        #endif
     }
 
     /// Take `path` out of the work tree, and the directories that leaves
@@ -164,7 +197,7 @@ extension Repository {
     /// the file can't be removed.
     static func removeFromWorkTree(_ path: String, in workdir: String, gitlink: Bool = false) throws {
         var url = URL(fileURLWithPath: workdir + path)
-        guard exists(url.path) else { return }
+        guard try isPresent(url.path) else { return }
         if gitlink {
             guard (try? FileManager.default.contentsOfDirectory(atPath: url.path))?.isEmpty == true else { return }
         }
