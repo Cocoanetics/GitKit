@@ -129,53 +129,54 @@ extension Repository {
         return paths.filter { !includes($0) }
     }
 
-    /// Put `entries` in the index, skip-worktree, without checking them
-    /// out: no file written, no checkout filter run; a file there goes.
-    /// The files go first: where one can't (a stale file left there would
-    /// hide behind the bit), those already gone are written back from the
-    /// unchanged index and the merge stops before HEAD moves.
-    func recordOutsideWorkTree(_ entries: [(path: String, entry: Entry)]) throws {
-        guard !entries.isEmpty else { return }
+    /// Take the files of `entries` out of the work tree, before anything
+    /// else of the merge is written: where one can't go, or can't be
+    /// looked at (a stale file left there would hide behind the bit),
+    /// those already gone are put back from the unchanged index and this
+    /// throws. Returns the files removed, for ``putBack(_:)``.
+    func removeOutsideWorkTree(_ entries: [(path: String, entry: Entry)]) throws -> [String] {
         let workdir = git_repository_workdir(repo).map { String(cString: $0) } ?? ""
         var removed: [String] = []
-        /// Put back what went, from the index still as it was.
-        func restore() {
-            try? checkout(removed, strategy: UInt32(GIT_CHECKOUT_FORCE.rawValue)) { options in
-                try check(git_checkout_index(repo, nil, &options))
-            }
-        }
         for (path, entry) in entries {
             do {
                 let present = try Self.isPresent(workdir + path)
                 try Self.removeFromWorkTree(path, in: workdir, gitlink: entry.mode == 0o160000)
                 if present, entry.mode != 0o160000 { removed.append(path) }
             } catch {
-                restore()
+                putBack(removed)
                 throw error
             }
         }
-        // The merged entries, skip-worktree, in one write of the index.
-        do {
-            var index: OpaquePointer?
-            try check(git_repository_index(&index, repo))
-            defer { git_index_free(index) }
-            try check(git_index_read(index, 1))
-            for (path, entry) in entries {
-                _ = git_index_remove_bypath(index, path)
-                try path.withCString { name in
-                    var record = git_index_entry()
-                    record.path = name
-                    record.id = entry.oid
-                    record.mode = entry.mode
-                    record.flags_extended = UInt16(GIT_INDEX_ENTRY_SKIP_WORKTREE.rawValue)
-                    try check(git_index_add(index, &record))
-                }
-            }
-            try check(git_index_write(index))
-        } catch {
-            restore()
-            throw error
+        return removed
+    }
+
+    /// Write `paths` back from the index as it is.
+    func putBack(_ paths: [String]) {
+        try? checkout(paths, strategy: UInt32(GIT_CHECKOUT_FORCE.rawValue)) { options in
+            try check(git_checkout_index(repo, nil, &options))
         }
+    }
+
+    /// Put `entries` in the index with their skip-worktree bit, in one
+    /// write: no file written, no checkout filter run.
+    func stageOutsideWorkTree(_ entries: [(path: String, entry: Entry)]) throws {
+        guard !entries.isEmpty else { return }
+        var index: OpaquePointer?
+        try check(git_repository_index(&index, repo))
+        defer { git_index_free(index) }
+        try check(git_index_read(index, 1))
+        for (path, entry) in entries {
+            _ = git_index_remove_bypath(index, path)
+            try path.withCString { name in
+                var record = git_index_entry()
+                record.path = name
+                record.id = entry.oid
+                record.mode = entry.mode
+                record.flags_extended = UInt16(GIT_INDEX_ENTRY_SKIP_WORKTREE.rawValue)
+                try check(git_index_add(index, &record))
+            }
+        }
+        try check(git_index_write(index))
     }
 
     /// Whether anything is at `path` (lstat): nothing there is false; a

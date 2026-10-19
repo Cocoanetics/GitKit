@@ -258,6 +258,7 @@ extension RepositoryOctopusMergeTests {
         try git(["commit", "-q", "-m", "tree"], in: dir)
         try git(["checkout", "-q", "-b", "upd"], in: dir)
         try write("2\n", to: "out/o", in: dir)
+        try write("2\n", to: "inc/i", in: dir)
         try git(["commit", "-q", "-am", "upd"], in: dir)
         try git(["checkout", "-q", "main"], in: dir)
         try git(["sparse-checkout", "init", "--cone"], in: dir)
@@ -276,8 +277,13 @@ extension RepositoryOctopusMergeTests {
         #expect(try git(["rev-parse", "HEAD"], in: dir).stdout == head)
         let kept = try String(contentsOf: dir.appendingPathComponent("out/o"), encoding: .utf8)
         #expect(kept == "1\n")
-        // Nor is the merged version left staged.
-        #expect(try git(["rev-parse", ":out/o"], in: dir).stdout == git(["rev-parse", "HEAD:out/o"], in: dir).stdout)
+        // Nor is any of the merge left staged or checked out.
+        for path in ["out/o", "inc/i"] {
+            let staged = try git(["rev-parse", ":" + path], in: dir).stdout
+            #expect(try staged == git(["rev-parse", "HEAD:" + path], in: dir).stdout)
+        }
+        let included = try String(contentsOf: dir.appendingPathComponent("inc/i"), encoding: .utf8)
+        #expect(included == "1\n")
     }
 }
 #endif

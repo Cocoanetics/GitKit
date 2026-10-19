@@ -146,10 +146,18 @@ extension Repository {
         // read-tree requires, so they are checked out by force.
         let hidden = Set(try hiddenPaths())
         let wanted = paths.filter { !skipped.contains($0) }
-        try checkout(wanted.filter { !hidden.contains($0) }, strategy: strategy, body)
-        let force = (strategy & ~UInt32(GIT_CHECKOUT_SAFE.rawValue)) | UInt32(GIT_CHECKOUT_FORCE.rawValue)
-        try checkout(wanted.filter(hidden.contains), strategy: force, body)
-        try recordOutsideWorkTree(outside)
+        // Their files go first, so one that can't stops the merge before
+        // anything else of it is written.
+        let removed = try removeOutsideWorkTree(outside)
+        do {
+            try checkout(wanted.filter { !hidden.contains($0) }, strategy: strategy, body)
+            let force = (strategy & ~UInt32(GIT_CHECKOUT_SAFE.rawValue)) | UInt32(GIT_CHECKOUT_FORCE.rawValue)
+            try checkout(wanted.filter(hidden.contains), strategy: force, body)
+        } catch {
+            putBack(removed)
+            throw error
+        }
+        try stageOutsideWorkTree(outside)
     }
 
     func checkout(
