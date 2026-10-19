@@ -102,7 +102,7 @@ extension Repository {
         }
         let worktree = try workingTreeChanges(index: index)
         let ignoreCase = try ignoresCase()
-        let skipWorktree = skipWorktreePaths(index)
+        let skipWorktree = try keepingSkipWorktree(skipWorktreePaths(index))
 
         var steps: [OctopusMergeStep] = []
         var mergedCommits = [head]   // git-merge-octopus' MRC
