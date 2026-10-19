@@ -110,14 +110,14 @@ extension Repository {
     ) throws -> Libgit2CommitDetails {
         let old = try commitToAmend()
         defer { git_commit_free(old) }
-        let cleanup = try cleanup ?? configuredCleanup()
-        // Git checks the state before the index, in this order.
+        // Git checks the state, then the cleanup mode, then the index.
         if FileManager.default.fileExists(atPath: gitDirPath + "MERGE_HEAD") {
             throw CommitAmendError.mergeInProgress
         }
         if FileManager.default.fileExists(atPath: gitDirPath + "CHERRY_PICK_HEAD") {
             throw CommitAmendError.cherryPickInProgress
         }
+        let cleanup = try cleanup ?? configuredCleanup()
 
         // Like git, hold index.lock from before reading the index until
         // HEAD has moved; another process holding it fails the amend
@@ -341,7 +341,11 @@ extension Repository {
     private func cleanedUp(
         _ message: [UInt8], _ cleanup: CommitMessageCleanup, allowEmpty: Bool
     ) throws -> [UInt8] {
-        guard cleanup != .verbatim else { return message }
+        // Verbatim, only a message of no bytes at all counts as empty.
+        guard cleanup != .verbatim else {
+            if message.isEmpty && !allowEmpty { throw CommitAmendError.emptyMessage }
+            return message
+        }
         let comment = cleanup == .strip ? try commentPrefix(for: message) : nil
         let cleaned = Self.stripSpace(message, commentPrefix: comment)
         if cleaned.isEmpty && !allowEmpty { throw CommitAmendError.emptyMessage }

@@ -38,17 +38,21 @@ Operations are synchronous, `throws` (typed ``Libgit2Error``), and return
 - **Work** — `add`, `commitDetailed`, `amendDetailed`, `status`, `diff`,
   `checkout`, `checkoutNewBranch`, `checkoutPaths`, `reset`,
   `move`/`remove` (git mv/rm).
-- **Amending** — `amendDetailed(message:author:resetAuthor:allowEmpty:env:)`
+- **Amending** — `amendDetailed(message:author:resetAuthor:allowEmpty:allowEmptyMessage:cleanup:env:)`
   is `git commit --amend`: the tip commit is replaced by one with its
   parents and the index's tree, the old message (and author, author date
   included) unless a new one is given (`--author` keeps the date,
   `resetAuthor` is `--reset-author`), the committer resolved as for a new
-  commit. HEAD or its branch moves with git's reflog entry
-  `commit (amend): <subject>`. Git's refusals throw `CommitAmendError` with
-  git's wording: `nothingToAmend` (unborn HEAD), `mergeInProgress`,
-  `cherryPickInProgress`, `unmergedFiles`, and `wouldBeEmpty` when the tree
-  equals the first parent's (the empty tree for a root commit) without
-  `allowEmpty` — a merge commit excepted. The returned
+  commit. The message is cleaned up as git does (`cleanup:` is `--cleanup`,
+  else `commit.cleanup`, else whitespace), a kept one re-encoded to
+  `i18n.commitEncoding`. `index.lock` is held until HEAD or its branch has
+  moved, with git's reflog entry `commit (amend): <subject>` under the
+  committer; a concluded revert's state is cleared. Git's refusals throw
+  `CommitAmendError` with git's wording: `nothingToAmend` (unborn HEAD),
+  `mergeInProgress`, `cherryPickInProgress`, `invalidCleanupMode`,
+  `unmergedFiles`, `wouldBeEmpty` when the tree equals the first parent's
+  (the empty tree for a root commit) without `allowEmpty` — a merge commit
+  excepted — and `emptyMessage` without `allowEmptyMessage`. The returned
   `Libgit2CommitDetails` carries what git's summary prints: the diffstat and
   `create`/`delete mode` files against the first parent, `author` /
   `committer` (` Author:` when they differ), and `showsAuthorDate` with

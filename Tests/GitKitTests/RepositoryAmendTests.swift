@@ -517,6 +517,18 @@ struct RepositoryAmendTests {
             setup: AmendFixture.twoCommits, gitArgs: ["--allow-empty-message", "-m", "  \n"]) { repo, env in
                 try repo.amendDetailed(message: "  \n", allowEmptyMessage: true, env: env)
             }
+        // Verbatim, only a message of no bytes is empty: git refuses "" but
+        // keeps " ".
+        let verbatim = try AmendFixture.run(["commit", "--amend", "--cleanup=verbatim", "-m", ""], in: dir)
+        #expect(verbatim.status == 1)
+        #expect(verbatim.err == "\(CommitAmendError.emptyMessage)\n")
+        #expect(throws: CommitAmendError.emptyMessage) {
+            try Repository.open(at: dir).amendDetailed(message: "", cleanup: .verbatim)
+        }
+        try AmendFixture.expectSameRepos(
+            setup: AmendFixture.twoCommits, gitArgs: ["--cleanup=verbatim", "-m", " "]) { repo, env in
+                try repo.amendDetailed(message: " \n", cleanup: .verbatim, env: env)
+            }
     }
 
     @Test("an unknown commit.cleanup is refused")
@@ -571,6 +583,13 @@ struct RepositoryAmendTests {
         let git = try AmendFixture.run(["commit", "--amend", "-m", "x"], in: dir)
         #expect(git.status == 128)
         #expect(git.err == "fatal: \(CommitAmendError.mergeInProgress)\n")
+        #expect(throws: CommitAmendError.mergeInProgress) {
+            try Repository.open(at: dir).amendDetailed(message: "x\n")
+        }
+        // The merge is reported before an unknown commit.cleanup.
+        try AmendFixture.git(["config", "commit.cleanup", "bogus"], in: dir)
+        let bogus = try AmendFixture.run(["commit", "--amend", "-m", "x"], in: dir)
+        #expect(bogus.err == "fatal: \(CommitAmendError.mergeInProgress)\n")
         #expect(throws: CommitAmendError.mergeInProgress) {
             try Repository.open(at: dir).amendDetailed(message: "x\n")
         }
