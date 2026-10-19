@@ -103,6 +103,13 @@ GIT_EXTERN(int) gitkit_index_lock_acquire(gitkit_index_lock **out, git_repositor
 GIT_EXTERN(void) gitkit_index_lock_release(gitkit_index_lock *lock);
 
 /*
+ * GitKit addition, implemented in Sources/Clibgit2Patches/git_similarity.c:
+ * git's rename similarity (diffcore-delta.c, estimate_similarity) as a
+ * metric for git_diff_find_options, scoring 0-100 as git prints it.
+ */
+GIT_EXTERN(void) gitkit_git_similarity_metric(git_diff_similarity_metric *out);
+
+/*
  * GitKit addition, implemented in Sources/Clibgit2Patches/lockfile.c: git's
  * `<path>.lock`, created exclusively (GIT_ELOCKED when it exists).
  * `gitkit_lockfile_commit` writes `data` to it and renames it over `path`;

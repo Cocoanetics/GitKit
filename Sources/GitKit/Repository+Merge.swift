@@ -35,13 +35,15 @@ private final class MergeHeadCollector {
 }
 
 /// What a commit changes against the tree it is compared with — the
-/// diffstat and `create mode` / `delete mode` lines of git's summary.
+/// diffstat and `create mode` / `delete mode` / `rename` lines of git's
+/// summary.
 struct CommitStats {
     let filesChanged: Int
     let insertions: Int
     let deletions: Int
     let added: [Libgit2CommitDetails.FileChange]
     let deleted: [Libgit2CommitDetails.FileChange]
+    let renamed: [Libgit2CommitDetails.Rename]
 }
 
 extension Repository {
@@ -227,6 +229,7 @@ extension Repository {
             deletions: stats.deletions,
             addedFiles: stats.added,
             deletedFiles: stats.deleted,
+            renamedFiles: stats.renamed,
             author: ResolvedSignature(authorSig),
             committer: ResolvedSignature(committerSig),
             showsAuthorDate: false)
@@ -521,6 +524,18 @@ extension Repository {
         var diff: OpaquePointer?
         try check(git_diff_tree_to_tree(&diff, repo, oldTree, newTree, nil))
         defer { git_diff_free(diff) }
+        // Git's commit summary always finds renames
+        // (print_commit_summary sets DIFF_DETECT_RENAME over diff.renames),
+        // scored as git scores them.
+        var find = git_diff_find_options()
+        try check(git_diff_find_options_init(&find, UInt32(GIT_DIFF_FIND_OPTIONS_VERSION)))
+        find.flags = UInt32(GIT_DIFF_FIND_RENAMES.rawValue)
+        var metric = git_diff_similarity_metric()
+        gitkit_git_similarity_metric(&metric)
+        try withUnsafeMutablePointer(to: &metric) { metric in
+            find.metric = metric
+            try check(git_diff_find_similar(diff, &find))
+        }
 
         var stats: OpaquePointer?
         try check(git_diff_get_stats(&stats, diff))
@@ -528,6 +543,7 @@ extension Repository {
 
         var added: [Libgit2CommitDetails.FileChange] = []
         var deleted: [Libgit2CommitDetails.FileChange] = []
+        var renamed: [Libgit2CommitDetails.Rename] = []
         let numDeltas = Int(git_diff_num_deltas(diff))
         for i in 0..<numDeltas {
             guard let delta = git_diff_get_delta(diff, i) else { continue }
@@ -540,6 +556,13 @@ extension Repository {
                 let path = String(cString: delta.pointee.old_file.path)
                 deleted.append(.init(
                     path: path, mode: UInt32(delta.pointee.old_file.mode)))
+            } else if status == GIT_DELTA_RENAMED {
+                renamed.append(.init(
+                    oldPath: String(cString: delta.pointee.old_file.path),
+                    newPath: String(cString: delta.pointee.new_file.path),
+                    similarity: Int(delta.pointee.similarity),
+                    oldMode: UInt32(delta.pointee.old_file.mode),
+                    newMode: UInt32(delta.pointee.new_file.mode)))
             }
         }
 
@@ -548,7 +571,8 @@ extension Repository {
             insertions: Int(git_diff_stats_insertions(stats)),
             deletions: Int(git_diff_stats_deletions(stats)),
             added: added,
-            deleted: deleted)
+            deleted: deleted,
+            renamed: renamed)
     }
 
     private func defaultMergeMessage(refName: String) -> String {

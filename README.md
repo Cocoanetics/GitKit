@@ -43,7 +43,8 @@ Operations are synchronous, `throws` (typed ``Libgit2Error``), and return
   parents and the index's tree, the old message (and author, author date
   included) unless a new one is given (`--author` keeps the date,
   `resetAuthor` is `--reset-author`), the committer resolved as for a new
-  commit. The message is cleaned up as git does (`cleanup:` is `--cleanup`,
+  commit, and the old commit's extra headers (`mergetag`, not its
+  signature) kept. The message is cleaned up as git does (`cleanup:` is `--cleanup`,
   else `commit.cleanup`, else whitespace), a kept one re-encoded to
   `i18n.commitEncoding`. `index.lock` is held until HEAD or its branch has
   moved, with git's reflog entry `commit (amend): <subject>` under the
@@ -54,7 +55,8 @@ Operations are synchronous, `throws` (typed ``Libgit2Error``), and return
   (the empty tree for a root commit) without `allowEmpty` — a merge commit
   excepted — and `emptyMessage` without `allowEmptyMessage`. The returned
   `Libgit2CommitDetails` carries what git's summary prints: the diffstat and
-  `create`/`delete mode` files against the first parent, `author` /
+  `create`/`delete mode` files against the first parent, `renamedFiles`
+  for the ` rename` lines (found and scored as git does), `author` /
   `committer` (` Author:` when they differ), and `showsAuthorDate` with
   `ResolvedSignature.formattedDate` for the ` Date:` line git prints after
   every amend that keeps the authorship.

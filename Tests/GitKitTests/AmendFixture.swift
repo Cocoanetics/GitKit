@@ -116,11 +116,18 @@ enum AmendFixture {
             }
             out += "\n"
         }
-        let modes = details.addedFiles.map { ("create", $0) } + details.deletedFiles.map { ("delete", $0) }
-        for (kind, file) in modes.sorted(by: { $0.1.path < $1.1.path }) {
-            out += " \(kind) mode \(String(format: "%06o", file.mode)) \(file.path)\n"
+        // Each line keyed by its (new) path, as git orders them.
+        var lines = details.addedFiles.map { ($0.path, " create mode \(String(format: "%06o", $0.mode)) \($0.path)\n") }
+            + details.deletedFiles.map { ($0.path, " delete mode \(String(format: "%06o", $0.mode)) \($0.path)\n") }
+        for rename in details.renamedFiles {
+            var text = " rename \(rename.name()) (\(rename.similarity)%)\n"
+            if rename.oldMode != rename.newMode {
+                let modes = String(format: "%06o => %06o", rename.oldMode, rename.newMode)
+                text += " mode change \(modes)\n"
+            }
+            lines.append((rename.newPath, text))
         }
-        return out
+        return out + lines.sorted { $0.0 < $1.0 }.map(\.1).joined()
     }
 
     /// Build the fixture twice, amend one twin with `git commit --amend

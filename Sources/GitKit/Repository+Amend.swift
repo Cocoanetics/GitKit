@@ -202,16 +202,24 @@ extension Repository {
         var text = try cleanedUp(rawText, cleanup, comment: comment, allowEmpty: allowEmptyMessage)
         text.append(0)
 
-        var commitOID = git_oid()
+        var created = git_buf()
+        defer { git_buf_dispose(&created) }
         _ = try parents.withUnsafeMutableBufferPointer { buffer in
             try text.withUnsafeBufferPointer { bytes in
                 try bytes.withMemoryRebound(to: CChar.self) { msg in
-                    try check(git_commit_create(
-                        &commitOID, repo, nil, authorSig, committerSig, encoding,
+                    try check(git_commit_create_buffer(
+                        &created, repo, authorSig, committerSig, encoding,
                         msg.baseAddress, newTree, buffer.count, buffer.baseAddress))
                 }
             }
         }
+        let object = Self.withExtraHeaders(
+            Array(UnsafeRawBufferPointer(start: created.ptr, count: created.size)), from: old)
+        var commitOID = git_oid()
+        var odb: OpaquePointer?
+        try check(git_repository_odb(&odb, repo))
+        defer { git_odb_free(odb) }
+        try check(git_odb_write(&commitOID, odb, object, object.count, GIT_OBJECT_COMMIT))
 
         // The subject's bytes as they are, in whatever encoding the
         // commit has: git logs them unconverted.
@@ -234,6 +242,7 @@ extension Repository {
             deletions: stats.deletions,
             addedFiles: stats.added,
             deletedFiles: stats.deleted,
+            renamedFiles: stats.renamed,
             author: ResolvedSignature(authorSig),
             committer: ResolvedSignature(committerSig),
             showsAuthorDate: !resetAuthor)
@@ -538,6 +547,30 @@ extension Repository {
         for log in logs {
             try restampReflog(log, old: old, new: new, committer: committer, message: reflog)
         }
+    }
+
+    /// `commit` (an object libgit2 built) with `old`'s extra headers —
+    /// `mergetag` and any other but its signatures (`gpgsig`,
+    /// `gpgsig-sha256`), continuation lines included — after its own, as
+    /// git's amend keeps them (`read_commit_extra_headers`).
+    static func withExtraHeaders(_ commit: [UInt8], from old: OpaquePointer?) -> [UInt8] {
+        guard let raw = git_commit_raw_header(old) else { return commit }
+        let standard: Set<String> = ["tree", "parent", "author", "committer", "encoding", "gpgsig", "gpgsig-sha256"]
+        var extra: [UInt8] = []
+        var keep = false
+        for line in bytes(raw).split(separator: 0x0A, omittingEmptySubsequences: false) where !line.isEmpty {
+            // A line starting with a space continues the header before.
+            if line.first != 0x20 {
+                let key = String(decoding: line.prefix { $0 != 0x20 }, as: UTF8.self)
+                keep = !standard.contains(key)
+            }
+            if keep { extra += line + [0x0A] }
+        }
+        // The headers end at the first blank line.
+        guard !extra.isEmpty,
+              let end = commit.indices.dropLast().first(where: { commit[$0] == 0x0A && commit[$0 + 1] == 0x0A })
+        else { return commit }
+        return Array(commit[...end]) + extra + Array(commit[(end + 1)...])
     }
 
     /// The branch HEAD names, nil when detached or unborn.

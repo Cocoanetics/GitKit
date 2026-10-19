@@ -386,6 +386,7 @@ public final class Repository {
             deletions: stats.deletions,
             addedFiles: stats.added,
             deletedFiles: stats.deleted,
+            renamedFiles: stats.renamed,
             author: ResolvedSignature(authorSig),
             committer: ResolvedSignature(committerSig),
             showsAuthorDate: false)
