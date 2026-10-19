@@ -490,8 +490,12 @@ extension Repository {
             var moved: OpaquePointer?
             let rc = git_reference_create_matching(&moved, repo, name, &commitOID, 1, &expected, reflog)
             git_reference_free(moved)
-            if rc == GIT_EMODIFIED.rawValue, let actual = git_reference_target(head) {
-                var actual = actual.pointee
+            if rc == GIT_EMODIFIED.rawValue {
+                // Where it is now, read again: `head` may be older.
+                var actual = git_oid()
+                if git_reference_name_to_id(&actual, repo, name) != 0, let target = git_reference_target(head) {
+                    actual = target.pointee
+                }
                 throw HeadMoved(expected: formatOID(&expected), actual: formatOID(&actual))
             }
             if rc < 0 {

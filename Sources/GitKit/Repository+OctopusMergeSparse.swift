@@ -153,7 +153,7 @@ extension Repository {
         defer { git_index_free(index) }
         try check(git_index_read(index, 1))
         let bit = UInt16(GIT_INDEX_ENTRY_SKIP_WORKTREE.rawValue)
-        var restore: [String] = [], hide: [String] = []
+        var restore: [String] = [], hide: [(path: String, entry: git_index_entry)] = []
         for i in 0..<git_index_entrycount(index) {
             guard let entry = git_index_get_byindex(index, i)?.pointee, (entry.flags >> 12) & 3 == 0,
                   entry.mode != 0o160000 else { continue }
@@ -161,7 +161,7 @@ extension Repository {
             if includes(path) {
                 if skipped { restore.append(path) }
             } else if !skipped {
-                hide.append(path)
+                hide.append((path, entry))
             }
         }
         for path in restore { try setSkipWorktree(false, path: path) }
@@ -169,11 +169,13 @@ extension Repository {
                      strategy: UInt32(GIT_CHECKOUT_SAFE.rawValue)) { options in
             try check(git_checkout_index(repo, nil, &options))
         }
-        let changed = UInt32(GIT_STATUS_WT_MODIFIED.rawValue | GIT_STATUS_WT_TYPECHANGE.rawValue)
-        for path in hide {
+        // Whether a file is up to date is read off its content, not the
+        // index's flags (assume-unchanged), as git's verify_uptodate does.
+        let fileMode = try honorsFileMode(), symlinks = try honorsSymlinks()
+        for (path, entry) in hide {
             if Self.exists(workdir + path) {
-                var flags: UInt32 = 0
-                guard git_status_file(&flags, repo, path) == 0, flags & changed == 0 else { continue }
+                guard try matches(entry, path: path, at: workdir + path, fileMode: fileMode, symlinks: symlinks)
+                else { continue }
                 var url = URL(fileURLWithPath: workdir + path)
                 try FileManager.default.removeItem(at: url)
                 // And the directories it leaves empty.

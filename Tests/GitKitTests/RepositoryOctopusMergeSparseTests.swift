@@ -148,5 +148,35 @@ extension RepositoryOctopusMergeTests {
         #expect(try git(["ls-files", "-v"], in: dir).stdout == git(["ls-files", "-v"], in: other).stdout)
         #expect(try state(of: dir) == state(of: other))
     }
+
+    @Test("a changed file outside the sparse patterns stays, assume-unchanged or not, as git leaves it")
+    func sparseKeepsChangedFile() throws {
+        let dir = try makeRepository()
+        for file in ["inc/i", "out/o"] {
+            let folder = dir.appendingPathComponent(file).deletingLastPathComponent()
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try write("1\n", to: file, in: dir)
+        }
+        try git(["add", "-A"], in: dir)
+        try git(["commit", "-q", "-m", "tree"], in: dir)
+        try git(["sparse-checkout", "init", "--cone"], in: dir)
+        try git(["sparse-checkout", "set", "inc"], in: dir)
+        try git(["update-index", "--no-skip-worktree", "out/o"], in: dir)
+        try git(["checkout", "--", "out/o"], in: dir)
+        try git(["update-index", "--assume-unchanged", "out/o"], in: dir)
+        try write("edited\n", to: "out/o", in: dir)
+
+        let other = try twin(of: dir)
+        let result = try merge(["a", "b"], in: dir)
+        _ = try git(["merge", "-q", "-m", "Merge branches", "a", "b"], in: other, check: false)
+        guard case .mergeCommit = result.outcome else {
+            Issue.record("expected a merge commit, got \(result.outcome)"); return
+        }
+        let edited = try String(contentsOf: dir.appendingPathComponent("out/o"), encoding: .utf8)
+        #expect(edited == "edited\n")
+        #expect(try git(["ls-files", "-v", "out"], in: dir).stdout == "h out/o")
+        guard try gitIsAtLeast(2, 54) else { return }
+        #expect(try git(["ls-files", "-v"], in: dir).stdout == git(["ls-files", "-v"], in: other).stdout)
+    }
 }
 #endif

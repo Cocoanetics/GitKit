@@ -422,6 +422,34 @@ extension Repository {
 
     /// Working tree paths that differ from the index: `true` for a file
     /// the index doesn't track.
+    /// Whether the work tree's `file` is what index `entry` records,
+    /// whatever its flags say: a link's target, or a file's content
+    /// through the clean filters and, where core.filemode holds, its
+    /// executable bit. Nothing there counts as up to date, as git's
+    /// verify_uptodate takes it.
+    func matches(
+        _ entry: git_index_entry, path: String, at file: String, fileMode: Bool, symlinks: Bool
+    ) throws -> Bool {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: file),
+              let type = attributes[.type] as? FileAttributeType else { return true }
+        var actual = git_oid(), expected = entry.id
+        if entry.mode == 0o120000, !symlinks {
+            // A link checked out as a file holding its target.
+            guard type == .typeRegular, git_odb_hashfile(&actual, file, GIT_OBJECT_BLOB) == 0 else { return false }
+        } else if entry.mode == 0o120000 {
+            guard type == .typeSymbolicLink, let bytes = Self.linkTarget(file) else { return false }
+            try check(git_odb_hash(&actual, bytes, bytes.count, GIT_OBJECT_BLOB))
+        } else {
+            // Through the clean filters (eol, ident, …), as the index
+            // records the content.
+            guard type == .typeRegular,
+                  git_repository_hashfile(&actual, repo, file, GIT_OBJECT_BLOB, path) == 0 else { return false }
+            let executable = ((attributes[.posixPermissions] as? Int) ?? 0) & 0o100 != 0
+            if fileMode, executable != (entry.mode == 0o100755) { return false }
+        }
+        return git_oid_equal(&actual, &expected) != 0
+    }
+
     func workingTreeChanges(index: OpaquePointer?) throws -> [String: Bool] {
         guard git_repository_is_bare(repo) == 0 else { return [:] }
         var options = git_diff_options()
@@ -446,29 +474,9 @@ extension Repository {
                   entry.flags_extended & UInt16(GIT_INDEX_ENTRY_SKIP_WORKTREE.rawValue) != 0
                     || entry.flags & UInt16(GIT_INDEX_ENTRY_VALID.rawValue) != 0 else { continue }
             let path = String(cString: entry.path)
-            // Gone is up to date; otherwise what's there must be what
-            // the entry records: a link's target, or a file's content.
-            guard let attributes = try? FileManager.default.attributesOfItem(atPath: workdir + path),
-                  let type = attributes[.type] as? FileAttributeType else { continue }
-            var actual = git_oid(), expected = entry.id
-            if entry.mode == 0o120000, !symlinks {
-                // A link checked out as a file holding its target.
-                guard type == .typeRegular, git_odb_hashfile(&actual, workdir + path, GIT_OBJECT_BLOB) == 0
-                else { changes[path] = false; continue }
-            } else if entry.mode == 0o120000 {
-                guard type == .typeSymbolicLink, let bytes = Self.linkTarget(workdir + path)
-                else { changes[path] = false; continue }
-                try check(git_odb_hash(&actual, bytes, bytes.count, GIT_OBJECT_BLOB))
-            } else {
-                // Through the clean filters (eol, ident, …), as the index
-                // records the content.
-                guard type == .typeRegular,
-                      git_repository_hashfile(&actual, repo, workdir + path, GIT_OBJECT_BLOB, path) == 0
-                else { changes[path] = false; continue }
-                let executable = ((attributes[.posixPermissions] as? Int) ?? 0) & 0o100 != 0
-                if fileMode, executable != (entry.mode == 0o100755) { changes[path] = false; continue }
+            if try !matches(entry, path: path, at: workdir + path, fileMode: fileMode, symlinks: symlinks) {
+                changes[path] = false
             }
-            if git_oid_equal(&actual, &expected) == 0 { changes[path] = false }
         }
         for i in 0..<git_diff_num_deltas(diff) {
             // A file gone from the work tree has nothing to lose: git's
