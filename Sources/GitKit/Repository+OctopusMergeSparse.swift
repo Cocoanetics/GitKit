@@ -94,10 +94,11 @@ extension Repository {
         return patterns.includes
     }
 
-    /// Those of `paths` that stay out of the work tree, where nothing
-    /// stands at them: those the sparse-checkout file leaves out, as
-    /// unpack-trees works skip-worktree out from it again, or, without
-    /// the file, those already skip-worktree.
+    /// Those of `paths` that stay out of the work tree: those the
+    /// sparse-checkout file leaves out, as unpack-trees works
+    /// skip-worktree out from it again (a file there is up to date, as
+    /// the preflight found, and goes), or, without the file, those
+    /// already skip-worktree where nothing stands.
     func sparseExclusions(of paths: [String], workdir: String) throws -> [String] {
         guard try sparseCheckout() else { return [] }
         var index: OpaquePointer?
@@ -107,7 +108,8 @@ extension Repository {
         let skip = Set(skipWorktreePaths(index))
         let includes = try sparseIncludes()
         return paths.filter { path in
-            (includes.map { !$0(path) } ?? skip.contains(path)) && !Self.exists(workdir + path)
+            if let includes { return !includes(path) }
+            return skip.contains(path) && !Self.exists(workdir + path)
         }
     }
 
@@ -119,9 +121,10 @@ extension Repository {
     }
 
     /// Put `entries` in the index, skip-worktree, without checking them
-    /// out: no file written, no checkout filter run.
+    /// out: no file written, no checkout filter run; a file there goes.
     func recordOutsideWorkTree(_ entries: [(path: String, entry: Entry)]) throws {
         guard !entries.isEmpty else { return }
+        let workdir = git_repository_workdir(repo).map { String(cString: $0) } ?? ""
         var index: OpaquePointer?
         try check(git_repository_index(&index, repo))
         defer { git_index_free(index) }
@@ -137,14 +140,36 @@ extension Repository {
             }
         }
         try check(git_index_write(index))
-        for (path, _) in entries { try setSkipWorktree(true, path: path) }
+        for (path, entry) in entries {
+            Self.removeFromWorkTree(path, in: workdir, gitlink: entry.mode == 0o160000)
+            try setSkipWorktree(true, path: path)
+        }
+    }
+
+    /// Take `path` out of the work tree, and the directories that leaves
+    /// empty; a submodule's directory only when it's empty.
+    static func removeFromWorkTree(_ path: String, in workdir: String, gitlink: Bool = false) {
+        var url = URL(fileURLWithPath: workdir + path)
+        guard exists(url.path) else { return }
+        if gitlink {
+            guard (try? FileManager.default.contentsOfDirectory(atPath: url.path))?.isEmpty == true else { return }
+        }
+        guard (try? FileManager.default.removeItem(at: url)) != nil else { return }
+        while url.deletingLastPathComponent().path.count >= workdir.count {
+            url = url.deletingLastPathComponent()
+            guard (try? FileManager.default.contentsOfDirectory(atPath: url.path))?.isEmpty == true else { break }
+            try? FileManager.default.removeItem(at: url)
+        }
     }
 
     /// Work skip-worktree out again for every merged entry, as
     /// unpack-trees does after a merge: a path the sparse-checkout file
-    /// takes in loses the bit and is written where it's missing; one it
-    /// leaves out gets the bit, its file taken away where it's up to
-    /// date (a changed one stays, as git leaves it).
+    /// takes in loses the bit and is written where it's missing (a
+    /// submodule's empty directory made); one it leaves out gets the bit,
+    /// its file taken away where it's up to date (a changed one, or a
+    /// submodule's directory with files, stays as git leaves it). A path
+    /// whose name isn't UTF-8 is left as it is: a Swift string can't name
+    /// its entry.
     func reapplySparsity() throws {
         guard let includes = try sparseIncludes() else { return }
         let workdir = git_repository_workdir(repo).map { String(cString: $0) } ?? ""
@@ -153,19 +178,23 @@ extension Repository {
         defer { git_index_free(index) }
         try check(git_index_read(index, 1))
         let bit = UInt16(GIT_INDEX_ENTRY_SKIP_WORKTREE.rawValue)
-        var restore: [String] = [], hide: [(path: String, entry: git_index_entry)] = []
+        var restore: [(path: String, gitlink: Bool)] = [], hide: [(path: String, entry: git_index_entry)] = []
         for i in 0..<git_index_entrycount(index) {
-            guard let entry = git_index_get_byindex(index, i)?.pointee, (entry.flags >> 12) & 3 == 0,
-                  entry.mode != 0o160000 else { continue }
-            let path = String(cString: entry.path), skipped = entry.flags_extended & bit != 0
+            guard let entry = git_index_get_byindex(index, i)?.pointee, (entry.flags >> 12) & 3 == 0 else { continue }
+            let bytes = Self.bytes(entry.path), path = String(decoding: bytes, as: UTF8.self)
+            guard path.utf8.elementsEqual(bytes) else { continue }
+            let skipped = entry.flags_extended & bit != 0
             if includes(path) {
-                if skipped { restore.append(path) }
+                if skipped { restore.append((path, entry.mode == 0o160000)) }
             } else if !skipped {
                 hide.append((path, entry))
             }
         }
-        for path in restore { try setSkipWorktree(false, path: path) }
-        try checkout(restore.filter { !Self.exists(workdir + $0) },
+        for (path, _) in restore { try setSkipWorktree(false, path: path) }
+        for (path, gitlink) in restore where gitlink && !Self.exists(workdir + path) {
+            try FileManager.default.createDirectory(atPath: workdir + path, withIntermediateDirectories: true)
+        }
+        try checkout(restore.filter { !$0.gitlink && !Self.exists(workdir + $0.path) }.map(\.path),
                      strategy: UInt32(GIT_CHECKOUT_SAFE.rawValue)) { options in
             try check(git_checkout_index(repo, nil, &options))
         }
@@ -173,18 +202,15 @@ extension Repository {
         // index's flags (assume-unchanged), as git's verify_uptodate does.
         let fileMode = try honorsFileMode(), symlinks = try honorsSymlinks()
         for (path, entry) in hide {
-            if Self.exists(workdir + path) {
-                guard try matches(entry, path: path, at: workdir + path, fileMode: fileMode, symlinks: symlinks)
-                else { continue }
-                var url = URL(fileURLWithPath: workdir + path)
-                try FileManager.default.removeItem(at: url)
-                // And the directories it leaves empty.
-                while url.deletingLastPathComponent().path.count >= workdir.count {
-                    url = url.deletingLastPathComponent()
-                    let entries = try? FileManager.default.contentsOfDirectory(atPath: url.path)
-                    guard entries?.isEmpty == true else { break }
-                    try? FileManager.default.removeItem(at: url)
+            let file = workdir + path
+            if entry.mode == 0o160000 {
+                if Self.exists(file), (try? FileManager.default.contentsOfDirectory(atPath: file))?.isEmpty != true {
+                    continue
                 }
+                Self.removeFromWorkTree(path, in: workdir, gitlink: true)
+            } else if Self.exists(file) {
+                guard try matches(entry, path: path, at: file, fileMode: fileMode, symlinks: symlinks) else { continue }
+                Self.removeFromWorkTree(path, in: workdir)
             }
             try setSkipWorktree(true, path: path)
         }

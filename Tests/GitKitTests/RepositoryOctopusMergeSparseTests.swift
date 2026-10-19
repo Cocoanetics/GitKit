@@ -178,5 +178,71 @@ extension RepositoryOctopusMergeTests {
         guard try gitIsAtLeast(2, 54) else { return }
         #expect(try git(["ls-files", "-v"], in: dir).stdout == git(["ls-files", "-v"], in: other).stdout)
     }
+
+    @Test("a clean file outside the cone that the merge updates goes, its entry skip-worktree, as git leaves it")
+    func sparseMaterializedFileUpdated() throws {
+        let dir = try makeRepository()
+        for file in ["inc/i", "out/o"] {
+            let folder = dir.appendingPathComponent(file).deletingLastPathComponent()
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try write("1\n", to: file, in: dir)
+        }
+        try git(["add", "-A"], in: dir)
+        try git(["commit", "-q", "-m", "tree"], in: dir)
+        try git(["checkout", "-q", "-b", "upd"], in: dir)
+        try write("2\n", to: "out/o", in: dir)
+        try git(["commit", "-q", "-am", "upd"], in: dir)
+        try git(["checkout", "-q", "main"], in: dir)
+        try git(["sparse-checkout", "init", "--cone"], in: dir)
+        try git(["sparse-checkout", "set", "inc"], in: dir)
+        try git(["update-index", "--no-skip-worktree", "out/o"], in: dir)
+        try git(["checkout", "--", "out/o"], in: dir)
+
+        let other = try twin(of: dir)
+        let result = try merge(["c", "upd"], in: dir)
+        try git(["merge", "-q", "-m", "Merge branches", "c", "upd"], in: other)
+        guard case .mergeCommit = result.outcome else {
+            Issue.record("expected a merge commit, got \(result.outcome)"); return
+        }
+        #expect(!FileManager.default.fileExists(atPath: dir.appendingPathComponent("out").path))
+        #expect(try git(["ls-files", "-v", "out"], in: dir).stdout == "S out/o")
+        #expect(try git(["rev-parse", ":out/o"], in: dir).stdout == git(["rev-parse", "upd:out/o"], in: dir).stdout)
+        guard try gitIsAtLeast(2, 54) else { return }
+        #expect(try state(of: dir) == state(of: other))
+    }
+
+    @Test("submodules get skip-worktree worked out again too, as git's merge does")
+    func sparseGitlinksReapplied() throws {
+        let dir = try makeRepository()
+        let inc = dir.appendingPathComponent("inc")
+        try FileManager.default.createDirectory(at: inc, withIntermediateDirectories: true)
+        try write("1\n", to: "inc/i", in: dir)
+        try git(["add", "-A"], in: dir)
+        let head = try git(["rev-parse", "HEAD"], in: dir).stdout
+        for path in ["out/sub", "inc/sub"] {
+            try git(["update-index", "--add", "--cacheinfo", "160000,\(head),\(path)"], in: dir)
+        }
+        try git(["commit", "-q", "-m", "subs"], in: dir)
+        try git(["sparse-checkout", "init", "--cone"], in: dir)
+        try git(["sparse-checkout", "set", "inc"], in: dir)
+        // Stale both ways.
+        try git(["update-index", "--no-skip-worktree", "out/sub"], in: dir)
+        try FileManager.default.createDirectory(at: dir.appendingPathComponent("out/sub"),
+                                                withIntermediateDirectories: true)
+        try git(["update-index", "--skip-worktree", "inc/sub"], in: dir)
+        try? FileManager.default.removeItem(at: dir.appendingPathComponent("inc/sub"))
+
+        let other = try twin(of: dir)
+        let result = try merge(["a", "b"], in: dir)
+        try git(["merge", "-q", "-m", "Merge branches", "a", "b"], in: other)
+        guard case .mergeCommit = result.outcome else {
+            Issue.record("expected a merge commit, got \(result.outcome)"); return
+        }
+        #expect(try git(["ls-files", "-v", "inc/sub", "out/sub"], in: dir).stdout == "H inc/sub\nS out/sub")
+        #expect(!FileManager.default.fileExists(atPath: dir.appendingPathComponent("out").path))
+        #expect(FileManager.default.fileExists(atPath: dir.appendingPathComponent("inc/sub").path))
+        guard try gitIsAtLeast(2, 54) else { return }
+        #expect(try git(["ls-files", "-v"], in: dir).stdout == git(["ls-files", "-v"], in: other).stdout)
+    }
 }
 #endif
