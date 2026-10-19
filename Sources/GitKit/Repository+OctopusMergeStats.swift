@@ -171,9 +171,7 @@ extension Repository {
     /// name, the `+`/`-` graph scaled to what's left.
     static func diffstat(_ files: [StatFile], width: Int = 80, nameLimit: Int = 0, graphLimit: Int = 0) -> String {
         guard !files.isEmpty else { return "" }
-        func columns<S: Sequence>(_ text: S) -> Int where S.Element == Unicode.Scalar {
-            text.reduce(0) { $0 + ($1.properties.generalCategory == .nonspacingMark ? 0 : 1) }
-        }
+        func columns<S: Sequence>(_ text: S) -> Int where S.Element == Unicode.Scalar { displayWidth(text) }
         var maxLen = 0, maxChange = 0, numberWidth = 0, binWidth = 0
         for file in files {
             maxLen = max(maxLen, columns(file.name.unicodeScalars))
@@ -212,7 +210,7 @@ extension Repository {
                 prefix = "..."
                 len = max(len - 3, 0)
                 while nameLen > len, let first = name.first {
-                    nameLen -= columns([first])
+                    nameLen -= displayWidth(first)
                     name.removeFirst()
                 }
                 if let slash = name.firstIndex(of: "/") { name = name[slash...] }

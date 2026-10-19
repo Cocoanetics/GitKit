@@ -417,6 +417,14 @@ extension Repository {
                 defer { git_index_free(index) }
                 for path in gone.keys { _ = git_index_remove_bypath(index, path) }
                 try check(git_index_write(index))
+                // A removed submodule's directory goes when it's empty, as
+                // unpack-trees' rmdir takes it; one with files stays.
+                for path in gone.keys {
+                    let dir = workdir + path, files = FileManager.default
+                    guard (try? files.attributesOfItem(atPath: dir))?[.type] as? FileAttributeType == .typeDirectory,
+                          (try? files.contentsOfDirectory(atPath: dir))?.isEmpty == true else { continue }
+                    try? files.removeItem(atPath: dir)
+                }
             }
             var commitOID = git_oid()
             _ = try commits.withUnsafeMutableBufferPointer { buffer in

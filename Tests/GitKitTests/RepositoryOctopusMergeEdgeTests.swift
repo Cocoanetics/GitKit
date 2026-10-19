@@ -498,6 +498,32 @@ extension RepositoryOctopusMergeTests {
         #expect(try git(["ls-files", "-v", "sub"], in: dir).stdout == git(["ls-files", "-v", "sub"], in: other).stdout)
     }
 
+    @Test("a removed submodule's empty directory goes, one with files stays, as git leaves them",
+          arguments: [false, true])
+    func removedSubmoduleDirectory(withFile: Bool) throws {
+        let dir = try makeRepository()
+        let head = try git(["rev-parse", "HEAD"], in: dir).stdout
+        try git(["update-index", "--add", "--cacheinfo", "160000,\(head),sub"], in: dir)
+        try git(["commit", "-q", "-m", "sub"], in: dir)
+        try git(["checkout", "-q", "-b", "rmsub"], in: dir)
+        try git(["rm", "-q", "--cached", "sub"], in: dir)
+        try git(["commit", "-q", "-m", "rm"], in: dir)
+        try git(["checkout", "-q", "main"], in: dir)
+        let sub = dir.appendingPathComponent("sub")
+        try FileManager.default.createDirectory(at: sub, withIntermediateDirectories: true)
+        if withFile { try write("x\n", to: "sub/f", in: dir) }
+
+        let other = try twin(of: dir)
+        let result = try merge(["c", "rmsub"], in: dir)
+        _ = try git(["merge", "-q", "-m", "Merge branches", "c", "rmsub"], in: other, check: false)
+        guard case .mergeCommit = result.outcome else {
+            Issue.record("expected a merge commit, got \(result.outcome)"); return
+        }
+        #expect(FileManager.default.fileExists(atPath: sub.path) == withFile)
+        #expect(FileManager.default.fileExists(atPath: other.appendingPathComponent("sub").path) == withFile)
+        #expect(try state(of: dir) == state(of: other))
+    }
+
     @Test("moves the ref a symbolic HEAD names outside refs/heads, and a detached HEAD itself",
           arguments: ["refs/foo", nil])
     func symbolicAndDetachedHead(target: String?) throws {

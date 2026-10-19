@@ -127,6 +127,27 @@ extension RepositoryOctopusMergeTests {
         #expect(summary.contains("Bin 0 -> 5 bytes") && summary.contains(".../"))
     }
 
+    @Test("with core.quotePath off, wide and combining characters take git's columns in the diffstat")
+    func diffstatDisplayWidths() throws {
+        let dir = try makeRepository()
+        try git(["config", "core.quotePath", "false"], in: dir)
+        try git(["checkout", "-q", "-b", "wide", "base"], in: dir)
+        for name in ["aa", "\u{754C}", "x\u{301}", "\u{1F389}"] { try write("1\n", to: name, in: dir) }
+        try git(["add", "-A"], in: dir)
+        try git(["commit", "-q", "-m", "wide"], in: dir)
+        try git(["checkout", "-q", "main"], in: dir)
+        let other = try twin(of: dir)
+        let result = try merge(["wide", "c"], in: dir)
+        let output = try git(["merge", "-m", "Merge branches", "wide", "c"], in: other).stdout
+        guard case .mergeCommit(_, let summary, _, _, let lines) = result.outcome else {
+            Issue.record("expected a merge commit, got \(result.outcome)"); return
+        }
+        #expect(output.contains(summary + "\n"))
+        #expect(summary.contains(" \u{754C} | 1 +"))
+        #expect(lines == output.split(separator: "\n").map(String.init).filter { $0.hasPrefix(" create") })
+        #expect(Repository.displayWidth("\u{754C}x\u{301}\u{AD}".unicodeScalars) == 4)
+    }
+
     @Test("renames read as git's diff summary writes them")
     func renameText() {
         #expect(Repository.renameText("a/b/c", "a/z/c") == "a/{b => z}/c")
