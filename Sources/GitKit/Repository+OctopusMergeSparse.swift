@@ -93,9 +93,17 @@ extension Repository {
     func sparseIncludes() throws -> ((String) -> Bool)? {
         guard try sparseCheckout() else { return nil }
         let file = String(cString: git_repository_path(repo)) + "info/sparse-checkout"
-        // Bytes, as git reads them: one line that isn't UTF-8 (a comment,
-        // say) doesn't cost the others.
+        // Bytes, as git reads them: a comment that isn't UTF-8 costs the
+        // other lines nothing; a rule that isn't can't be matched as git
+        // matches its bytes, and stops the merge before anything changes.
         guard let data = FileManager.default.contents(atPath: file) else { return nil }
+        for line in data.split(separator: 0x0A) {
+            let bytes = Array(line)
+            guard bytes.first(where: { $0 != 0x20 && $0 != 0x09 }) != 0x23,
+                  !String(decoding: bytes, as: UTF8.self).utf8.elementsEqual(bytes) else { continue }
+            throw Libgit2Error(code: -1, klass: 0, message:
+                "cannot merge: sparse-checkout rule \(Self.quotedPath(bytes)) is not valid UTF-8")
+        }
         let text = String(decoding: data, as: UTF8.self)
         let ignoreCase = try ignoresCase()
         let coneMode = try configBool("core.sparsecheckoutcone", default: true)
@@ -275,17 +283,16 @@ extension Repository {
         let (restore, hide) = try sparseChanges(includes)
         // Written by force: the bit keeps safe checkout off them, and
         // nothing stands there.
-        var made: [String] = []
-        for (path, gitlink) in restore where gitlink && !Self.exists(workdir + path) {
-            try FileManager.default.createDirectory(atPath: workdir + path, withIntermediateDirectories: true)
-            made.append(path)
-        }
+        var made: [String] = [], hidden: [String] = [], removed: [String] = [], emptied: [String] = []
         let written = restore.filter { !$0.gitlink && !Self.exists(workdir + $0.path) }.map(\.path)
-        // Whether a file is up to date is read off its content, not the
-        // index's flags (assume-unchanged), as git's verify_uptodate does.
-        let fileMode = try honorsFileMode(), symlinks = try honorsSymlinks()
-        var hidden: [String] = [], removed: [String] = [], emptied: [String] = []
         do {
+            for (path, gitlink) in restore where gitlink && !Self.exists(workdir + path) {
+                try FileManager.default.createDirectory(atPath: workdir + path, withIntermediateDirectories: true)
+                made.append(path)
+            }
+            // Whether a file is up to date is read off its content, not the
+            // index's flags (assume-unchanged), as git's verify_uptodate does.
+            let fileMode = try honorsFileMode(), symlinks = try honorsSymlinks()
             try checkout(written, strategy: UInt32(GIT_CHECKOUT_FORCE.rawValue)) { options in
                 try check(git_checkout_index(repo, nil, &options))
             }

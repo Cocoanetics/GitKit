@@ -338,5 +338,18 @@ extension RepositoryOctopusMergeTests {
         #expect(kept == "mine\n")
         #expect(try git(["ls-files", "-v", "out/sub"], in: dir).stdout == "H out/sub")
     }
+
+    @Test("a sparse rule that isn't UTF-8 stops the merge before anything changes")
+    func sparseRuleNotUTF8() throws {
+        let dir = try makeRepository()
+        try git(["config", "core.sparseCheckout", "true"], in: dir)
+        try git(["config", "core.sparseCheckoutCone", "false"], in: dir)
+        let rules = Data("/*\n!/x".utf8) + Data([0xFF, 0x0A])
+        try rules.write(to: dir.appendingPathComponent(".git/info/sparse-checkout"))
+        let before = try state(of: dir)
+        let error = #expect(throws: Libgit2Error.self) { try merge(["a", "b"], in: dir) }
+        #expect(error?.message.hasSuffix("is not valid UTF-8") == true)
+        #expect(try state(of: dir) == before)
+    }
 }
 #endif

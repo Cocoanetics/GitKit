@@ -95,13 +95,16 @@ extension Repository {
     /// filesystem may give its new files other permissions than the
     /// umask alone, so each file's own directory is asked.
     final class CreationModeCache {
-        private var byDirectory: [String: CreationModes] = [:]
+        /// By the directory's bytes: Swift strings would take canonically
+        /// equivalent names (é and e + ́) for one directory.
+        private var byDirectory: [[UInt8]: CreationModes] = [:]
 
         func modes(for file: String) -> CreationModes {
             let directory = (file as NSString).deletingLastPathComponent
-            if let modes = byDirectory[directory] { return modes }
+            let key = Array(directory.utf8)
+            if let modes = byDirectory[key] { return modes }
             let modes = Repository.creationModes(in: directory)
-            byDirectory[directory] = modes
+            byDirectory[key] = modes
             return modes
         }
     }
