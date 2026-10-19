@@ -156,6 +156,36 @@ private enum AmendFixture {
         try after(viaGit, viaKit)
         return details
     }
+
+    /// Build the fixture twice, amend one twin quietly with `git commit
+    /// --amend <gitArgs>` and the other with `amend`, and expect the same
+    /// commit and the same reflogs byte for byte — or both without them.
+    static func expectSameRepos(
+        setup: (URL) throws -> Void,
+        gitArgs: [String],
+        after: (_ viaGit: URL, _ viaKit: URL) throws -> Void = { _, _ in },
+        amend: (Repository, [String: String]) throws -> Void
+    ) throws {
+        let viaGit = try makeRepo()
+        let viaKit = try makeRepo()
+        defer {
+            try? FileManager.default.removeItem(at: viaGit)
+            try? FileManager.default.removeItem(at: viaKit)
+        }
+        try setup(viaGit)
+        try setup(viaKit)
+        let env = ["GIT_COMMITTER_DATE": commitDate]
+        let amended = try run(["commit", "-q", "--amend"] + gitArgs, in: viaGit, env: env)
+        #expect(amended.status == 0, "git failed: \(amended.err)")
+        try amend(try Repository.open(at: viaKit), env)
+        #expect(try git(["rev-parse", "HEAD"], in: viaKit) == git(["rev-parse", "HEAD"], in: viaGit))
+        for log in [".git/logs/HEAD", ".git/logs/refs/heads/main"] {
+            let kitLog = FileManager.default.contents(atPath: viaKit.appendingPathComponent(log).path)
+            let gitLog = FileManager.default.contents(atPath: viaGit.appendingPathComponent(log).path)
+            #expect(kitLog == gitLog, "\(log) differs")
+        }
+        try after(viaGit, viaKit)
+    }
 }
 
 @Suite("Repository.amendDetailed")
@@ -299,52 +329,76 @@ struct RepositoryAmendTests {
     @Test("the reflog subject is the first line, whitespace collapsed as git logs it")
     func reflogSubjectWhitespace() throws {
         for message in ["  spaced   out\t subject\nmore\n", "\nafter a blank line\n"] {
-            let viaGit = try AmendFixture.makeRepo()
-            let viaKit = try AmendFixture.makeRepo()
-            defer {
-                try? FileManager.default.removeItem(at: viaGit)
-                try? FileManager.default.removeItem(at: viaKit)
-            }
-            try AmendFixture.twoCommits(viaGit)
-            try AmendFixture.twoCommits(viaKit)
-            let env = ["GIT_COMMITTER_DATE": AmendFixture.commitDate]
-            let git = try AmendFixture.run(
-                ["commit", "-q", "--amend", "--cleanup=verbatim", "-m", message], in: viaGit, env: env)
-            #expect(git.status == 0, "git failed: \(git.err)")
-            try Repository.open(at: viaKit).amendDetailed(message: message, env: env)
-            for log in ["logs/HEAD", "logs/refs/heads/main"] {
-                #expect(try AmendFixture.lastLine(of: ".git/\(log)", in: viaKit)
-                    == AmendFixture.lastLine(of: ".git/\(log)", in: viaGit))
-            }
+            try AmendFixture.expectSameRepos(
+                setup: AmendFixture.twoCommits, gitArgs: ["--cleanup=verbatim", "-m", message]) { repo, env in
+                    try repo.amendDetailed(message: message, env: env)
+                }
+        }
+    }
+
+    /// `twoCommits`, the second reworded to `bytes` under
+    /// `i18n.commitEncoding=encoding`.
+    static func encodedMessage(_ bytes: [UInt8], encoding: String) -> (URL) throws -> Void {
+        { dir in
+            try AmendFixture.twoCommits(dir)
+            try AmendFixture.git(["config", "i18n.commitEncoding", encoding], in: dir)
+            let message = dir.appendingPathComponent("msg")
+            try Data(bytes).write(to: message)
+            try AmendFixture.git(["commit", "-q", "--amend", "-F", "msg"], in: dir)
+            try FileManager.default.removeItem(at: message)
         }
     }
 
     @Test("--no-edit re-encodes to i18n.commitEncoding, not i18n.logOutputEncoding")
     func logOutputEncodingIgnored() throws {
-        let viaGit = try AmendFixture.makeRepo()
-        let viaKit = try AmendFixture.makeRepo()
-        defer {
-            try? FileManager.default.removeItem(at: viaGit)
-            try? FileManager.default.removeItem(at: viaKit)
-        }
-        for dir in [viaGit, viaKit] {
-            try AmendFixture.twoCommits(dir)
-            try AmendFixture.git(["config", "i18n.commitEncoding", "ISO-8859-1"], in: dir)
-            let message = dir.appendingPathComponent("msg")
-            try Data([0x63, 0x61, 0x66, 0xE9, 0x0A]).write(to: message) // "café" in Latin-1
-            try AmendFixture.git(["commit", "-q", "--amend", "-F", "msg"], in: dir)
-            try FileManager.default.removeItem(at: message)
-            try AmendFixture.git(["config", "--unset", "i18n.commitEncoding"], in: dir)
-            try AmendFixture.git(["config", "i18n.logOutputEncoding", "CP1252"], in: dir)
-        }
-        let env = ["GIT_COMMITTER_DATE": AmendFixture.commitDate]
-        let git = try AmendFixture.run(["commit", "-q", "--amend", "--no-edit"], in: viaGit, env: env)
-        #expect(git.status == 0, "git failed: \(git.err)")
-        try Repository.open(at: viaKit).amendDetailed(env: env)
         // git writes the message as UTF-8 (the commit encoding), whatever
         // it displays it in.
-        #expect(try AmendFixture.git(["rev-parse", "HEAD"], in: viaKit)
-            == AmendFixture.git(["rev-parse", "HEAD"], in: viaGit))
+        let latin1 = Self.encodedMessage([0x63, 0x61, 0x66, 0xE9, 0x0A], encoding: "ISO-8859-1") // "café"
+        try AmendFixture.expectSameRepos(
+            setup: { dir in
+                try latin1(dir)
+                try AmendFixture.git(["config", "--unset", "i18n.commitEncoding"], in: dir)
+                try AmendFixture.git(["config", "i18n.logOutputEncoding", "CP1252"], in: dir)
+            },
+            gitArgs: ["--no-edit"], amend: { repo, env in try repo.amendDetailed(env: env) })
+    }
+
+    @Test("--no-edit converts any charset iconv knows, as git does")
+    func iconvCharset() throws {
+        // ISO-8859-15's 0xA4 is the euro sign, which Foundation has no name for.
+        let latin9 = Self.encodedMessage(Array("euro ".utf8) + [0xA4, 0x0A], encoding: "ISO-8859-15")
+        try AmendFixture.expectSameRepos(
+            setup: { dir in
+                try latin9(dir)
+                try AmendFixture.git(["config", "--unset", "i18n.commitEncoding"], in: dir)
+            },
+            gitArgs: ["--no-edit"], amend: { repo, env in try repo.amendDetailed(env: env) })
+    }
+
+    @Test("a non-UTF-8 subject is logged in the reflog with its bytes unconverted")
+    func nonUTF8ReflogSubject() throws {
+        try AmendFixture.expectSameRepos(
+            setup: Self.encodedMessage(Array("caf".utf8) + [0xE9, 0x20, 0x20, 0x78, 0x0A], encoding: "ISO-8859-1"),
+            gitArgs: ["--no-edit"], amend: { repo, env in try repo.amendDetailed(env: env) })
+    }
+
+    @Test("with core.logAllRefUpdates=false the amend succeeds and writes no reflog")
+    func reflogsDisabled() throws {
+        try AmendFixture.expectSameRepos(
+            setup: { dir in
+                try AmendFixture.git(["config", "core.logAllRefUpdates", "false"], in: dir)
+                try AmendFixture.twoCommits(dir)
+                try AmendFixture.write("m\n", to: "MERGE_MSG", in: dir.appendingPathComponent(".git"))
+            },
+            gitArgs: ["-m", "no log"],
+            after: { viaGit, viaKit in
+                // The commit state is still cleared after HEAD moved.
+                for dir in [viaGit, viaKit] {
+                    #expect(!FileManager.default.fileExists(atPath: dir.path + "/.git/MERGE_MSG"))
+                    #expect(!FileManager.default.fileExists(atPath: dir.path + "/.git/logs"))
+                }
+            },
+            amend: { repo, env in try repo.amendDetailed(message: "no log\n", env: env) })
     }
 
     @Test("an amend concluding a revert clears its state, sequencer included")

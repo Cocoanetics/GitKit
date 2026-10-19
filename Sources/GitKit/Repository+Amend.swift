@@ -155,12 +155,14 @@ extension Repository {
             }
         }
 
-        let subject = String(decoding: text.dropLast().prefix { $0 != UInt8(ascii: "\n") }, as: UTF8.self)
+        // The subject's bytes as they are, in whatever encoding the
+        // commit has: git logs them unconverted.
+        let subject = text.dropLast().prefix { $0 != UInt8(ascii: "\n") }
         guard let oldOID = git_commit_id(old)?.pointee else {
             throw Libgit2Error(code: -1, klass: 0, message: "commit to amend has no id")
         }
         try moveHead(from: oldOID, to: commitOID, committer: committerSig,
-                     reflog: Self.reflogMessage("commit (amend): \(subject)"))
+                     reflog: Self.reflogMessage(Array("commit (amend): ".utf8) + subject))
         removeCommitState()
 
         let sha = formatOID(&commitOID)
@@ -241,9 +243,10 @@ extension Repository {
     }
 
     /// The old commit's raw message, re-encoded from its `encoding` header
-    /// to the new commit's (`i18n.commitEncoding`, else UTF-8) when both
-    /// are known; verbatim otherwise, as git keeps a message it can't
-    /// convert.
+    /// to the new commit's (`i18n.commitEncoding`, else UTF-8) with iconv,
+    /// as git does; verbatim where that fails, as git keeps a message it
+    /// can't convert. Without iconv (Windows, Android before API 28) only
+    /// the charsets Foundation names convert.
     private func oldMessage(of commit: OpaquePointer?, encoding: String?) -> [UInt8] {
         guard let raw = git_commit_message(commit) else { return [] }
         let bytes = Array(UnsafeBufferPointer(
@@ -251,16 +254,53 @@ extension Repository {
         let source = git_commit_message_encoding(commit).map { String(cString: $0) } ?? "UTF-8"
         let target = encoding ?? "UTF-8"
         if Self.sameEncoding(source, target) { return bytes }
+        switch Self.iconv(bytes, from: source, to: target) {
+        case .converted(let converted): return converted
+        case .failed: return bytes
+        case .unsupported: break
+        }
         guard let from = Self.stringEncoding(source), let to = Self.stringEncoding(target),
               let decoded = String(data: Data(bytes), encoding: from),
               let encoded = decoded.data(using: to) else { return bytes }
         return Array(encoded)
     }
 
+    private enum Reencoding {
+        case converted([UInt8])
+        /// iconv knows both charsets but the bytes don't convert.
+        case failed
+        /// No iconv, or one that doesn't know the pair.
+        case unsupported
+    }
+
+    /// git's `reencode_string_len()`: `bytes` from charset `from` to `to`.
+    private static func iconv(_ bytes: [UInt8], from: String, to: String) -> Reencoding {
+        // iconv spells UTF-8 one way; git accepts the others too.
+        let from = isUTF8(from) ? "UTF-8" : from
+        let to = isUTF8(to) ? "UTF-8" : to
+        var out: UnsafeMutablePointer<CChar>?
+        var count = 0
+        let rc = bytes.withUnsafeBufferPointer { buffer in
+            buffer.withMemoryRebound(to: CChar.self) {
+                gitkit_reencode(&out, &count, $0.baseAddress, $0.count, to, from)
+            }
+        }
+        defer { free(out) }
+        switch rc {
+        case 0:
+            guard let out else { return .failed }
+            return .converted(Array(UnsafeRawBufferPointer(start: out, count: count)))
+        case -1: return .failed
+        default: return .unsupported
+        }
+    }
+
     /// `message` as git logs it (`copy_reflog_msg`): leading and trailing
-    /// whitespace dropped, each run inside collapsed to one space.
-    static func reflogMessage(_ message: String) -> String {
-        message.split(whereSeparator: { " \t\n\r".contains($0) }).joined(separator: " ")
+    /// whitespace dropped, each run inside collapsed to one space. Bytes,
+    /// not a string: a subject in the commit's encoding is logged as is.
+    static func reflogMessage(_ message: [UInt8]) -> [UInt8] {
+        let space: Set<UInt8> = [0x20, 0x09, 0x0A, 0x0D]
+        return Array(message.split(whereSeparator: space.contains).joined(separator: [0x20]))
     }
 
     /// What a successful commit clears, as git does: the merge and squash
@@ -317,7 +357,7 @@ extension Repository {
     /// identity and date as git does.
     private func moveHead(
         from old: git_oid, to new: git_oid,
-        committer: UnsafeMutablePointer<git_signature>?, reflog: String
+        committer: UnsafeMutablePointer<git_signature>?, reflog: [UInt8]
     ) throws {
         let detached = git_repository_head_detached(repo) == 1
         var name = "HEAD"
@@ -330,7 +370,9 @@ extension Repository {
         var expected = old
         var target = new
         var moved: OpaquePointer?
-        try check(git_reference_create_matching(&moved, repo, name, &target, 1, &expected, reflog))
+        try Self.withCString(reflog) { message in
+            try check(git_reference_create_matching(&moved, repo, name, &target, 1, &expected, message))
+        }
         git_reference_free(moved)
         // libgit2 logs the update under the config identity and "now";
         // git logs a commit's ref update under its committer.
@@ -341,10 +383,16 @@ extension Repository {
 
     /// Replace `name`'s newest reflog entry — the `old` → `new` update
     /// just logged with `message` — by the same entry under `committer`.
+    /// A ref without a reflog (`core.logAllRefUpdates=false`) is left
+    /// without one.
     private func restampReflog(
         _ name: String, old: git_oid, new: git_oid,
-        committer: UnsafeMutablePointer<git_signature>?, message: String
+        committer: UnsafeMutablePointer<git_signature>?, message: [UInt8]
     ) throws {
+        // Reading a missing reflog would create it, empty.
+        let exists = git_reference_has_log(repo, name)
+        try check(min(exists, 0))
+        guard exists == 1 else { return }
         var log: OpaquePointer?
         try check(git_reflog_read(&log, repo, name))
         defer { git_reflog_free(log) }
@@ -355,12 +403,22 @@ extension Repository {
         guard let entry = git_reflog_entry_byindex(log, 0),
               git_oid_equal(git_reflog_entry_id_new(entry), &new) != 0,
               git_oid_equal(git_reflog_entry_id_old(entry), &old) != 0,
-              git_reflog_entry_message(entry).map({ String(cString: $0) }) == message,
+              let logged = git_reflog_entry_message(entry),
+              Self.withCString(message, { strcmp(logged, $0) }) == 0,
               let previous = git_reflog_entry_byindex(log, 1),
               git_oid_equal(git_reflog_entry_id_new(previous), &old) != 0
         else { return }
         try check(git_reflog_drop(log, 0, 0))
-        try check(git_reflog_append(log, &new, committer, message))
+        try Self.withCString(message) { try check(git_reflog_append(log, &new, committer, $0)) }
         try check(git_reflog_write(log))
+    }
+
+    /// `bytes`, NUL-terminated, as a C string.
+    private static func withCString<R>(
+        _ bytes: [UInt8], _ body: (UnsafePointer<CChar>) throws -> R
+    ) rethrows -> R {
+        try (bytes + [0]).withUnsafeBufferPointer { buffer in
+            try buffer.withMemoryRebound(to: CChar.self) { try body($0.baseAddress!) }
+        }
     }
 }

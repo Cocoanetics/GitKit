@@ -103,6 +103,18 @@ GIT_EXTERN(int) gitkit_index_lock_acquire(gitkit_index_lock **out, git_repositor
 GIT_EXTERN(void) gitkit_index_lock_release(gitkit_index_lock *lock);
 
 /*
+ * GitKit addition, implemented in Sources/Clibgit2Patches/reencode.c: git's
+ * reencode_string_len(), converting `in_len` bytes from charset `from` to `to`
+ * with iconv. On success returns 0 and a NUL-terminated `*out` (release with
+ * free()) of `*out_len` bytes; -1 when the bytes don't convert, -2 when iconv
+ * doesn't know the pair or the platform has no iconv (Windows, Android < 28).
+ */
+GIT_EXTERN(int) gitkit_reencode(
+	char **out, size_t *out_len,
+	const char *in, size_t in_len,
+	const char *to, const char *from);
+
+/*
  * GitKit addition, implemented in Sources/Clibgit2Patches/wildmatch_export.c:
  * git's wildmatch, as libgit2 carries it. `flags` takes GITKIT_WM_CASEFOLD
  * and GITKIT_WM_PATHNAME; returns 0 on a match.
