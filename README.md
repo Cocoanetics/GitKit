@@ -35,8 +35,25 @@ Operations are synchronous, `throws` (typed ``Libgit2Error``), and return
   `CredentialProvider` closures for HTTPS/SSH auth, a pluggable progress
   sink, and `depth`/`singleBranch`/`branch` for shallow, single-branch
   clones).
-- **Work** — `add`, `commitDetailed`, `status`, `diff`, `checkout`,
-  `checkoutNewBranch`, `checkoutPaths`, `reset`, `move`/`remove` (git mv/rm).
+- **Work** — `add`, `commitDetailed`, `amendDetailed`, `status`, `diff`,
+  `checkout`, `checkoutNewBranch`, `checkoutPaths`, `reset`,
+  `move`/`remove` (git mv/rm).
+- **Amending** — `amendDetailed(message:author:resetAuthor:allowEmpty:env:)`
+  is `git commit --amend`: the tip commit is replaced by one with its
+  parents and the index's tree, the old message (and author, author date
+  included) unless a new one is given (`--author` keeps the date,
+  `resetAuthor` is `--reset-author`), the committer resolved as for a new
+  commit. HEAD or its branch moves with git's reflog entry
+  `commit (amend): <subject>`. Git's refusals throw `CommitAmendError` with
+  git's wording: `nothingToAmend` (unborn HEAD), `mergeInProgress`,
+  `cherryPickInProgress`, `unmergedFiles`, and `wouldBeEmpty` when the tree
+  equals the first parent's (the empty tree for a root commit) without
+  `allowEmpty` — a merge commit excepted. The returned
+  `Libgit2CommitDetails` carries what git's summary prints: the diffstat and
+  `create`/`delete mode` files against the first parent, `author` /
+  `committer` (` Author:` when they differ), and `showsAuthorDate` with
+  `ResolvedSignature.formattedDate` for the ` Date:` line git prints after
+  every amend that keeps the authorship.
 - **Index** — `indexedEntries` (`git ls-files -s`, with the skip-worktree /
   assume-unchanged bits and the `ls-files -v` tag), `isTracked`,
   `setSkipWorktree` / `setAssumeUnchanged` (git update-index; a held

@@ -15,6 +15,32 @@ public struct ResolvedSignature: Sendable, Equatable {
     public let offsetMinutes: Int32
 }
 
+extension ResolvedSignature {
+    /// The identity a libgit2 signature records.
+    init(_ signature: UnsafePointer<git_signature>?) {
+        let sig = signature?.pointee
+        self.init(
+            name: sig?.name.map { String(cString: $0) } ?? "",
+            email: sig?.email.map { String(cString: $0) } ?? "",
+            time: Int64(sig?.when.time ?? 0),
+            offsetMinutes: Int32(sig?.when.offset ?? 0))
+    }
+
+    /// The date in git's default format, `Thu Jan 1 10:00:00 2026 +0100`,
+    /// in the signature's own timezone — what a commit summary's
+    /// ` Date:` line shows.
+    public var formattedDate: String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "EEE MMM d HH:mm:ss yyyy"
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: Int(offsetMinutes) * 60)
+        let body = formatter.string(from: Date(timeIntervalSince1970: TimeInterval(time)))
+        let minutes = abs(Int(offsetMinutes))
+        let zone = String(format: "%@%02d%02d", offsetMinutes >= 0 ? "+" : "-", minutes / 60, minutes % 60)
+        return "\(body) \(zone)"
+    }
+}
+
 /// Real-git-compatible identity resolution for commit author + committer.
 ///
 /// Precedence (matches `man git-commit-tree` for each role):
@@ -52,15 +78,11 @@ public enum SignatureResolver {
         let raw = try resolve(role: role, override: override,
                               repo: repository.pointer, env: env)
         defer { git_signature_free(raw) }
-        guard let sig = raw?.pointee else {
+        guard let raw else {
             throw Libgit2Error(code: -1, klass: 0,
                 message: "signature resolution produced no signature")
         }
-        return ResolvedSignature(
-            name: sig.name.map { String(cString: $0) } ?? "",
-            email: sig.email.map { String(cString: $0) } ?? "",
-            time: Int64(sig.when.time),
-            offsetMinutes: Int32(sig.when.offset))
+        return ResolvedSignature(raw)
     }
 
     /// Build a `git_signature` honoring env-var overrides. The returned

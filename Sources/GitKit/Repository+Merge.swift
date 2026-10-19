@@ -34,7 +34,9 @@ private final class MergeHeadCollector {
     var oids: [git_oid] = []
 }
 
-private struct MergeContinueStats {
+/// What a commit changes against the tree it is compared with — the
+/// diffstat and `create mode` / `delete mode` lines of git's summary.
+struct CommitStats {
     let filesChanged: Int
     let insertions: Int
     let deletions: Int
@@ -187,7 +189,7 @@ extension Repository {
         try check(git_tree_lookup(&newTree, repo, &treeOID))
         defer { git_tree_free(newTree) }
 
-        let stats = try collectMergeContinueStats(oldTree: parentTree, newTree: newTree)
+        let stats = try commitStats(from: parentTree, to: newTree)
 
         let authorSig = try SignatureResolver.resolve(
             role: .author, override: author, repo: repo, env: env)
@@ -224,7 +226,10 @@ extension Repository {
             insertions: stats.insertions,
             deletions: stats.deletions,
             addedFiles: stats.added,
-            deletedFiles: stats.deleted)
+            deletedFiles: stats.deleted,
+            author: ResolvedSignature(authorSig),
+            committer: ResolvedSignature(committerSig),
+            showsAuthorDate: false)
     }
 
     // MARK: Fast-forward
@@ -495,7 +500,7 @@ extension Repository {
         return buf.ptr.map { String(cString: $0) } ?? ""
     }
 
-    private func currentBranchShorthand() -> String? {
+    func currentBranchShorthand() -> String? {
         var head: OpaquePointer?
         if git_repository_head(&head, repo) == 0 {
             defer { git_reference_free(head) }
@@ -507,10 +512,12 @@ extension Repository {
         return nil
     }
 
-    private func collectMergeContinueStats(
-        oldTree: OpaquePointer?,
-        newTree: OpaquePointer?
-    ) throws -> MergeContinueStats {
+    /// The diffstat and added/deleted files between `oldTree` (nil: the
+    /// empty tree) and `newTree`, for a commit summary.
+    func commitStats(
+        from oldTree: OpaquePointer?,
+        to newTree: OpaquePointer?
+    ) throws -> CommitStats {
         var diff: OpaquePointer?
         try check(git_diff_tree_to_tree(&diff, repo, oldTree, newTree, nil))
         defer { git_diff_free(diff) }
@@ -536,7 +543,7 @@ extension Repository {
             }
         }
 
-        return MergeContinueStats(
+        return CommitStats(
             filesChanged: Int(git_diff_stats_files_changed(stats)),
             insertions: Int(git_diff_stats_insertions(stats)),
             deletions: Int(git_diff_stats_deletions(stats)),
