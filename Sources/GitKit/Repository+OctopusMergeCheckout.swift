@@ -104,9 +104,54 @@ extension Repository {
         // read-tree requires, so they are checked out by force.
         let hidden = Set(try hiddenPaths())
         let (forced, safe) = (paths.filter(hidden.contains), paths.filter { !hidden.contains($0) })
+        // In a sparse checkout, a skip-worktree path the work tree lacks
+        // stays out of it: unpack-trees updates only its index entry.
+        let workdir = git_repository_workdir(repo).map { String(cString: $0) } ?? ""
+        let sparse = try sparseCheckout() ? Set(try absentSkipWorktreePaths(in: workdir)) : []
+        let outside = forced.filter(sparse.contains).map { path in (path, Self.deepestExisting(path, in: workdir)) }
         try checkout(safe, strategy: strategy, body)
         let force = (strategy & ~UInt32(GIT_CHECKOUT_SAFE.rawValue)) | UInt32(GIT_CHECKOUT_FORCE.rawValue)
         try checkout(forced, strategy: force, body)
+        guard !outside.isEmpty else { return }
+        var index: OpaquePointer?
+        try check(git_repository_index(&index, repo))
+        defer { git_index_free(index) }
+        try check(git_index_read(index, 1))
+        for (path, existing) in outside where git_index_get_bypath(index, path, 0) != nil {
+            // Take the file away again, and the directories made for it.
+            var url = URL(fileURLWithPath: workdir + path)
+            try? FileManager.default.removeItem(at: url)
+            while url.deletingLastPathComponent().path.count > existing.count {
+                url = url.deletingLastPathComponent()
+                guard (try? FileManager.default.contentsOfDirectory(atPath: url.path))?.isEmpty == true else { break }
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
+    }
+
+    /// The deepest of `path`'s directories that exists under `workdir`.
+    static func deepestExisting(_ path: String, in workdir: String) -> String {
+        var url = URL(fileURLWithPath: workdir + path).deletingLastPathComponent()
+        while url.path.count > workdir.count, !exists(url.path) { url = url.deletingLastPathComponent() }
+        return url.path
+    }
+
+    /// Whether core.sparseCheckout is on.
+    func sparseCheckout() throws -> Bool {
+        var config: OpaquePointer?
+        try check(git_repository_config_snapshot(&config, repo))
+        defer { git_config_free(config) }
+        var value: Int32 = 0
+        return git_config_get_bool(&value, config, "core.sparsecheckout") == 0 && value != 0
+    }
+
+    /// The index's skip-worktree paths the work tree has nothing at.
+    private func absentSkipWorktreePaths(in workdir: String) throws -> [String] {
+        var index: OpaquePointer?
+        try check(git_repository_index(&index, repo))
+        defer { git_index_free(index) }
+        try check(git_index_read(index, 1))
+        return skipWorktreePaths(index).filter { !Self.exists(workdir + $0) }
     }
 
     private func checkout(

@@ -524,6 +524,32 @@ extension RepositoryOctopusMergeTests {
         #expect(try state(of: dir) == state(of: other))
     }
 
+    @Test("in a sparse checkout, a skip-worktree path the merge changes stays out of the work tree")
+    func sparseCheckoutStaysSparse() throws {
+        let dir = try makeRepository()
+        try FileManager.default.createDirectory(at: dir.appendingPathComponent("d/e"), withIntermediateDirectories: true)
+        try write("1\n", to: "d/e/f", in: dir)
+        try git(["add", "d"], in: dir)
+        try git(["commit", "-q", "-m", "d"], in: dir)
+        try git(["checkout", "-q", "-b", "sparse"], in: dir)
+        try write("2\n", to: "d/e/f", in: dir)
+        try git(["commit", "-q", "-am", "sparse"], in: dir)
+        try git(["checkout", "-q", "main"], in: dir)
+        try git(["sparse-checkout", "set", "--cone", "elsewhere"], in: dir)
+
+        let other = try twin(of: dir)
+        let result = try merge(["c", "sparse"], in: dir)
+        try git(["merge", "-q", "-m", "Merge branches", "c", "sparse"], in: other)
+        guard case .mergeCommit = result.outcome else {
+            Issue.record("expected a merge commit, got \(result.outcome)"); return
+        }
+        #expect(!FileManager.default.fileExists(atPath: dir.appendingPathComponent("d").path))
+        #expect(try git(["ls-files", "-v", "d"], in: dir).stdout == "S d/e/f")
+        let merged = try git(["rev-parse", ":d/e/f"], in: dir).stdout
+        #expect(try merged == git(["rev-parse", "sparse:d/e/f"], in: dir).stdout)
+        #expect(try state(of: dir) == state(of: other))
+    }
+
     @Test("moves the ref a symbolic HEAD names outside refs/heads, and a detached HEAD itself",
           arguments: ["refs/foo", nil])
     func symbolicAndDetachedHead(target: String?) throws {
