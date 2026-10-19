@@ -214,7 +214,7 @@ extension Repository {
         let outcome = try conclude(head: head, headTree: headTree, mergedTree: mergedTree, oids: oids,
                                    noFastForward: noFastForward, message: message, author: author, env: env) {
             try keepSkipWorktree(skipWorktree)
-            try reapplySparsity()
+            return try reapplySparsity()
         }
         return OctopusMergeResult(steps: steps, outcome: outcome)
     }
@@ -222,10 +222,10 @@ extension Repository {
     /// Commit the merged tree on HEAD, or, where another process holds
     /// HEAD's ref, leave the merge staged for `git commit`, as git does.
     /// `settle` finishes the work tree once it's checked out, before the
-    /// commit is made and HEAD moves.
+    /// commit is made and HEAD moves; it returns what takes that back.
     func conclude(
         head: git_oid, headTree: git_oid, mergedTree: git_oid, oids: [git_oid], noFastForward: Bool,
-        message: String, author: Signature?, env: [String: String], settle: () throws -> Void = {}
+        message: String, author: Signature?, env: [String: String], settle: () throws -> () -> Void = { {} }
     ) throws -> OctopusMergeOutcome {
         let headSubsumed = try oids.contains { try isDescendant($0, of: head) }
         let parents = (headSubsumed && !noFastForward ? [] : [head]) + oids

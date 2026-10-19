@@ -561,12 +561,9 @@ extension Repository {
         #endif
     }
 
-    /// Whether the work tree folds case (core.ignorecase).
+    /// Whether the work tree folds case (core.ignorecase); a value that
+    /// isn't a boolean throws, as git dies on it.
     func ignoresCase() throws -> Bool {
-        var config: OpaquePointer?
-        try check(git_repository_config_snapshot(&config, repo))
-        defer { git_config_free(config) }
-        var value: Int32 = 0
-        return git_config_get_bool(&value, config, "core.ignorecase") == 0 && value != 0
+        try configFlag("core.ignorecase") ?? false
     }
 }
