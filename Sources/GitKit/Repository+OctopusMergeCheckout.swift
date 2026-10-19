@@ -640,7 +640,8 @@ extension Repository {
                     let lock = (directory.map { String(cString: $0) } ?? "") + name + ".lock"
                     let message = Libgit2Error.last(code: rc).message
                     let reason = Self.exists(lock) ? "File exists"
-                        : message.range(of: "': ", options: .backwards).map { String(message[$0.upperBound...]) } ?? message
+                        : message.range(of: "': ", options: .backwards).map { String(message[$0.upperBound...]) }
+                            ?? message
                     throw HeadNotUpdated(lockFile: lock, reason: reason)
                 }
             } catch let error where error is HeadNotUpdated || error is HeadMoved || error is HeadMissing {
