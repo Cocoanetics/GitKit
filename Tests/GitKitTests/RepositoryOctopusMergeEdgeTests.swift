@@ -610,7 +610,7 @@ extension RepositoryOctopusMergeTests {
         let moved = try git(["rev-parse", "b"], in: dir).stdout
         let repository = try Repository.open(at: dir)
         let outcome = try repository.conclude(head: start, headTree: tree, mergedTree: tree, oids: heads,
-                                              noFastForward: true, message: "Merge", author: nil, env: [:])
+                                              noFastForward: true, message: "Merge", author: nil, env: Self.identity)
         #expect(outcome == .headMoved(expected: try git(["rev-parse", "HEAD@{1}"], in: dir).stdout, actual: moved))
         #expect(try git(["rev-parse", "main"], in: dir).stdout == moved)
         #expect(FileManager.default.fileExists(atPath: dir.appendingPathComponent(".git/MERGE_HEAD").path))

@@ -61,6 +61,9 @@ extension RepositoryOctopusMergeTests {
         #expect(cone.includes("top") && cone.includes("x/f") && cone.includes("x/y/z/f") && cone.includes("inc/a/b"))
         #expect(!cone.includes("x/q/f") && !cone.includes("out/f"))
         #expect(Repository.SparseCone("*.c\n") == nil)
+        let folding = try #require(Repository.SparseCone("/*\n!/*/\n/Foo/\n", ignoreCase: true))
+        #expect(folding.includes("foo/bar") && folding.includes("FOO/x/y"))
+        #expect(!(try #require(Repository.SparseCone("/*\n!/*/\n/Foo/\n"))).includes("foo/bar"))
     }
 
     @Test("non-cone sparse-checkout patterns keep what the merge brings outside them out, as git does")

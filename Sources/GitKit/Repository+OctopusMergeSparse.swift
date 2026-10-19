@@ -12,8 +12,19 @@ extension Repository {
     struct SparseCone {
         var recursive: Set<String> = []
         var parents: Set<String> = []
+        /// core.ignoreCase: directories compared as git's strcasecmp
+        /// compares them, ASCII letters folded.
+        var ignoreCase = false
+
+        private func folded(_ text: String) -> String {
+            guard ignoreCase else { return text }
+            return String(String.UnicodeScalarView(text.unicodeScalars.map { scalar in
+                ("A"..."Z").contains(scalar) ? Unicode.Scalar(scalar.value + 32)! : scalar
+            }))
+        }
 
         func includes(_ path: String) -> Bool {
+            let path = folded(path)
             let dirs = path.split(separator: "/", omittingEmptySubsequences: false).dropLast()
             guard !dirs.isEmpty else { return true }
             var prefix = ""
@@ -26,16 +37,17 @@ extension Repository {
 
         /// The patterns `git sparse-checkout set --cone` writes, or nil
         /// when `text` holds any other kind.
-        init?(_ text: String) {
+        init?(_ text: String, ignoreCase: Bool = false) {
+            self.ignoreCase = ignoreCase
             for line in text.split(separator: "\n").map({ $0.trimmingCharacters(in: .whitespaces) })
             where !line.isEmpty && !line.hasPrefix("#") {
                 if line == "/*" || line == "!/*/" { continue }
                 if line.hasPrefix("!/"), line.hasSuffix("/*/"), line.count > 5 {
-                    let dir = Self.unescape(line.dropFirst(2).dropLast(3))
+                    let dir = folded(Self.unescape(line.dropFirst(2).dropLast(3)))
                     recursive.remove(dir)
                     parents.insert(dir)
                 } else if line.hasPrefix("/"), line.hasSuffix("/"), line.count > 2, !line.contains("*") {
-                    recursive.insert(Self.unescape(line.dropFirst().dropLast()))
+                    recursive.insert(folded(Self.unescape(line.dropFirst().dropLast())))
                 } else {
                     return nil
                 }
@@ -73,10 +85,12 @@ extension Repository {
         guard try sparseCheckout() else { return nil }
         let file = String(cString: git_repository_path(repo)) + "info/sparse-checkout"
         guard let text = try? String(contentsOfFile: file, encoding: .utf8) else { return nil }
-        if try configBool("core.sparsecheckoutcone", default: true), let cone = SparseCone(text) {
+        let ignoreCase = try ignoresCase()
+        let coneMode = try configBool("core.sparsecheckoutcone", default: true)
+        if coneMode, let cone = SparseCone(text, ignoreCase: ignoreCase) {
             return cone.includes
         }
-        let patterns = SparsePatterns(text, ignoreCase: try ignoresCase())
+        let patterns = SparsePatterns(text, ignoreCase: ignoreCase)
         return patterns.includes
     }
 
