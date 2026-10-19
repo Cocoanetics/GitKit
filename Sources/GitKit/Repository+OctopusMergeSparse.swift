@@ -73,19 +73,24 @@ extension Repository {
         return git_config_get_bool(&value, config, name) == 0 ? value != 0 : fallback
     }
 
-    /// The sparse-checkout file's cone, when cone mode is on and the file
-    /// holds cone patterns.
-    func sparseCone() throws -> SparseCone? {
-        guard try configBool("core.sparsecheckoutcone", default: true) else { return nil }
+    /// What the sparse-checkout file takes into the work tree: its cone
+    /// in cone mode, when it holds cone patterns, or else its patterns as
+    /// non-cone mode matches them; nil without a sparse checkout or file.
+    func sparseIncludes() throws -> ((String) -> Bool)? {
+        guard try sparseCheckout() else { return nil }
         let file = String(cString: git_repository_path(repo)) + "info/sparse-checkout"
         guard let text = try? String(contentsOfFile: file, encoding: .utf8) else { return nil }
-        return SparseCone(text)
+        if try configBool("core.sparsecheckoutcone", default: true), let cone = SparseCone(text) {
+            return cone.includes
+        }
+        let patterns = SparsePatterns(text, ignoreCase: try ignoresCase())
+        return patterns.includes
     }
 
     /// Those of `paths` that stay out of the work tree, where nothing
-    /// stands at them: in cone mode, those outside the cone (unpack-trees
-    /// works skip-worktree out from the patterns again); otherwise those
-    /// already skip-worktree.
+    /// stands at them: those the sparse-checkout file leaves out, as
+    /// unpack-trees works skip-worktree out from it again, or, without
+    /// the file, those already skip-worktree.
     func sparseExclusions(of paths: [String], workdir: String) throws -> [SparseExclusion] {
         guard try sparseCheckout() else { return [] }
         var index: OpaquePointer?
@@ -93,19 +98,19 @@ extension Repository {
         defer { git_index_free(index) }
         try check(git_index_read(index, 1))
         let skip = Set(skipWorktreePaths(index))
-        let cone = try sparseCone()
+        let includes = try sparseIncludes()
         return paths.compactMap { path in
-            let outside = cone.map { !$0.includes(path) } ?? skip.contains(path)
+            let outside = includes.map { !$0(path) } ?? skip.contains(path)
             guard outside, !Self.exists(workdir + path) else { return nil }
             return SparseExclusion(path: path, existing: Self.deepestExisting(path, in: workdir))
         }
     }
 
     /// Of the skip-worktree `paths` from before the merge, those that keep
-    /// the bit: in cone mode, those outside the cone.
+    /// the bit: those the sparse-checkout file leaves out.
     func keepingSkipWorktree(_ paths: [String]) throws -> [String] {
-        guard try sparseCheckout(), let cone = try sparseCone() else { return paths }
-        return paths.filter { !cone.includes($0) }
+        guard let includes = try sparseIncludes() else { return paths }
+        return paths.filter { !includes($0) }
     }
 
     /// Take away what the checkout wrote for `exclusions` that the merge

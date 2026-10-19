@@ -62,5 +62,55 @@ extension RepositoryOctopusMergeTests {
         #expect(!cone.includes("x/q/f") && !cone.includes("out/f"))
         #expect(Repository.SparseCone("*.c\n") == nil)
     }
+
+    @Test("non-cone sparse-checkout patterns keep what the merge brings outside them out, as git does")
+    func nonConeSparseCheckout() throws {
+        let dir = try makeRepository()
+        func put(_ files: [String], _ text: String) throws {
+            for file in files {
+                let folder = dir.appendingPathComponent(file).deletingLastPathComponent()
+                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                try write(text, to: file, in: dir)
+            }
+        }
+        let files = ["out/f", "out/keep/k", "a.log", "src/a.c", "docs/x.md", "docs/y.txt"]
+        try put(files, "1\n")
+        try git(["add", "-A"], in: dir)
+        try git(["commit", "-q", "-m", "tree"], in: dir)
+        try git(["checkout", "-q", "-b", "sparse"], in: dir)
+        try put(files + ["out/new", "out/keep/new", "b.log", "src/b.c", "docs/z.md", "docs/w.txt", "deep/out/n"], "2\n")
+        try git(["add", "-A"], in: dir)
+        try git(["commit", "-q", "-m", "sparse"], in: dir)
+        try git(["checkout", "-q", "main"], in: dir)
+        try git(["config", "core.sparseCheckout", "true"], in: dir)
+        try git(["config", "core.sparseCheckoutCone", "false"], in: dir)
+        try "/*\n!/out/\n/out/keep/\n!*.log\n!docs/*.txt\n"
+            .write(to: dir.appendingPathComponent(".git/info/sparse-checkout"), atomically: true, encoding: .utf8)
+        try git(["read-tree", "-mu", "HEAD"], in: dir)
+
+        let other = try twin(of: dir)
+        let result = try merge(["c", "sparse"], in: dir)
+        try git(["merge", "-q", "-m", "Merge branches", "c", "sparse"], in: other)
+        guard case .mergeCommit = result.outcome else {
+            Issue.record("expected a merge commit, got \(result.outcome)"); return
+        }
+        let skipped = try git(["ls-files", "-v"], in: dir).stdout.split(separator: "\n").filter { $0.hasPrefix("S ") }
+        #expect(skipped == ["S a.log", "S b.log", "S docs/w.txt", "S docs/y.txt", "S out/f", "S out/new"])
+        #expect(!FileManager.default.fileExists(atPath: dir.appendingPathComponent("out/new").path))
+        #expect(FileManager.default.fileExists(atPath: dir.appendingPathComponent("out/keep/new").path))
+        guard try gitIsAtLeast(2, 54) else { return }
+        #expect(try git(["ls-files", "-v"], in: dir).stdout == git(["ls-files", "-v"], in: other).stdout)
+        #expect(try state(of: dir) == state(of: other))
+    }
+
+    @Test("non-cone sparse-checkout patterns: the last match decides, directories pass theirs on")
+    func sparsePatterns() {
+        let patterns = SparsePatterns("# comment\n/*\n!/out/\n/out/keep/\n!*.log\n!docs/*.txt\n")
+        #expect(patterns.includes("top") && patterns.includes("docs/a.md") && patterns.includes("deep/out/n"))
+        #expect(patterns.includes("out/keep/x/y"))
+        #expect(!patterns.includes("out/f") && !patterns.includes("x.log") && !patterns.includes("docs/a.txt"))
+        #expect(!SparsePatterns("").includes("anything"))
+        #expect(SparsePatterns("A\n", ignoreCase: true).includes("a") && !SparsePatterns("A\n").includes("a"))
+    }
 }
 #endif
