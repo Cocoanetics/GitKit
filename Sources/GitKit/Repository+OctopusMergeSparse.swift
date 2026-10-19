@@ -88,8 +88,9 @@ extension Repository {
     }
 
     /// What the sparse-checkout file takes into the work tree: its cone
-    /// in cone mode, when it holds cone patterns, or else its patterns as
-    /// non-cone mode matches them; nil without a sparse checkout or file.
+    /// in cone mode (core.sparseCheckoutCone set true), when it holds cone
+    /// patterns, or else its patterns as non-cone mode matches them; nil
+    /// without a sparse checkout or file.
     func sparseIncludes() throws -> ((String) -> Bool)? {
         guard try sparseCheckout() else { return nil }
         let file = String(cString: git_repository_path(repo)) + "info/sparse-checkout"
@@ -106,7 +107,9 @@ extension Repository {
         }
         let text = String(decoding: data, as: UTF8.self)
         let ignoreCase = try ignoresCase()
-        let coneMode = try configBool("core.sparsecheckoutcone", default: true)
+        // Unset is non-cone, as git reads it; `sparse-checkout set` writes
+        // it true.
+        let coneMode = try configBool("core.sparsecheckoutcone", default: false)
         if coneMode, let cone = SparseCone(text, ignoreCase: ignoreCase) {
             return cone.includes
         }

@@ -454,6 +454,54 @@ extension Repository {
         return value
     }
 
+    /// The index file's bytes, and what stood at each of `paths`, before
+    /// the merge's checkout.
+    struct CheckoutSnapshot {
+        let indexFile: String
+        let index: Data?
+        let paths: [String]
+        let types: [String: FileAttributeType]
+    }
+
+    func snapshot(_ paths: [String], in workdir: String) throws -> CheckoutSnapshot {
+        var index: OpaquePointer?
+        try check(git_repository_index(&index, repo))
+        defer { git_index_free(index) }
+        let file = git_index_path(index).map { String(cString: $0) } ?? ""
+        var types: [String: FileAttributeType] = [:]
+        for path in paths {
+            let attributes = try? FileManager.default.attributesOfItem(atPath: workdir + path)
+            if let type = attributes?[.type] as? FileAttributeType { types[path] = type }
+        }
+        return CheckoutSnapshot(indexFile: file, index: FileManager.default.contents(atPath: file),
+                                paths: Array(paths), types: types)
+    }
+
+    /// Put the index file back as `before` held it, and its paths in the
+    /// work tree: written again from that index where something stood,
+    /// taken away where nothing did. Best effort, on the way to an error.
+    func rollBack(to before: CheckoutSnapshot, in workdir: String) {
+        if let data = before.index { try? data.write(to: URL(fileURLWithPath: before.indexFile), options: .atomic) }
+        var index: OpaquePointer?
+        if git_repository_index(&index, repo) == 0 {
+            _ = git_index_read(index, 1)
+            git_index_free(index)
+        }
+        var written: [String] = []
+        for path in before.paths {
+            guard let type = before.types[path] else {
+                try? Self.removeFromWorkTree(path, in: workdir)
+                continue
+            }
+            if type == .typeDirectory {
+                try? FileManager.default.createDirectory(atPath: workdir + path, withIntermediateDirectories: true)
+            } else {
+                written.append(path)
+            }
+        }
+        putBack(written)
+    }
+
     /// Check out `tree` and commit it on HEAD with `parents`, moving
     /// HEAD from `start`, the commit the merge began at.
     func commitMerge(
@@ -487,20 +535,29 @@ extension Repository {
         let committerSig = try SignatureResolver.resolve(role: .committer, repo: repo, env: env)
         defer { git_signature_free(committerSig) }
 
+        // Where anything fails before the commit, the index and work tree
+        // go back to how the merge found them, as git's merge restores them
+        // when a strategy fails.
+        let before = try snapshot(Array(changed.keys), in: workdir)
         return try withTree(tree) { tree in
-            let target = { (path: String) throws -> Entry? in try self.entry(tree, path) }
-            try withCheckout(of: paths, strategy: UInt32(GIT_CHECKOUT_SAFE.rawValue), target: target) { options in
-                try check(git_checkout_tree(repo, tree, &options))
+            do {
+                let target = { (path: String) throws -> Entry? in try self.entry(tree, path) }
+                try withCheckout(of: paths, strategy: UInt32(GIT_CHECKOUT_SAFE.rawValue), target: target) { options in
+                    try check(git_checkout_tree(repo, tree, &options))
+                }
+                if !gone.isEmpty {
+                    var index: OpaquePointer?
+                    try check(git_repository_index(&index, repo))
+                    defer { git_index_free(index) }
+                    for path in gone.keys { _ = git_index_remove_bypath(index, path) }
+                    try check(git_index_write(index))
+                    Self.removeEmptyDirectories(gone.keys, in: workdir)
+                }
+                try settle()
+            } catch {
+                rollBack(to: before, in: workdir)
+                throw error
             }
-            if !gone.isEmpty {
-                var index: OpaquePointer?
-                try check(git_repository_index(&index, repo))
-                defer { git_index_free(index) }
-                for path in gone.keys { _ = git_index_remove_bypath(index, path) }
-                try check(git_index_write(index))
-                Self.removeEmptyDirectories(gone.keys, in: workdir)
-            }
-            try settle()
             var commitOID = git_oid()
             _ = try commits.withUnsafeMutableBufferPointer { buffer in
                 try message.withCString { text in

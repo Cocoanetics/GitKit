@@ -199,10 +199,12 @@ extension Repository {
         if let conflicted {
             try checkOutConflicts(conflicted, from: headTree, theirLabel: heads.last ?? "", keepingOurs: keepOurs,
                                   mergedContent: mergedContent)
-            try keepSkipWorktree(skipWorktree)
-            try reapplySparsity()
+            // The merge state first: the conflicts are in the work tree
+            // now, and must stay concludable whatever follows.
             try writeMergeState(oids: oids, message: message, conflicts: conflictedPaths,
                                 noFastForward: noFastForward)
+            try keepSkipWorktree(skipWorktree)
+            try reapplySparsity()
             return OctopusMergeResult(steps: steps, outcome: .conflicts(paths: conflictedPaths))
         }
 

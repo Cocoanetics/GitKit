@@ -351,5 +351,33 @@ extension RepositoryOctopusMergeTests {
         #expect(error?.message.hasSuffix("is not valid UTF-8") == true)
         #expect(try state(of: dir) == before)
     }
+
+    @Test("with core.sparseCheckoutCone unset, the patterns are read as non-cone, as git reads them")
+    func sparseConeUnsetIsNonCone() throws {
+        let dir = try makeRepository()
+        let foo = dir.appendingPathComponent("foo")
+        try FileManager.default.createDirectory(at: foo, withIntermediateDirectories: true)
+        try write("1\n", to: "foo/f", in: dir)
+        try git(["add", "-A"], in: dir)
+        try git(["commit", "-q", "-m", "foo"], in: dir)
+        try git(["checkout", "-q", "-b", "top"], in: dir)
+        try write("new\n", to: "bar", in: dir)
+        try git(["add", "bar"], in: dir)
+        try git(["commit", "-q", "-m", "top"], in: dir)
+        try git(["checkout", "-q", "main"], in: dir)
+        try git(["config", "core.sparseCheckout", "true"], in: dir)
+        // `/foo/` is a cone pattern too, but no cone is asked for.
+        let rules = dir.appendingPathComponent(".git/info/sparse-checkout")
+        try "/foo/\n".write(to: rules, atomically: true, encoding: .utf8)
+        try git(["read-tree", "-mu", "HEAD"], in: dir)
+
+        let other = try twin(of: dir)
+        _ = try merge(["c", "top"], in: dir)
+        try git(["merge", "-q", "-m", "Merge branches", "c", "top"], in: other)
+        #expect(!FileManager.default.fileExists(atPath: dir.appendingPathComponent("bar").path))
+        #expect(try git(["ls-files", "-v", "bar"], in: dir).stdout == "S bar")
+        guard try gitIsAtLeast(2, 54) else { return }
+        #expect(try git(["ls-files", "-v"], in: dir).stdout == git(["ls-files", "-v"], in: other).stdout)
+    }
 }
 #endif
