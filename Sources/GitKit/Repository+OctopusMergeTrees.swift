@@ -1,4 +1,13 @@
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#elseif canImport(Android)
+import Android
+#endif
 import CGitKit
 
 // The octopus merge's work on trees, the index and the working tree
@@ -442,10 +451,8 @@ extension Repository {
                   let type = attributes[.type] as? FileAttributeType else { continue }
             var actual = git_oid(), expected = entry.id
             if entry.mode == 0o120000 {
-                guard type == .typeSymbolicLink,
-                      let target = try? FileManager.default.destinationOfSymbolicLink(atPath: workdir + path)
+                guard type == .typeSymbolicLink, let bytes = Self.linkTarget(workdir + path)
                 else { changes[path] = false; continue }
-                let bytes = Array(target.utf8)
                 try check(git_odb_hash(&actual, bytes, bytes.count, GIT_OBJECT_BLOB))
             } else {
                 // Through the clean filters (eol, ident, …), as the index
@@ -511,6 +518,18 @@ extension Repository {
         defer { git_config_free(config) }
         var value: Int32 = 1
         return git_config_get_bool(&value, config, "core.filemode") != 0 || value != 0
+    }
+
+    /// A symbolic link's target as its bytes, which needn't be UTF-8.
+    static func linkTarget(_ path: String) -> [UInt8]? {
+        #if os(Windows)
+        return (try? FileManager.default.destinationOfSymbolicLink(atPath: path)).map { Array($0.utf8) }
+        #else
+        var buffer = [CChar](repeating: 0, count: 4096)
+        let count = readlink(path, &buffer, buffer.count)
+        guard count >= 0 else { return nil }
+        return buffer.prefix(count).map { UInt8(bitPattern: $0) }
+        #endif
     }
 
     /// Whether the work tree folds case (core.ignorecase).

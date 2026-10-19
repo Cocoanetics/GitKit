@@ -10,6 +10,17 @@ import Android
 #endif
 import CGitKit
 
+#if !os(Windows)
+/// Create `path` as a new file with mode 0777 (less the umask); outside
+/// `Repository`, whose `open` would shadow open(2).
+private func createScratchFile(_ path: String) -> Bool {
+    let fd = open(path, O_CREAT | O_EXCL | O_WRONLY, 0o777)
+    guard fd >= 0 else { return false }
+    close(fd)
+    return true
+}
+#endif
+
 // The octopus merge's checkout and the files it writes
 // (`Repository+OctopusMerge.swift`).
 extension Repository {
@@ -48,10 +59,32 @@ extension Repository {
     /// Give the file at `path` the executable bits, or take them away,
     /// keeping the permissions it was created with (the umask's): an
     /// executable bit wherever a read bit is, as checkout makes one.
-    static func setExecutable(_ executable: Bool, at path: String) throws {
-        let current = (try FileManager.default.attributesOfItem(atPath: path)[.posixPermissions] as? Int) ?? 0o644
-        let mode = executable ? current | ((current & 0o444) >> 2) : current & ~0o111
+    static func setExecutable(_ executable: Bool, at path: String, modes: CreationModes) throws {
+        let mode = executable ? modes.executable : modes.plain
+        let current = (try FileManager.default.attributesOfItem(atPath: path)[.posixPermissions] as? Int) ?? 0
         if mode != current { try FileManager.default.setAttributes([.posixPermissions: mode], ofItemAtPath: path) }
+    }
+
+    /// The permissions git's checkout gives a new file: 0666, or 0777
+    /// for an executable, less the umask, each bit on its own.
+    struct CreationModes {
+        let plain: Int
+        let executable: Int
+    }
+
+    /// Learned from a scratch file the kernel creates as 0777 in
+    /// `directory`, so the umask is never set (which every thread would
+    /// see) to be read.
+    static func creationModes(in directory: String) -> CreationModes {
+        #if os(Windows)
+        return CreationModes(plain: 0o644, executable: 0o755)
+        #else
+        let probe = (directory as NSString).appendingPathComponent(".gitkit-mode-\(UUID().uuidString)")
+        guard createScratchFile(probe) else { return CreationModes(plain: 0o644, executable: 0o755) }
+        defer { unlink(probe) }
+        let mode = ((try? FileManager.default.attributesOfItem(atPath: probe))?[.posixPermissions] as? Int) ?? 0o755
+        return CreationModes(plain: mode & 0o666, executable: mode & 0o777)
+        #endif
     }
 
     /// `old => new` as git's diff summary writes a rename (pprint_rename):
@@ -183,6 +216,7 @@ extension Repository {
         _ merged: OpaquePointer?, workdir: String, theirLabel: String, skipped: [String], keepingOurs: [String],
         mergedContent: [String: git_oid], preexisting: Set<String>
     ) throws {
+        let modes = Self.creationModes(in: (try? gitDir()) ?? NSTemporaryDirectory())
         let root = URL(fileURLWithPath: workdir)
         /// Write `oid` at `path` as an entry of `mode` is: a symbolic
         /// link, a submodule's (empty) directory, or a file, executable
@@ -227,7 +261,7 @@ extension Repository {
             defer { git_buf_dispose(&buffer) }
             let data = buffer.ptr.map { Data(bytes: $0, count: buffer.size) } ?? Data()
             try data.write(to: url)
-            try Self.setExecutable(mode == 0o100755, at: url.path)
+            try Self.setExecutable(mode == 0o100755, at: url.path, modes: modes)
         }
         // libgit2 writes a side's file next to a directory in its way as
         // `<path>~<label>`; git writes none.
@@ -261,7 +295,7 @@ extension Repository {
             let file = root.appendingPathComponent(path).path
             guard (try? FileManager.default.attributesOfItem(atPath: file))?[.type] as? FileAttributeType
                     == .typeRegular else { continue }
-            try Self.setExecutable(ours.pointee.mode == 0o100755, at: file)
+            try Self.setExecutable(ours.pointee.mode == 0o100755, at: file, modes: modes)
         }
         for path in keepingOurs {
             var ancestor, ours, theirs: UnsafePointer<git_index_entry>?

@@ -34,14 +34,10 @@ extension RepositoryOctopusMergeTests {
         #expect(try state(of: dir) == state(of: other))
         let bytes = { (url: URL) in try Data(contentsOf: url.appendingPathComponent("f")) }
         #expect(try bytes(dir) == bytes(other))
-        // The executable bit goes where a read bit is, nothing widened.
-        let probe = dir.appendingPathComponent("probe").path
-        try Data().write(to: URL(fileURLWithPath: probe))
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: probe)
-        try Repository.setExecutable(true, at: probe)
-        #expect(try FileManager.default.attributesOfItem(atPath: probe)[.posixPermissions] as? Int == 0o700)
-        try Repository.setExecutable(false, at: probe)
-        #expect(try FileManager.default.attributesOfItem(atPath: probe)[.posixPermissions] as? Int == 0o600)
+        // New files' modes as the kernel gives them under the umask.
+        let modes = Repository.creationModes(in: dir.path)
+        #expect(modes.executable & 0o111 != 0 && modes.plain & 0o111 == 0)
+        #expect(modes.executable & 0o666 == modes.plain)
     }
 
     @Test("the merge's diffstat finds renames and mode changes, as git's does")
@@ -109,6 +105,31 @@ extension RepositoryOctopusMergeTests {
         #expect(linkBytes(dir) == [UInt8]("tg".utf8) + [0xff])
         #expect(linkBytes(dir) == linkBytes(other))
         #expect(try state(of: dir) == state(of: other))
+    }
+
+    @Test("an unchanged skip-worktree link whose target isn't UTF-8 is up to date")
+    func hiddenNonUTF8Symlink() throws {
+        let dir = try makeRepository()
+        func linkBlob(_ bytes: [UInt8]) throws -> String {
+            let blob = dir.appendingPathComponent("blob")
+            try Data(bytes).write(to: blob)
+            defer { try? FileManager.default.removeItem(at: blob) }
+            return try git(["hash-object", "-w", "blob"], in: dir).stdout
+        }
+        try git(["checkout", "-q", "-b", "linked", "base"], in: dir)
+        try git(["update-index", "--add", "--cacheinfo", "120000,\(try linkBlob([UInt8]("tg".utf8) + [0xff])),lnk"],
+                in: dir)
+        try git(["commit", "-q", "-m", "linked"], in: dir)
+        try git(["checkout", "-q", "-f", "linked"], in: dir)
+        try git(["checkout", "-q", "-b", "relinked"], in: dir)
+        try git(["update-index", "--cacheinfo", "120000,\(try linkBlob([UInt8]("other".utf8))),lnk"], in: dir)
+        try git(["commit", "-q", "-m", "relinked"], in: dir)
+        try git(["checkout", "-q", "-f", "linked"], in: dir)
+        try git(["update-index", "--skip-worktree", "lnk"], in: dir)
+        let result = try merge(["c", "relinked"], in: dir)
+        guard case .mergeCommit = result.outcome else {
+            Issue.record("expected a merge commit, got \(result.outcome)"); return
+        }
     }
 }
 #endif
