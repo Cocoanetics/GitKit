@@ -620,6 +620,24 @@ extension RepositoryOctopusMergeTests {
         #expect(try state(of: dir) == before)
     }
 
+    @Test("two names a Swift string can't tell apart stop the merge before anything changes")
+    func canonicallyEquivalentPathsRefused() throws {
+        let dir = try makeRepository()
+        try git(["checkout", "-q", "-b", "equiv", "base"], in: dir)
+        let blob = try git(["hash-object", "-w", "--stdin", "--path=x"], in: dir).stdout
+        // Precomposed é and e + combining acute, as git's quoting writes them.
+        let lines = "100644 \(blob)\\t\"\\303\\251\"\\n100644 \(blob)\\t\"e\\314\\201\"\\n"
+        try git(["-c", "alias.put=!printf '\(lines)' | git update-index --index-info", "put"], in: dir)
+        try git(["commit", "-q", "-m", "equiv"], in: dir)
+        let names = try git(["ls-files"], in: dir).stdout.split(separator: "\n")
+        try #require(names.contains("\"\\303\\251\"") && names.contains("\"e\\314\\201\""))
+        try git(["checkout", "-q", "-f", "main"], in: dir)
+        let before = try state(of: dir)
+        let error = #expect(throws: Libgit2Error.self) { try merge(["c", "equiv"], in: dir) }
+        #expect(error?.message.hasSuffix("their names are canonically equivalent") == true)
+        #expect(try state(of: dir) == before)
+    }
+
     @Test("a skip-worktree file checked out through a filter is up to date")
     func skipWorktreeThroughFilter() throws {
         let dir = try makeRepository()

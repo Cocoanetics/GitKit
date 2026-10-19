@@ -247,9 +247,17 @@ extension Repository {
     }
 
     /// Refuse, before anything changes, a merge that would touch a path
-    /// whose name isn't UTF-8: Swift strings can't carry its bytes to the
-    /// checkout, which would leave the work tree behind HEAD.
+    /// whose name isn't UTF-8, or two names that differ in bytes but are
+    /// canonically equivalent: Swift strings can't tell them apart on the
+    /// way to the checkout, which would leave the work tree behind HEAD.
     func refuseUnrepresentablePaths(from headTree: git_oid, to heads: [git_oid]) throws {
+        // Swift strings compare canonically (precomposed é equals
+        // decomposed é), so two names git tells apart would be one here.
+        var touched: [String: [UInt8]] = [:]
+        func refuseEquivalent(_ bytes: [UInt8], _ other: [UInt8]) -> Libgit2Error {
+            Libgit2Error(code: -1, klass: 0, message: "cannot merge paths \(Self.quotedPath(other)) and "
+                + "\(Self.quotedPath(bytes)): their names are canonically equivalent")
+        }
         try withTree(headTree) { head in
             for commit in heads {
                 try withTree(try treeOID(ofCommit: commit)) { tree in
@@ -259,13 +267,29 @@ extension Repository {
                     for i in 0..<git_diff_num_deltas(diff) {
                         guard let delta = git_diff_get_delta(diff, i)?.pointee else { continue }
                         for name in [delta.old_file.path, delta.new_file.path].compactMap({ $0 }) {
-                            let bytes = Self.bytes(name)
-                            guard !String(decoding: bytes, as: UTF8.self).utf8.elementsEqual(bytes) else { continue }
-                            throw Libgit2Error(code: -1, klass: 0, message:
-                                "cannot merge path \(Self.quotedPath(bytes)): its name is not valid UTF-8")
+                            let bytes = Self.bytes(name), path = String(decoding: bytes, as: UTF8.self)
+                            guard path.utf8.elementsEqual(bytes) else {
+                                throw Libgit2Error(code: -1, klass: 0, message:
+                                    "cannot merge path \(Self.quotedPath(bytes)): its name is not valid UTF-8")
+                            }
+                            if let other = touched[path], other != bytes { throw refuseEquivalent(bytes, other) }
+                            touched[path] = bytes
                         }
                     }
                 }
+            }
+        }
+        // Nor may a path it touches stand for another the index tracks.
+        guard !touched.isEmpty else { return }
+        var index: OpaquePointer?
+        try check(git_repository_index(&index, repo))
+        defer { git_index_free(index) }
+        try check(git_index_read(index, 0))
+        for i in 0..<git_index_entrycount(index) {
+            guard let entry = git_index_get_byindex(index, i)?.pointee else { continue }
+            let bytes = Self.bytes(entry.path)
+            if let other = touched[String(decoding: bytes, as: UTF8.self)], other != bytes {
+                throw refuseEquivalent(bytes, other)
             }
         }
     }
