@@ -92,6 +92,17 @@ GIT_EXTERN(int) gitkit_index_update_entry_flags(
 	uint16_t extended_clear);
 
 /*
+ * GitKit addition, implemented in Sources/Clibgit2Patches/index_lock.c:
+ * take `index.lock` for an operation that reads the index without writing it
+ * (`git commit` holds it until HEAD has moved). Returns GIT_ELOCKED when
+ * another process holds it. `gitkit_index_lock_release` removes the lock file
+ * without writing the index; it accepts NULL.
+ */
+typedef struct gitkit_index_lock gitkit_index_lock;
+GIT_EXTERN(int) gitkit_index_lock_acquire(gitkit_index_lock **out, git_repository *repo);
+GIT_EXTERN(void) gitkit_index_lock_release(gitkit_index_lock *lock);
+
+/*
  * GitKit addition, implemented in Sources/Clibgit2Patches/wildmatch_export.c:
  * git's wildmatch, as libgit2 carries it. `flags` takes GITKIT_WM_CASEFOLD
  * and GITKIT_WM_PATHNAME; returns 0 on a match.

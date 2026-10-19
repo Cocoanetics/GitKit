@@ -123,6 +123,7 @@ private enum AmendFixture {
         gitArgs: [String],
         subject: String,
         env: [String: String] = [:],
+        after: (_ viaGit: URL, _ viaKit: URL) throws -> Void = { _, _ in },
         amend: (Repository, [String: String]) throws -> Libgit2CommitDetails
     ) throws -> Libgit2CommitDetails {
         let viaGit = try makeRepo()
@@ -152,6 +153,7 @@ private enum AmendFixture {
             #expect(line.hasSuffix("\tcommit (amend): \(subject)"))
         }
         #expect(summary(details, subject: subject) == expected.out)
+        try after(viaGit, viaKit)
         return details
     }
 }
@@ -292,6 +294,119 @@ struct RepositoryAmendTests {
             #expect(entry.newSHA == details.sha)
             #expect(entry.oldSHA + "\n" == old)
         }
+    }
+
+    @Test("the reflog subject is the first line, whitespace collapsed as git logs it")
+    func reflogSubjectWhitespace() throws {
+        for message in ["  spaced   out\t subject\nmore\n", "\nafter a blank line\n"] {
+            let viaGit = try AmendFixture.makeRepo()
+            let viaKit = try AmendFixture.makeRepo()
+            defer {
+                try? FileManager.default.removeItem(at: viaGit)
+                try? FileManager.default.removeItem(at: viaKit)
+            }
+            try AmendFixture.twoCommits(viaGit)
+            try AmendFixture.twoCommits(viaKit)
+            let env = ["GIT_COMMITTER_DATE": AmendFixture.commitDate]
+            let git = try AmendFixture.run(
+                ["commit", "-q", "--amend", "--cleanup=verbatim", "-m", message], in: viaGit, env: env)
+            #expect(git.status == 0, "git failed: \(git.err)")
+            try Repository.open(at: viaKit).amendDetailed(message: message, env: env)
+            for log in ["logs/HEAD", "logs/refs/heads/main"] {
+                #expect(try AmendFixture.lastLine(of: ".git/\(log)", in: viaKit)
+                    == AmendFixture.lastLine(of: ".git/\(log)", in: viaGit))
+            }
+        }
+    }
+
+    @Test("--no-edit re-encodes to i18n.commitEncoding, not i18n.logOutputEncoding")
+    func logOutputEncodingIgnored() throws {
+        let viaGit = try AmendFixture.makeRepo()
+        let viaKit = try AmendFixture.makeRepo()
+        defer {
+            try? FileManager.default.removeItem(at: viaGit)
+            try? FileManager.default.removeItem(at: viaKit)
+        }
+        for dir in [viaGit, viaKit] {
+            try AmendFixture.twoCommits(dir)
+            try AmendFixture.git(["config", "i18n.commitEncoding", "ISO-8859-1"], in: dir)
+            let message = dir.appendingPathComponent("msg")
+            try Data([0x63, 0x61, 0x66, 0xE9, 0x0A]).write(to: message) // "café" in Latin-1
+            try AmendFixture.git(["commit", "-q", "--amend", "-F", "msg"], in: dir)
+            try FileManager.default.removeItem(at: message)
+            try AmendFixture.git(["config", "--unset", "i18n.commitEncoding"], in: dir)
+            try AmendFixture.git(["config", "i18n.logOutputEncoding", "CP1252"], in: dir)
+        }
+        let env = ["GIT_COMMITTER_DATE": AmendFixture.commitDate]
+        let git = try AmendFixture.run(["commit", "-q", "--amend", "--no-edit"], in: viaGit, env: env)
+        #expect(git.status == 0, "git failed: \(git.err)")
+        try Repository.open(at: viaKit).amendDetailed(env: env)
+        // git writes the message as UTF-8 (the commit encoding), whatever
+        // it displays it in.
+        #expect(try AmendFixture.git(["rev-parse", "HEAD"], in: viaKit)
+            == AmendFixture.git(["rev-parse", "HEAD"], in: viaGit))
+    }
+
+    @Test("an amend concluding a revert clears its state, sequencer included")
+    func revertStateCleared() throws {
+        let state = ["REVERT_HEAD", "MERGE_MSG", "AUTO_MERGE", "sequencer"]
+        try AmendFixture.expectParity(
+            setup: { dir in
+                try AmendFixture.write("one\n", to: "f", in: dir)
+                try AmendFixture.git(["add", "f"], in: dir)
+                try AmendFixture.git(["commit", "-q", "-m", "c1"], in: dir)
+                try AmendFixture.write("two\n", to: "f", in: dir)
+                try AmendFixture.git(["commit", "-q", "-am", "c2"], in: dir)
+                try AmendFixture.write("x\n", to: "g", in: dir)
+                try AmendFixture.git(["add", "g"], in: dir)
+                try AmendFixture.git(["commit", "-q", "-m", "c3"], in: dir)
+                try AmendFixture.write("three\n", to: "f", in: dir)
+                try AmendFixture.git(["commit", "-q", "-am", "c4"], in: dir)
+                // Reverts c3, then stops on c2's conflict: the last pick.
+                let revert = try AmendFixture.run(
+                    ["revert", "--no-edit", "HEAD~1", "HEAD~2"], in: dir,
+                    env: ["GIT_AUTHOR_DATE": AmendFixture.authorDate,
+                          "GIT_COMMITTER_DATE": AmendFixture.authorDate])
+                #expect(revert.status == 1)
+                for name in state {
+                    #expect(FileManager.default.fileExists(atPath: dir.path + "/.git/" + name))
+                }
+                try AmendFixture.write("three\n", to: "f", in: dir)
+                try AmendFixture.git(["add", "f"], in: dir)
+            },
+            gitArgs: ["--no-edit"], subject: "Revert \"c3\"",
+            after: { viaGit, viaKit in
+                for name in state {
+                    #expect(!FileManager.default.fileExists(atPath: viaGit.path + "/.git/" + name))
+                    #expect(!FileManager.default.fileExists(atPath: viaKit.path + "/.git/" + name))
+                }
+            },
+            amend: { repo, env in
+                try repo.amendDetailed(env: env)
+            })
+    }
+
+    @Test("a held index.lock refuses the amend and is left in place")
+    func indexLocked() throws {
+        let dir = try AmendFixture.makeRepo()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try AmendFixture.twoCommits(dir)
+        let lock = dir.path + "/.git/index.lock"
+        #expect(FileManager.default.createFile(atPath: lock, contents: nil))
+        let git = try AmendFixture.run(["commit", "--amend", "-m", "x"], in: dir)
+        #expect(git.status == 128)
+        #expect(git.err.hasPrefix("fatal: Unable to create '"))
+        let head = try AmendFixture.git(["rev-parse", "HEAD"], in: dir)
+        let error = #expect(throws: Libgit2Error.self) {
+            try Repository.open(at: dir).amendDetailed(message: "x\n")
+        }
+        #expect(error?.isLocked == true)
+        #expect(FileManager.default.fileExists(atPath: lock))
+        #expect(try AmendFixture.git(["rev-parse", "HEAD"], in: dir) == head)
+
+        try FileManager.default.removeItem(atPath: lock)
+        try Repository.open(at: dir).amendDetailed(message: "x\n")
+        #expect(!FileManager.default.fileExists(atPath: lock))
     }
 
     @Test("nothing to amend on an unborn HEAD")

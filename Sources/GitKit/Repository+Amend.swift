@@ -50,7 +50,8 @@ extension Repository {
     /// parents; the committer is resolved as for a new commit (`env` feeds
     /// `GIT_COMMITTER_*`, see ``SignatureResolver``). HEAD (or the branch
     /// it names) moves with the reflog message `commit (amend): <subject>`,
-    /// as git writes it.
+    /// as git writes it, then clears a concluded revert's state
+    /// (`REVERT_HEAD`, `MERGE_MSG`) as git's commit does.
     ///
     /// - Parameters:
     ///   - message: The new message (`-m`); nil keeps the old one
@@ -64,7 +65,8 @@ extension Repository {
     ///   - allowEmpty: `--allow-empty`: allow a tree equal to the first
     ///     parent's. A merge commit may always keep its first parent's tree.
     /// - Throws: ``CommitAmendError`` where git refuses; ``Libgit2Error``
-    ///   otherwise.
+    ///   otherwise — ``Libgit2Error/isLocked`` when another process holds
+    ///   `index.lock` (git's "Unable to create '…/index.lock'").
     ///
     /// Stage first for `commit -a --amend` (``stageTrackedChanges()``).
     /// The result's diffstat is against the first parent, like git's
@@ -87,6 +89,12 @@ extension Repository {
             throw CommitAmendError.cherryPickInProgress
         }
 
+        // Like git, hold index.lock from before reading the index until
+        // HEAD has moved; another process holding it fails the amend
+        // (``Libgit2Error/isLocked``).
+        var lock: OpaquePointer?
+        try check(gitkit_index_lock_acquire(&lock, repo))
+        defer { gitkit_index_lock_release(lock) }
         var index: OpaquePointer?
         try check(git_repository_index(&index, repo))
         defer { git_index_free(index) }
@@ -133,7 +141,7 @@ extension Repository {
         defer { git_signature_free(committerSig) }
 
         let encoding = try configGet("i18n.commitEncoding").flatMap { Self.isUTF8($0) ? nil : $0 }
-        var text = try message.map { Array($0.utf8) } ?? oldMessage(of: old, encoding: encoding)
+        var text = message.map { Array($0.utf8) } ?? oldMessage(of: old, encoding: encoding)
         text.append(0)
 
         var commitOID = git_oid()
@@ -152,7 +160,8 @@ extension Repository {
             throw Libgit2Error(code: -1, klass: 0, message: "commit to amend has no id")
         }
         try moveHead(from: oldOID, to: commitOID, committer: committerSig,
-                     reflog: "commit (amend): \(subject)")
+                     reflog: Self.reflogMessage("commit (amend): \(subject)"))
+        removeCommitState()
 
         let sha = formatOID(&commitOID)
         return Libgit2CommitDetails(
@@ -232,20 +241,46 @@ extension Repository {
     }
 
     /// The old commit's raw message, re-encoded from its `encoding` header
-    /// to git's log output encoding (`i18n.logOutputEncoding`, else
-    /// `commitEncoding`, else UTF-8) when both are known; verbatim
-    /// otherwise, as git keeps a message it can't convert.
-    private func oldMessage(of commit: OpaquePointer?, encoding: String?) throws -> [UInt8] {
+    /// to the new commit's (`i18n.commitEncoding`, else UTF-8) when both
+    /// are known; verbatim otherwise, as git keeps a message it can't
+    /// convert.
+    private func oldMessage(of commit: OpaquePointer?, encoding: String?) -> [UInt8] {
         guard let raw = git_commit_message(commit) else { return [] }
         let bytes = Array(UnsafeBufferPointer(
             start: UnsafeRawPointer(raw).assumingMemoryBound(to: UInt8.self), count: strlen(raw)))
         let source = git_commit_message_encoding(commit).map { String(cString: $0) } ?? "UTF-8"
-        let target = try configGet("i18n.logOutputEncoding") ?? encoding ?? "UTF-8"
+        let target = encoding ?? "UTF-8"
         if Self.sameEncoding(source, target) { return bytes }
         guard let from = Self.stringEncoding(source), let to = Self.stringEncoding(target),
               let decoded = String(data: Data(bytes), encoding: from),
               let encoded = decoded.data(using: to) else { return bytes }
         return Array(encoded)
+    }
+
+    /// `message` as git logs it (`copy_reflog_msg`): leading and trailing
+    /// whitespace dropped, each run inside collapsed to one space.
+    static func reflogMessage(_ message: String) -> String {
+        message.split(whereSeparator: { " \t\n\r".contains($0) }).joined(separator: " ")
+    }
+
+    /// What a successful commit clears, as git does: the merge and squash
+    /// leftovers (`MERGE_MSG`, `MERGE_MODE`, `SQUASH_MSG`, `AUTO_MERGE`)
+    /// and a concluded revert's `REVERT_HEAD`, with the sequencer's state
+    /// once that was its last pick. Rebase state stays.
+    private func removeCommitState() {
+        let fm = FileManager.default
+        let dir = gitDirPath
+        for name in ["MERGE_MSG", "MERGE_MODE", "SQUASH_MSG", "AUTO_MERGE"] {
+            try? fm.removeItem(atPath: dir + name)
+        }
+        guard fm.fileExists(atPath: dir + "REVERT_HEAD") else { return }
+        try? fm.removeItem(atPath: dir + "REVERT_HEAD")
+        // git's have_finished_the_last_pick(): a todo of one line.
+        guard let todo = fm.contents(atPath: dir + "sequencer/todo") else { return }
+        let lines = todo.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: false)
+        if lines.count == 1 || (lines.count == 2 && lines[1].isEmpty) {
+            try? fm.removeItem(atPath: dir + "sequencer")
+        }
     }
 
     private static func normalized(_ name: String) -> String {
