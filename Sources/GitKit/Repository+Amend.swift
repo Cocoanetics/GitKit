@@ -1,7 +1,22 @@
 import Foundation
 import CGitKit
 
-/// Why ``Repository/amendDetailed(message:author:resetAuthor:allowEmpty:env:)``
+/// How ``Repository/amendDetailed(message:author:resetAuthor:allowEmpty:allowEmptyMessage:cleanup:env:)``
+/// cleans the message up — `git commit --cleanup=<mode>` as it applies
+/// without an editor.
+public enum CommitMessageCleanup: Sendable, Equatable {
+    /// `verbatim`: the message as given.
+    case verbatim
+    /// `whitespace` (also `default` and `scissors` without an editor):
+    /// trailing whitespace and leading, trailing and repeated blank lines
+    /// removed.
+    case whitespace
+    /// `strip`: `whitespace`, and lines starting with the comment string
+    /// (`core.commentString`/`core.commentChar`, `#` by default) removed.
+    case strip
+}
+
+/// Why ``Repository/amendDetailed(message:author:resetAuthor:allowEmpty:allowEmptyMessage:cleanup:env:)``
 /// refused to amend. ``description`` is real git's wording; the cases
 /// note the stream and exit status `git commit --amend` uses.
 public enum CommitAmendError: Error, Equatable, CustomStringConvertible {
@@ -23,6 +38,12 @@ public enum CommitAmendError: Error, Equatable, CustomStringConvertible {
     /// excuses it. Git prints ``emptyAmendAdvice`` to stderr, then the
     /// short status (`On branch main` … `No changes`) to stdout; exit 1.
     case wouldBeEmpty
+    /// The message is empty after cleanup and `allowEmptyMessage` is off:
+    /// `Aborting commit due to empty commit message.` on stderr, exit 1.
+    case emptyMessage
+    /// `commit.cleanup` names no mode: `fatal: Invalid cleanup mode <mode>`,
+    /// exit 128.
+    case invalidCleanupMode(String)
 
     /// Real git's advice for an amend that would leave the commit empty.
     public static let emptyAmendAdvice = """
@@ -39,6 +60,8 @@ public enum CommitAmendError: Error, Equatable, CustomStringConvertible {
         case .cherryPickInProgress: return "You are in the middle of a cherry-pick -- cannot amend."
         case .unmergedFiles: return "Committing is not possible because you have unmerged files."
         case .wouldBeEmpty: return Self.emptyAmendAdvice
+        case .emptyMessage: return "Aborting commit due to empty commit message."
+        case .invalidCleanupMode(let mode): return "Invalid cleanup mode \(mode)"
         }
     }
 }
@@ -64,6 +87,10 @@ extension Repository {
     ///     commit's (config, `GIT_AUTHOR_*`, now), with `author` if given.
     ///   - allowEmpty: `--allow-empty`: allow a tree equal to the first
     ///     parent's. A merge commit may always keep its first parent's tree.
+    ///   - allowEmptyMessage: `--allow-empty-message`: allow a message
+    ///     that is empty after cleanup.
+    ///   - cleanup: `--cleanup`, applied to the new or the kept message
+    ///     alike; nil follows `commit.cleanup`, else ``CommitMessageCleanup/whitespace``.
     /// - Throws: ``CommitAmendError`` where git refuses; ``Libgit2Error``
     ///   otherwise — ``Libgit2Error/isLocked`` when another process holds
     ///   `index.lock` (git's "Unable to create '…/index.lock'").
@@ -77,10 +104,13 @@ extension Repository {
         author: Signature? = nil,
         resetAuthor: Bool = false,
         allowEmpty: Bool = false,
+        allowEmptyMessage: Bool = false,
+        cleanup: CommitMessageCleanup? = nil,
         env: [String: String] = ProcessInfo.processInfo.environment
     ) throws -> Libgit2CommitDetails {
         let old = try commitToAmend()
         defer { git_commit_free(old) }
+        let cleanup = try cleanup ?? configuredCleanup()
         // Git checks the state before the index, in this order.
         if FileManager.default.fileExists(atPath: gitDirPath + "MERGE_HEAD") {
             throw CommitAmendError.mergeInProgress
@@ -141,7 +171,8 @@ extension Repository {
         defer { git_signature_free(committerSig) }
 
         let encoding = try configGet("i18n.commitEncoding").flatMap { Self.isUTF8($0) ? nil : $0 }
-        var text = message.map { Array($0.utf8) } ?? oldMessage(of: old, encoding: encoding)
+        var text = try cleanedUp(message.map { Array($0.utf8) } ?? oldMessage(of: old, encoding: encoding),
+                                 cleanup, allowEmpty: allowEmptyMessage)
         text.append(0)
 
         var commitOID = git_oid()
@@ -295,6 +326,59 @@ extension Repository {
         }
     }
 
+    /// `commit.cleanup` as it applies without an editor.
+    private func configuredCleanup() throws -> CommitMessageCleanup {
+        switch try configGet("commit.cleanup") {
+        case nil, "default", "whitespace", "scissors": return .whitespace
+        case "verbatim": return .verbatim
+        case "strip": return .strip
+        case let mode?: throw CommitAmendError.invalidCleanupMode(mode)
+        }
+    }
+
+    /// `message` cleaned up as git's `cleanup_message()` does, refusing
+    /// one left empty unless `allowEmpty`, as git does.
+    private func cleanedUp(
+        _ message: [UInt8], _ cleanup: CommitMessageCleanup, allowEmpty: Bool
+    ) throws -> [UInt8] {
+        guard cleanup != .verbatim else { return message }
+        let comment = cleanup == .strip ? try commentPrefix(for: message) : nil
+        let cleaned = Self.stripSpace(message, commentPrefix: comment)
+        if cleaned.isEmpty && !allowEmpty { throw CommitAmendError.emptyMessage }
+        return cleaned
+    }
+
+    /// `core.commentString` (else `core.commentChar`, else `#`); for
+    /// `auto`, git's pick of the first of `#;@!$%^&|:` that starts no line.
+    private func commentPrefix(for message: [UInt8]) throws -> [UInt8] {
+        let configured = try configGet("core.commentString") ?? configGet("core.commentChar") ?? "#"
+        guard configured == "auto" else { return Array(configured.utf8) }
+        let used = Set(message.split(separator: UInt8(ascii: "\n")).compactMap(\.first))
+        let pick = "#;@!$%^&|:".utf8.first { !used.contains($0) } ?? UInt8(ascii: "#")
+        return [pick]
+    }
+
+    /// git's `strbuf_stripspace()`: lines starting with `commentPrefix`
+    /// dropped, trailing whitespace trimmed, runs of blank lines collapsed
+    /// to one, leading and trailing ones dropped; each line ends in `\n`.
+    static func stripSpace(_ message: [UInt8], commentPrefix: [UInt8]?) -> [UInt8] {
+        let space: Set<UInt8> = [0x20, 0x09, 0x0A, 0x0D]
+        var out: [UInt8] = []
+        var blanks = 0
+        for line in message.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: false) {
+            if let prefix = commentPrefix, line.starts(with: prefix) { continue }
+            guard let last = line.lastIndex(where: { !space.contains($0) }) else {
+                blanks += 1
+                continue
+            }
+            if blanks > 0 && !out.isEmpty { out.append(UInt8(ascii: "\n")) }
+            blanks = 0
+            out += line[...last]
+            out.append(UInt8(ascii: "\n"))
+        }
+        return out
+    }
+
     /// `message` as git logs it (`copy_reflog_msg`): leading and trailing
     /// whitespace dropped, each run inside collapsed to one space. Bytes,
     /// not a string: a subject in the commit's encoding is logged as is.
@@ -398,19 +482,40 @@ extension Repository {
         defer { git_reflog_free(log) }
         var old = old
         var new = new
-        // `append` takes the old id from the entry before, so restamp only
-        // where that is the update's own.
         guard let entry = git_reflog_entry_byindex(log, 0),
               git_oid_equal(git_reflog_entry_id_new(entry), &new) != 0,
               git_oid_equal(git_reflog_entry_id_old(entry), &old) != 0,
               let logged = git_reflog_entry_message(entry),
-              Self.withCString(message, { strcmp(logged, $0) }) == 0,
-              let previous = git_reflog_entry_byindex(log, 1),
+              Self.withCString(message, { strcmp(logged, $0) }) == 0
+        else { return }
+        if git_reflog_entrycount(log) == 1 {
+            // The update is the reflog's only entry (one emptied by `git
+            // reflog expire`): `append` would log the zero id as its old
+            // one, so write git's line in place of libgit2's.
+            let line = formatOID(&old) + " " + formatOID(&new) + " "
+            let entryBytes = Array(line.utf8) + Self.reflogIdentity(committer) + [0x09] + message + [0x0A]
+            try Data(entryBytes).write(to: URL(fileURLWithPath: gitDirPath + "logs/" + name))
+            return
+        }
+        // `append` takes the old id from the entry before, so restamp only
+        // where that is the update's own.
+        guard let previous = git_reflog_entry_byindex(log, 1),
               git_oid_equal(git_reflog_entry_id_new(previous), &old) != 0
         else { return }
         try check(git_reflog_drop(log, 0, 0))
         try Self.withCString(message) { try check(git_reflog_append(log, &new, committer, $0)) }
         try check(git_reflog_write(log))
+    }
+
+    /// `Name <email> 1767258000 +0100`, as a reflog line records its
+    /// identity.
+    private static func reflogIdentity(_ sig: UnsafeMutablePointer<git_signature>?) -> [UInt8] {
+        guard let sig = sig?.pointee else { return [] }
+        let offset = abs(Int(sig.when.offset))
+        let sign = sig.when.sign == CChar(UInt8(ascii: "-")) ? "-" : "+"
+        let zone = sign + String(format: "%02d%02d", offset / 60, offset % 60)
+        return bytes(sig.name) + Array(" <".utf8) + bytes(sig.email)
+            + Array("> \(sig.when.time) \(zone)".utf8)
     }
 
     /// `bytes`, NUL-terminated, as a C string.

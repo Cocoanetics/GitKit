@@ -331,7 +331,7 @@ struct RepositoryAmendTests {
         for message in ["  spaced   out\t subject\nmore\n", "\nafter a blank line\n"] {
             try AmendFixture.expectSameRepos(
                 setup: AmendFixture.twoCommits, gitArgs: ["--cleanup=verbatim", "-m", message]) { repo, env in
-                    try repo.amendDetailed(message: message, env: env)
+                    try repo.amendDetailed(message: message, cleanup: .verbatim, env: env)
                 }
         }
     }
@@ -461,6 +461,88 @@ struct RepositoryAmendTests {
         try FileManager.default.removeItem(atPath: lock)
         try Repository.open(at: dir).amendDetailed(message: "x\n")
         #expect(!FileManager.default.fileExists(atPath: lock))
+    }
+
+    @Test("the message is cleaned up as git does, -m or --no-edit, per commit.cleanup")
+    func messageCleanup() throws {
+        let raw = "\n\nsubject   \n\n\nbody   \n# hash\n\n"
+        for mode in [nil, "strip", "verbatim", "scissors"] {
+            let configure: (URL) throws -> Void = { dir in
+                try AmendFixture.twoCommits(dir)
+                if let mode { try AmendFixture.git(["config", "commit.cleanup", mode], in: dir) }
+            }
+            try AmendFixture.expectSameRepos(setup: configure, gitArgs: ["-m", raw]) { repo, env in
+                try repo.amendDetailed(message: raw, env: env)
+            }
+            // The kept message is cleaned up too.
+            try AmendFixture.expectSameRepos(
+                setup: { dir in
+                    try configure(dir)
+                    try AmendFixture.git(["commit", "-q", "--amend", "--cleanup=verbatim", "-m", raw], in: dir)
+                },
+                gitArgs: ["--no-edit"], amend: { repo, env in try repo.amendDetailed(env: env) })
+        }
+        // An explicit mode wins over commit.cleanup, as --cleanup does.
+        try AmendFixture.expectSameRepos(
+            setup: { dir in
+                try AmendFixture.twoCommits(dir)
+                try AmendFixture.git(["config", "commit.cleanup", "verbatim"], in: dir)
+            },
+            gitArgs: ["--cleanup=strip", "-m", raw], amend: { repo, env in
+                try repo.amendDetailed(message: raw, cleanup: .strip, env: env)
+            })
+        // core.commentChar names the comment lines strip removes.
+        try AmendFixture.expectSameRepos(
+            setup: { dir in
+                try AmendFixture.twoCommits(dir)
+                try AmendFixture.git(["config", "core.commentChar", ";"], in: dir)
+            },
+            gitArgs: ["--cleanup=strip", "-m", "kept\n# also kept\n; dropped\n"], amend: { repo, env in
+                try repo.amendDetailed(message: "kept\n# also kept\n; dropped\n", cleanup: .strip, env: env)
+            })
+    }
+
+    @Test("a message empty after cleanup is refused unless --allow-empty-message")
+    func emptyMessage() throws {
+        let dir = try AmendFixture.makeRepo()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try AmendFixture.twoCommits(dir)
+        let git = try AmendFixture.run(["commit", "--amend", "-m", "  \n\n"], in: dir)
+        #expect(git.status == 1)
+        #expect(git.err == "\(CommitAmendError.emptyMessage)\n")
+        #expect(throws: CommitAmendError.emptyMessage) {
+            try Repository.open(at: dir).amendDetailed(message: "  \n\n")
+        }
+        try AmendFixture.expectSameRepos(
+            setup: AmendFixture.twoCommits, gitArgs: ["--allow-empty-message", "-m", "  \n"]) { repo, env in
+                try repo.amendDetailed(message: "  \n", allowEmptyMessage: true, env: env)
+            }
+    }
+
+    @Test("an unknown commit.cleanup is refused")
+    func invalidCleanupMode() throws {
+        let dir = try AmendFixture.makeRepo()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try AmendFixture.twoCommits(dir)
+        try AmendFixture.git(["config", "commit.cleanup", "bogus"], in: dir)
+        let git = try AmendFixture.run(["commit", "--amend", "-m", "x"], in: dir)
+        #expect(git.status == 128)
+        #expect(git.err == "fatal: \(CommitAmendError.invalidCleanupMode("bogus"))\n")
+        #expect(throws: CommitAmendError.invalidCleanupMode("bogus")) {
+            try Repository.open(at: dir).amendDetailed(message: "x\n")
+        }
+    }
+
+    @Test("a reflog emptied by git reflog expire gets the amend under the committer")
+    func expiredReflog() throws {
+        try AmendFixture.expectSameRepos(
+            setup: { dir in
+                try AmendFixture.twoCommits(dir)
+                try AmendFixture.git(["reflog", "expire", "--expire=all", "--all"], in: dir)
+            },
+            gitArgs: ["-m", "after expiry"], amend: { repo, env in
+                try repo.amendDetailed(message: "after expiry\n", env: env)
+            })
     }
 
     @Test("nothing to amend on an unborn HEAD")
