@@ -646,4 +646,50 @@ struct RepositoryAmendTests {
             })
     }
 }
+
+// Where the old message and the reflogs come from.
+extension RepositoryAmendTests {
+
+    @Test("--no-edit --cleanup=verbatim skips the old message's leading blank lines, as git does")
+    func verbatimKeptMessage() throws {
+        try AmendFixture.expectSameRepos(
+            setup: { dir in
+                try AmendFixture.twoCommits(dir)
+                try AmendFixture.git(
+                    ["commit", "-q", "--amend", "--cleanup=verbatim", "-m", "\n  \n\t\nsubject  \n\n\nbody\n"], in: dir)
+            },
+            gitArgs: ["--no-edit", "--cleanup=verbatim"], amend: { repo, env in
+                try repo.amendDetailed(cleanup: .verbatim, env: env)
+            })
+    }
+
+    @Test("in a linked worktree, an emptied branch reflog is restamped in the common dir")
+    func linkedWorktreeExpiredReflog() throws {
+        let viaGit = try AmendFixture.makeRepo()
+        let viaKit = try AmendFixture.makeRepo()
+        defer {
+            try? FileManager.default.removeItem(at: viaGit)
+            try? FileManager.default.removeItem(at: viaKit)
+        }
+        for dir in [viaGit, viaKit] {
+            try AmendFixture.twoCommits(dir)
+            try AmendFixture.git(["worktree", "add", "-q", "-b", "side", "wt"], in: dir)
+            try AmendFixture.git(["reflog", "expire", "--expire=all", "--all"], in: dir)
+        }
+        let env = ["GIT_COMMITTER_DATE": AmendFixture.commitDate]
+        let wtGit = viaGit.appendingPathComponent("wt")
+        let wtKit = viaKit.appendingPathComponent("wt")
+        let amended = try AmendFixture.run(["commit", "-q", "--amend", "-m", "in worktree"], in: wtGit, env: env)
+        #expect(amended.status == 0, "git failed: \(amended.err)")
+        try Repository.open(at: wtKit).amendDetailed(message: "in worktree\n", env: env)
+        #expect(try AmendFixture.git(["rev-parse", "HEAD"], in: wtKit)
+            == AmendFixture.git(["rev-parse", "HEAD"], in: wtGit))
+        for log in [".git/worktrees/wt/logs/HEAD", ".git/logs/refs/heads/side"] {
+            let kitLog = FileManager.default.contents(atPath: viaKit.appendingPathComponent(log).path)
+            let gitLog = FileManager.default.contents(atPath: viaGit.appendingPathComponent(log).path)
+            #expect(kitLog != nil)
+            #expect(kitLog == gitLog, "\(log) differs")
+        }
+    }
+}
 #endif

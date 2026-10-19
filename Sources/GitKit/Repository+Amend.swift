@@ -230,6 +230,12 @@ extension Repository {
         git_repository_path(repo).map { String(cString: $0) } ?? ""
     }
 
+    /// The git dir shared by all worktrees (`gitDirPath` outside a linked
+    /// worktree).
+    private var commonDirPath: String {
+        git_repository_commondir(repo).map { String(cString: $0) } ?? gitDirPath
+    }
+
     /// The conflicted paths in `index`, sorted.
     private func unmergedPaths(in index: OpaquePointer?) throws -> [String] {
         guard git_index_has_conflicts(index) != 0 else { return [] }
@@ -279,9 +285,12 @@ extension Repository {
     /// can't convert. Without iconv (Windows, Android before API 28) only
     /// the charsets Foundation names convert.
     private func oldMessage(of commit: OpaquePointer?, encoding: String?) -> [UInt8] {
-        guard let raw = git_commit_message(commit) else { return [] }
-        let bytes = Array(UnsafeBufferPointer(
-            start: UnsafeRawPointer(raw).assumingMemoryBound(to: UInt8.self), count: strlen(raw)))
+        // Git takes the message past its leading blank lines
+        // (`skip_blank_lines()`), whitespace-only ones too, even for
+        // `--cleanup=verbatim`; `git_commit_message` skips only empty ones.
+        guard let raw = git_commit_message_raw(commit) else { return [] }
+        let bytes = Self.skipBlankLines(Array(UnsafeBufferPointer(
+            start: UnsafeRawPointer(raw).assumingMemoryBound(to: UInt8.self), count: strlen(raw))))
         let source = git_commit_message_encoding(commit).map { String(cString: $0) } ?? "UTF-8"
         let target = encoding ?? "UTF-8"
         if Self.sameEncoding(source, target) { return bytes }
@@ -324,6 +333,19 @@ extension Repository {
         case -1: return .failed
         default: return .unsupported
         }
+    }
+
+    /// git's `skip_blank_lines()`: `message` from its first line with
+    /// anything but whitespace on it.
+    static func skipBlankLines(_ message: [UInt8]) -> [UInt8] {
+        let space: Set<UInt8> = [0x20, 0x09, 0x0A, 0x0D]
+        var start = message.startIndex
+        while start < message.endIndex {
+            let end = message[start...].firstIndex(of: UInt8(ascii: "\n")).map { $0 + 1 } ?? message.endIndex
+            guard message[start..<end].allSatisfy(space.contains) else { break }
+            start = end
+        }
+        return Array(message[start...])
     }
 
     /// `commit.cleanup` as it applies without an editor.
@@ -498,7 +520,10 @@ extension Repository {
             // one, so write git's line in place of libgit2's.
             let line = formatOID(&old) + " " + formatOID(&new) + " "
             let entryBytes = Array(line.utf8) + Self.reflogIdentity(committer) + [0x09] + message + [0x0A]
-            try Data(entryBytes).write(to: URL(fileURLWithPath: gitDirPath + "logs/" + name))
+            // A linked worktree keeps HEAD's log in its own git dir and
+            // branch logs in the common one.
+            let dir = name == "HEAD" ? gitDirPath : commonDirPath
+            try Data(entryBytes).write(to: URL(fileURLWithPath: dir + "logs/" + name))
             return
         }
         // `append` takes the old id from the entry before, so restamp only
