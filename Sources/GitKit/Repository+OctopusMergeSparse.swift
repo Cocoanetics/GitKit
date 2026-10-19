@@ -122,9 +122,25 @@ extension Repository {
 
     /// Put `entries` in the index, skip-worktree, without checking them
     /// out: no file written, no checkout filter run; a file there goes.
+    /// The files go first: where one can't (a stale file left there would
+    /// hide behind the bit), those already gone are written back from the
+    /// unchanged index and the merge stops before HEAD moves.
     func recordOutsideWorkTree(_ entries: [(path: String, entry: Entry)]) throws {
         guard !entries.isEmpty else { return }
         let workdir = git_repository_workdir(repo).map { String(cString: $0) } ?? ""
+        var removed: [String] = []
+        for (path, entry) in entries {
+            let present = Self.exists(workdir + path)
+            do {
+                try Self.removeFromWorkTree(path, in: workdir, gitlink: entry.mode == 0o160000)
+            } catch {
+                try? checkout(removed, strategy: UInt32(GIT_CHECKOUT_FORCE.rawValue)) { options in
+                    try check(git_checkout_index(repo, nil, &options))
+                }
+                throw error
+            }
+            if present, entry.mode != 0o160000 { removed.append(path) }
+        }
         var index: OpaquePointer?
         try check(git_repository_index(&index, repo))
         defer { git_index_free(index) }
@@ -140,12 +156,7 @@ extension Repository {
             }
         }
         try check(git_index_write(index))
-        // A stale file left there would hide behind the bit: its removal
-        // failing stops the merge before HEAD moves.
-        for (path, entry) in entries {
-            try Self.removeFromWorkTree(path, in: workdir, gitlink: entry.mode == 0o160000)
-            try setSkipWorktree(true, path: path)
-        }
+        for (path, _) in entries { try setSkipWorktree(true, path: path) }
     }
 
     /// Take `path` out of the work tree, and the directories that leaves

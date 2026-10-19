@@ -273,6 +273,8 @@ extension RepositoryOctopusMergeTests {
         #expect(try git(["rev-parse", "HEAD"], in: dir).stdout == head)
         let kept = try String(contentsOf: dir.appendingPathComponent("out/o"), encoding: .utf8)
         #expect(kept == "1\n")
+        // Nor is the merged version left staged.
+        #expect(try git(["rev-parse", ":out/o"], in: dir).stdout == git(["rev-parse", "HEAD:out/o"], in: dir).stdout)
     }
 }
 #endif
