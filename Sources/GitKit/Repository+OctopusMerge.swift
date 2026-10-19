@@ -89,6 +89,7 @@ extension Repository {
         }
         let oids = try heads.map { try mergeableCommit($0) }
         let headTree = try treeOID(ofCommit: head)
+        try refuseUnrepresentablePaths(from: headTree, to: oids)
 
         var index: OpaquePointer?
         try check(git_repository_index(&index, repo))
@@ -199,6 +200,7 @@ extension Repository {
             try checkOutConflicts(conflicted, from: headTree, theirLabel: heads.last ?? "", keepingOurs: keepOurs,
                                   mergedContent: mergedContent)
             try keepSkipWorktree(skipWorktree)
+            try reapplySparsity()
             try writeMergeState(oids: oids, message: message, conflicts: conflictedPaths,
                                 noFastForward: noFastForward)
             return OctopusMergeResult(steps: steps, outcome: .conflicts(paths: conflictedPaths))
@@ -207,6 +209,7 @@ extension Repository {
         let outcome = try conclude(head: head, headTree: headTree, mergedTree: mergedTree, oids: oids,
                                    noFastForward: noFastForward, message: message, author: author, env: env)
         try keepSkipWorktree(skipWorktree)
+        try reapplySparsity()
         return OctopusMergeResult(steps: steps, outcome: outcome)
     }
 
@@ -234,6 +237,30 @@ extension Repository {
         let stats = try mergeStats(from: headTree, to: mergedTree)
         return .mergeCommit(sha: sha, statSummary: stats.summary, addedFiles: stats.added, deletedFiles: stats.deleted,
                             summaryLines: stats.lines)
+    }
+
+    /// Refuse, before anything changes, a merge that would touch a path
+    /// whose name isn't UTF-8: Swift strings can't carry its bytes to the
+    /// checkout, which would leave the work tree behind HEAD.
+    func refuseUnrepresentablePaths(from headTree: git_oid, to heads: [git_oid]) throws {
+        try withTree(headTree) { head in
+            for commit in heads {
+                try withTree(try treeOID(ofCommit: commit)) { tree in
+                    var diff: OpaquePointer?
+                    try check(git_diff_tree_to_tree(&diff, repo, head, tree, nil))
+                    defer { git_diff_free(diff) }
+                    for i in 0..<git_diff_num_deltas(diff) {
+                        guard let delta = git_diff_get_delta(diff, i)?.pointee else { continue }
+                        for name in [delta.old_file.path, delta.new_file.path].compactMap({ $0 }) {
+                            let bytes = Self.bytes(name)
+                            guard !String(decoding: bytes, as: UTF8.self).utf8.elementsEqual(bytes) else { continue }
+                            throw Libgit2Error(code: -1, klass: 0, message:
+                                "cannot merge path \(Self.quotedPath(bytes)): its name is not valid UTF-8")
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Refuse as git does before merging at all: a bare repository, and

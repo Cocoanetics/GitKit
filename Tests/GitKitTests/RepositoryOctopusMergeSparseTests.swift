@@ -115,5 +115,38 @@ extension RepositoryOctopusMergeTests {
         #expect(!SparsePatterns("").includes("anything"))
         #expect(SparsePatterns("A\n", ignoreCase: true).includes("a") && !SparsePatterns("A\n").includes("a"))
     }
+
+    @Test("the merge works skip-worktree out again for paths it doesn't touch, as git does")
+    func staleSparseBitsReapplied() throws {
+        let dir = try makeRepository()
+        for file in ["inc/i", "out/o"] {
+            let folder = dir.appendingPathComponent(file).deletingLastPathComponent()
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try write("1\n", to: file, in: dir)
+        }
+        try git(["add", "-A"], in: dir)
+        try git(["commit", "-q", "-m", "tree"], in: dir)
+        try git(["sparse-checkout", "init", "--cone"], in: dir)
+        try git(["sparse-checkout", "set", "inc"], in: dir)
+        // Stale both ways: missing and skipped inside the cone, present
+        // and not skipped outside it.
+        try git(["update-index", "--skip-worktree", "inc/i"], in: dir)
+        try FileManager.default.removeItem(at: dir.appendingPathComponent("inc/i"))
+        try git(["update-index", "--no-skip-worktree", "out/o"], in: dir)
+        try git(["checkout", "--", "out/o"], in: dir)
+
+        let other = try twin(of: dir)
+        let result = try merge(["a", "b"], in: dir)
+        try git(["merge", "-q", "-m", "Merge branches", "a", "b"], in: other)
+        guard case .mergeCommit = result.outcome else {
+            Issue.record("expected a merge commit, got \(result.outcome)"); return
+        }
+        #expect(FileManager.default.fileExists(atPath: dir.appendingPathComponent("inc/i").path))
+        #expect(!FileManager.default.fileExists(atPath: dir.appendingPathComponent("out").path))
+        #expect(try git(["ls-files", "-v", "inc", "out"], in: dir).stdout == "H inc/i\nS out/o")
+        guard try gitIsAtLeast(2, 54) else { return }
+        #expect(try git(["ls-files", "-v"], in: dir).stdout == git(["ls-files", "-v"], in: other).stdout)
+        #expect(try state(of: dir) == state(of: other))
+    }
 }
 #endif

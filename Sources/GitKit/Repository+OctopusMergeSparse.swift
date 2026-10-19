@@ -139,4 +139,52 @@ extension Repository {
         try check(git_index_write(index))
         for (path, _) in entries { try setSkipWorktree(true, path: path) }
     }
+
+    /// Work skip-worktree out again for every merged entry, as
+    /// unpack-trees does after a merge: a path the sparse-checkout file
+    /// takes in loses the bit and is written where it's missing; one it
+    /// leaves out gets the bit, its file taken away where it's up to
+    /// date (a changed one stays, as git leaves it).
+    func reapplySparsity() throws {
+        guard let includes = try sparseIncludes() else { return }
+        let workdir = git_repository_workdir(repo).map { String(cString: $0) } ?? ""
+        var index: OpaquePointer?
+        try check(git_repository_index(&index, repo))
+        defer { git_index_free(index) }
+        try check(git_index_read(index, 1))
+        let bit = UInt16(GIT_INDEX_ENTRY_SKIP_WORKTREE.rawValue)
+        var restore: [String] = [], hide: [String] = []
+        for i in 0..<git_index_entrycount(index) {
+            guard let entry = git_index_get_byindex(index, i)?.pointee, (entry.flags >> 12) & 3 == 0,
+                  entry.mode != 0o160000 else { continue }
+            let path = String(cString: entry.path), skipped = entry.flags_extended & bit != 0
+            if includes(path) {
+                if skipped { restore.append(path) }
+            } else if !skipped {
+                hide.append(path)
+            }
+        }
+        for path in restore { try setSkipWorktree(false, path: path) }
+        try checkout(restore.filter { !Self.exists(workdir + $0) },
+                     strategy: UInt32(GIT_CHECKOUT_SAFE.rawValue)) { options in
+            try check(git_checkout_index(repo, nil, &options))
+        }
+        let changed = UInt32(GIT_STATUS_WT_MODIFIED.rawValue | GIT_STATUS_WT_TYPECHANGE.rawValue)
+        for path in hide {
+            if Self.exists(workdir + path) {
+                var flags: UInt32 = 0
+                guard git_status_file(&flags, repo, path) == 0, flags & changed == 0 else { continue }
+                var url = URL(fileURLWithPath: workdir + path)
+                try FileManager.default.removeItem(at: url)
+                // And the directories it leaves empty.
+                while url.deletingLastPathComponent().path.count >= workdir.count {
+                    url = url.deletingLastPathComponent()
+                    let entries = try? FileManager.default.contentsOfDirectory(atPath: url.path)
+                    guard entries?.isEmpty == true else { break }
+                    try? FileManager.default.removeItem(at: url)
+                }
+            }
+            try setSkipWorktree(true, path: path)
+        }
+    }
 }

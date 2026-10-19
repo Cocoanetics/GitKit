@@ -500,8 +500,8 @@ extension RepositoryOctopusMergeTests {
     }
 
     @Test("a removed submodule's empty directory goes, one with files stays, as git leaves them",
-          arguments: [false, true])
-    func removedSubmoduleDirectory(withFile: Bool) throws {
+          arguments: [false, true], [false, true])
+    func removedSubmoduleDirectory(withFile: Bool, conflicted: Bool) throws {
         let dir = try makeRepository()
         let head = try git(["rev-parse", "HEAD"], in: dir).stdout
         try git(["update-index", "--add", "--cacheinfo", "160000,\(head),sub"], in: dir)
@@ -514,11 +514,20 @@ extension RepositoryOctopusMergeTests {
         try FileManager.default.createDirectory(at: sub, withIntermediateDirectories: true)
         if withFile { try write("x\n", to: "sub/f", in: dir) }
 
+        // A last head that conflicts with the first: the merge stops there.
+        try git(["checkout", "-q", "-b", "clash", "main"], in: dir)
+        try write("clash\n", to: "c", in: dir)
+        try git(["add", "c"], in: dir)
+        try git(["commit", "-q", "-m", "clash"], in: dir)
+        try git(["checkout", "-q", "main"], in: dir)
+        let heads = conflicted ? ["c", "rmsub", "clash"] : ["c", "rmsub"]
+
         let other = try twin(of: dir)
-        let result = try merge(["c", "rmsub"], in: dir)
-        _ = try git(["merge", "-q", "-m", "Merge branches", "c", "rmsub"], in: other, check: false)
-        guard case .mergeCommit = result.outcome else {
-            Issue.record("expected a merge commit, got \(result.outcome)"); return
+        let result = try merge(heads, in: dir)
+        _ = try git(["merge", "-q", "-m", "Merge branches"] + heads, in: other, check: false)
+        switch result.outcome {
+        case .mergeCommit where !conflicted, .conflicts where conflicted: break
+        default: Issue.record("unexpected outcome \(result.outcome)"); return
         }
         #expect(FileManager.default.fileExists(atPath: sub.path) == withFile)
         #expect(FileManager.default.fileExists(atPath: other.appendingPathComponent("sub").path) == withFile)
@@ -614,6 +623,22 @@ extension RepositoryOctopusMergeTests {
         #expect(outcome == .headMoved(expected: try git(["rev-parse", "HEAD@{1}"], in: dir).stdout, actual: moved))
         #expect(try git(["rev-parse", "main"], in: dir).stdout == moved)
         #expect(FileManager.default.fileExists(atPath: dir.appendingPathComponent(".git/MERGE_HEAD").path))
+    }
+
+    @Test("a path whose name isn't UTF-8 stops the merge before anything changes")
+    func nonUTF8PathRefused() throws {
+        let dir = try makeRepository()
+        try git(["checkout", "-q", "-b", "bad", "base"], in: dir)
+        let blob = try git(["hash-object", "-w", "--stdin", "--path=x"], in: dir).stdout
+        // A shell alias carries the byte Swift's arguments can't.
+        try git(["-c", "alias.put=!printf '100644 \(blob)\\t\"bad\\\\377\"\\n' | git update-index --index-info",
+                 "put"], in: dir)
+        try git(["commit", "-q", "-m", "bad"], in: dir)
+        try git(["checkout", "-q", "-f", "main"], in: dir)
+        let before = try state(of: dir)
+        let error = #expect(throws: Libgit2Error.self) { try merge(["c", "bad"], in: dir) }
+        #expect(error?.message == "cannot merge path \"bad\\377\": its name is not valid UTF-8")
+        #expect(try state(of: dir) == before)
     }
 
     @Test("a skip-worktree file checked out through a filter is up to date")

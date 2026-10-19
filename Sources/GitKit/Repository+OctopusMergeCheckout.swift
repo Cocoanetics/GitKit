@@ -108,6 +108,18 @@ extension Repository {
         #endif
     }
 
+    /// A removed submodule's directory goes when it's empty, as
+    /// unpack-trees' rmdir takes it; one with files stays.
+    static func removeEmptyDirectories(_ paths: some Sequence<String>, in workdir: String) {
+        let files = FileManager.default
+        for path in paths {
+            let dir = workdir + path
+            guard (try? files.attributesOfItem(atPath: dir))?[.type] as? FileAttributeType == .typeDirectory,
+                  (try? files.contentsOfDirectory(atPath: dir))?.isEmpty == true else { continue }
+            try? files.removeItem(atPath: dir)
+        }
+    }
+
     /// Whether anything is at `path`, a symbolic link counted as itself
     /// even when what it points to is missing (lstat, not stat).
     static func exists(_ path: String) -> Bool {
@@ -140,7 +152,7 @@ extension Repository {
         try recordOutsideWorkTree(outside)
     }
 
-    private func checkout(
+    func checkout(
         _ paths: [String], strategy: UInt32, _ body: (inout git_checkout_options) throws -> Void
     ) throws {
         guard !paths.isEmpty else { return } // no paths would mean every path
@@ -235,6 +247,7 @@ extension Repository {
             }
             try check(git_index_write(index))
         }
+        Self.removeEmptyDirectories(removedGitlinks, in: workdir)
         try restoreWorkTree(merged, workdir: workdir, theirLabel: theirLabel, skipped: skipped,
                             keepingOurs: keepingOurs, mergedContent: mergedContent, preexisting: preexisting)
     }
@@ -453,14 +466,7 @@ extension Repository {
                 defer { git_index_free(index) }
                 for path in gone.keys { _ = git_index_remove_bypath(index, path) }
                 try check(git_index_write(index))
-                // A removed submodule's directory goes when it's empty, as
-                // unpack-trees' rmdir takes it; one with files stays.
-                for path in gone.keys {
-                    let dir = workdir + path, files = FileManager.default
-                    guard (try? files.attributesOfItem(atPath: dir))?[.type] as? FileAttributeType == .typeDirectory,
-                          (try? files.contentsOfDirectory(atPath: dir))?.isEmpty == true else { continue }
-                    try? files.removeItem(atPath: dir)
-                }
+                Self.removeEmptyDirectories(gone.keys, in: workdir)
             }
             var commitOID = git_oid()
             _ = try commits.withUnsafeMutableBufferPointer { buffer in
