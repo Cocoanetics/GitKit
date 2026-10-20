@@ -34,12 +34,16 @@ private final class MergeHeadCollector {
     var oids: [git_oid] = []
 }
 
-private struct MergeContinueStats {
+/// What a commit changes against the tree it is compared with — the
+/// diffstat and `create mode` / `delete mode` / `rename` lines of git's
+/// summary.
+struct CommitStats {
     let filesChanged: Int
     let insertions: Int
     let deletions: Int
     let added: [Libgit2CommitDetails.FileChange]
     let deleted: [Libgit2CommitDetails.FileChange]
+    let renamed: [Libgit2CommitDetails.Rename]
 }
 
 extension Repository {
@@ -187,7 +191,7 @@ extension Repository {
         try check(git_tree_lookup(&newTree, repo, &treeOID))
         defer { git_tree_free(newTree) }
 
-        let stats = try collectMergeContinueStats(oldTree: parentTree, newTree: newTree)
+        let stats = try commitStats(from: parentTree, to: newTree)
 
         let authorSig = try SignatureResolver.resolve(
             role: .author, override: author, repo: repo, env: env)
@@ -224,7 +228,11 @@ extension Repository {
             insertions: stats.insertions,
             deletions: stats.deletions,
             addedFiles: stats.added,
-            deletedFiles: stats.deleted)
+            deletedFiles: stats.deleted,
+            renamedFiles: stats.renamed,
+            author: ResolvedSignature(authorSig),
+            committer: ResolvedSignature(committerSig),
+            showsAuthorDate: false)
     }
 
     // MARK: Fast-forward
@@ -495,7 +503,7 @@ extension Repository {
         return buf.ptr.map { String(cString: $0) } ?? ""
     }
 
-    private func currentBranchShorthand() -> String? {
+    func currentBranchShorthand() -> String? {
         var head: OpaquePointer?
         if git_repository_head(&head, repo) == 0 {
             defer { git_reference_free(head) }
@@ -507,13 +515,27 @@ extension Repository {
         return nil
     }
 
-    private func collectMergeContinueStats(
-        oldTree: OpaquePointer?,
-        newTree: OpaquePointer?
-    ) throws -> MergeContinueStats {
+    /// The diffstat and added/deleted files between `oldTree` (nil: the
+    /// empty tree) and `newTree`, for a commit summary.
+    func commitStats(
+        from oldTree: OpaquePointer?,
+        to newTree: OpaquePointer?
+    ) throws -> CommitStats {
         var diff: OpaquePointer?
         try check(git_diff_tree_to_tree(&diff, repo, oldTree, newTree, nil))
         defer { git_diff_free(diff) }
+        // Git's commit summary always finds renames
+        // (print_commit_summary sets DIFF_DETECT_RENAME over diff.renames),
+        // scored as git scores them.
+        var find = git_diff_find_options()
+        try check(git_diff_find_options_init(&find, UInt32(GIT_DIFF_FIND_OPTIONS_VERSION)))
+        find.flags = UInt32(GIT_DIFF_FIND_RENAMES.rawValue)
+        var metric = git_diff_similarity_metric()
+        gitkit_git_similarity_metric(&metric)
+        try withUnsafeMutablePointer(to: &metric) { metric in
+            find.metric = metric
+            try check(git_diff_find_similar(diff, &find))
+        }
 
         var stats: OpaquePointer?
         try check(git_diff_get_stats(&stats, diff))
@@ -521,6 +543,7 @@ extension Repository {
 
         var added: [Libgit2CommitDetails.FileChange] = []
         var deleted: [Libgit2CommitDetails.FileChange] = []
+        var renamed: [Libgit2CommitDetails.Rename] = []
         let numDeltas = Int(git_diff_num_deltas(diff))
         for i in 0..<numDeltas {
             guard let delta = git_diff_get_delta(diff, i) else { continue }
@@ -533,15 +556,23 @@ extension Repository {
                 let path = String(cString: delta.pointee.old_file.path)
                 deleted.append(.init(
                     path: path, mode: UInt32(delta.pointee.old_file.mode)))
+            } else if status == GIT_DELTA_RENAMED {
+                renamed.append(.init(
+                    oldPath: String(cString: delta.pointee.old_file.path),
+                    newPath: String(cString: delta.pointee.new_file.path),
+                    similarity: Int(delta.pointee.similarity),
+                    oldMode: UInt32(delta.pointee.old_file.mode),
+                    newMode: UInt32(delta.pointee.new_file.mode)))
             }
         }
 
-        return MergeContinueStats(
+        return CommitStats(
             filesChanged: Int(git_diff_stats_files_changed(stats)),
             insertions: Int(git_diff_stats_insertions(stats)),
             deletions: Int(git_diff_stats_deletions(stats)),
             added: added,
-            deleted: deleted)
+            deleted: deleted,
+            renamed: renamed)
     }
 
     private func defaultMergeMessage(refName: String) -> String {

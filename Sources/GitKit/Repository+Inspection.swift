@@ -1,10 +1,13 @@
 import Foundation
 import CGitKit
 
-/// Rich result returned by ``Repository/commitDetailed(message:author:allowEmpty:env:)``.
-/// The CLI uses this to format `git commit`'s `[branch sha] message` line
-/// plus the `<n> file(s) changed, <i> insertion(s)(+), <d> deletion(s)(-)`
-/// summary and the per-file `create mode` / `delete mode` lines.
+/// Rich result returned by ``Repository/commitDetailed(message:author:allowEmpty:env:)``
+/// and ``Repository/amendDetailed(message:author:resetAuthor:allowEmpty:allowEmptyMessage:cleanup:env:)``.
+/// The CLI uses this to format `git commit`'s `[branch sha] message` line,
+/// the ` Author:` / ` Date:` lines, the
+/// `<n> file(s) changed, <i> insertion(s)(+), <d> deletion(s)(-)`
+/// summary and the per-file `create mode` / `delete mode` / `rename`
+/// lines.
 public struct Libgit2CommitDetails: Sendable {
     /// Full 40-hex SHA of the newly created commit.
     public let sha: String
@@ -25,6 +28,23 @@ public struct Libgit2CommitDetails: Sendable {
     public let addedFiles: [FileChange]
     /// Files this commit deletes, for the `delete mode` lines.
     public let deletedFiles: [FileChange]
+    /// Files this commit renames, found as git's summary finds them
+    /// (always, whatever `diff.renames` says), for the `rename` lines; a
+    /// rename is in neither ``addedFiles`` nor ``deletedFiles``. Git
+    /// orders the summary's lines by the new path.
+    public let renamedFiles: [Rename]
+    /// The author recorded — name, email and author date. Real git prints
+    /// ` Author: <name> <email>` when name or email differ from
+    /// ``committer``'s.
+    public let author: ResolvedSignature
+    /// The committer recorded — name, email and commit date.
+    public let committer: ResolvedSignature
+    /// Whether real git prints ` Date: <author date>` (format with
+    /// ``ResolvedSignature/formattedDate``): true for an amend that keeps
+    /// the old authorship, even when both dates are equal; false for a
+    /// plain commit and `--reset-author`, even when `GIT_AUTHOR_DATE`
+    /// differs from the commit date.
+    public let showsAuthorDate: Bool
 
     /// A file added or deleted by the commit, with the mode real git
     /// shows in its `create mode` / `delete mode` summary lines.
@@ -34,6 +54,30 @@ public struct Libgit2CommitDetails: Sendable {
         /// POSIX file-mode bits (octal `100644` regular, `100755`
         /// executable, `120000` symlink); format with `%06o`.
         public let mode: UInt32
+    }
+
+    /// A file renamed by the commit. Git's summary prints
+    /// ` rename <name> (<similarity>%)`, then
+    /// ` mode change <oldMode> => <newMode>` (each `%06o`) when the mode
+    /// changed too.
+    public struct Rename: Sendable {
+        /// Repo-relative path before the rename.
+        public let oldPath: String
+        /// Repo-relative path after the rename.
+        public let newPath: String
+        /// How alike the two contents are, 0–100.
+        public let similarity: Int
+        /// POSIX file-mode bits before the rename.
+        public let oldMode: UInt32
+        /// POSIX file-mode bits after the rename.
+        public let newMode: UInt32
+
+        /// `old => new` as git's summary writes it (`pprint_rename`):
+        /// `dir/{a => b}` around what both paths share, the paths quoted
+        /// as with `core.quotePath` when they need it.
+        public func name(quotePath: Bool = true) -> String {
+            Repository.renameText(Array(oldPath.utf8), Array(newPath.utf8), quotePath: quotePath)
+        }
     }
 }
 

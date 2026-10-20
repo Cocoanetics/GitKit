@@ -325,41 +325,13 @@ public final class Repository {
         try check(git_tree_lookup(&newTree, repo, &treeOID))
         defer { git_tree_free(newTree) }
 
-        // Diff stats — compute BEFORE creating the commit so we
-        // can format the summary line. Diff against parent's tree
-        // if we have one, else against the empty tree (root).
+        // Diff stats against the parent's tree, or the empty tree (root).
         var parentTree: OpaquePointer?
         if hasParent, let parentTreeOID = git_commit_tree_id(parent) {
             try check(git_tree_lookup(&parentTree, repo, parentTreeOID))
         }
         defer { if parentTree != nil { git_tree_free(parentTree) } }
-
-        var diff: OpaquePointer?
-        try check(git_diff_tree_to_tree(&diff, repo, parentTree, newTree, nil))
-        defer { git_diff_free(diff) }
-
-        var stats: OpaquePointer?
-        try check(git_diff_get_stats(&stats, diff))
-        defer { git_diff_stats_free(stats) }
-
-        let filesChanged = Int(git_diff_stats_files_changed(stats))
-        let insertions = Int(git_diff_stats_insertions(stats))
-        let deletions = Int(git_diff_stats_deletions(stats))
-
-        var added: [Libgit2CommitDetails.FileChange] = []
-        var deleted: [Libgit2CommitDetails.FileChange] = []
-        let numDeltas = Int(git_diff_num_deltas(diff))
-        for i in 0..<numDeltas {
-            guard let delta = git_diff_get_delta(diff, i) else { continue }
-            let status = delta.pointee.status
-            if status == GIT_DELTA_ADDED {
-                let p = String(cString: delta.pointee.new_file.path)
-                added.append(.init(path: p, mode: UInt32(delta.pointee.new_file.mode)))
-            } else if status == GIT_DELTA_DELETED {
-                let p = String(cString: delta.pointee.old_file.path)
-                deleted.append(.init(path: p, mode: UInt32(delta.pointee.old_file.mode)))
-            }
-        }
+        let stats = try commitStats(from: parentTree, to: newTree)
 
         // Resolve author + committer signatures separately —
         // real git keeps them distinct so CI replay scenarios
@@ -409,11 +381,15 @@ public final class Repository {
             shortSHA: String(sha.prefix(7)),
             branchName: branchName,
             isRoot: !hasParent,
-            filesChanged: filesChanged,
-            insertions: insertions,
-            deletions: deletions,
-            addedFiles: added,
-            deletedFiles: deleted)
+            filesChanged: stats.filesChanged,
+            insertions: stats.insertions,
+            deletions: stats.deletions,
+            addedFiles: stats.added,
+            deletedFiles: stats.deleted,
+            renamedFiles: stats.renamed,
+            author: ResolvedSignature(authorSig),
+            committer: ResolvedSignature(committerSig),
+            showsAuthorDate: false)
     }
 
     // MARK: Internals
