@@ -11,6 +11,7 @@ extension RepositoryOctopusMergeTests {
 
     @Test("a file GitKit restores itself goes through the checkout filters, its mode as created")
     func restoredFileThroughFilters() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         try write("f text eol=crlf\n", to: ".gitattributes", in: dir)
         try git(["add", ".gitattributes"], in: dir)
@@ -42,6 +43,7 @@ extension RepositoryOctopusMergeTests {
 
     @Test("the merge's diffstat finds renames and mode changes, as git's does")
     func renamesInSummary() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         try git(["checkout", "-q", "-b", "mv", "base"], in: dir)
         try git(["mv", "f", "g"], in: dir)
@@ -74,6 +76,7 @@ extension RepositoryOctopusMergeTests {
 
     @Test("paths git quotes are quoted in the merge's summary, as git's are")
     func quotedPathsInSummary() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         try git(["checkout", "-q", "-b", "odd", "base"], in: dir)
         for name in ["we\nird", "tab\t\"q\"", "\u{fc}mlaut", "back\\slash"] {
@@ -107,6 +110,7 @@ extension RepositoryOctopusMergeTests {
 
     @Test("the diffstat scales its graph, names binary files and shortens long names, as git's does")
     func diffstatWidths() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         try git(["checkout", "-q", "-b", "big", "base"], in: dir)
         try write((1...150).map { "line \($0)" }.joined(separator: "\n") + "\n", to: "f", in: dir)
@@ -129,6 +133,7 @@ extension RepositoryOctopusMergeTests {
 
     @Test("with core.quotePath off, wide and combining characters take git's columns in the diffstat")
     func diffstatDisplayWidths() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         try git(["config", "core.quotePath", "false"], in: dir)
         try git(["checkout", "-q", "-b", "wide", "base"], in: dir)
@@ -151,6 +156,7 @@ extension RepositoryOctopusMergeTests {
 
     @Test("renames read as git's diff summary writes them")
     func renameText() {
+        defer { fixtures.removeAll() }
         #expect(Repository.renameText("a/b/c", "a/z/c") == "a/{b => z}/c")
         #expect(Repository.renameText("top", "deep/top") == "top => deep/top")
         #expect(Repository.renameText("dir/a", "dir/b") == "dir/{a => b}")
@@ -160,6 +166,7 @@ extension RepositoryOctopusMergeTests {
 
     @Test("our symbolic link kept in a conflict keeps its target's bytes, UTF-8 or not")
     func nonUTF8SymlinkTarget() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         for (branch, target) in [("l1", [UInt8]("tg".utf8) + [0xff]), ("l2", [UInt8]("other".utf8))] {
             try git(["checkout", "-q", "-b", branch, "base"], in: dir)
@@ -186,6 +193,7 @@ extension RepositoryOctopusMergeTests {
 
     @Test("an unchanged skip-worktree link whose target isn't UTF-8 is up to date")
     func hiddenNonUTF8Symlink() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         func linkBlob(_ bytes: [UInt8]) throws -> String {
             let blob = dir.appendingPathComponent("blob")
@@ -212,6 +220,7 @@ extension RepositoryOctopusMergeTests {
     @Test("with core.symlinks=false, links are files holding their targets, kept and checked so",
           arguments: [false, true])
     func linksAsFiles(hidden: Bool) throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         try git(["config", "core.symlinks", "false"], in: dir)
         func linkBlob(_ target: String) throws -> String {

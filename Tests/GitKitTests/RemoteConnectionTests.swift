@@ -22,6 +22,8 @@ private final class ConnectionLog: @unchecked Sendable {
 @Suite("Remote connection location")
 struct RemoteConnectionTests {
 
+    private let fixtures = TemporaryRepositories()
+
     @discardableResult
     private func runGit(_ args: [String], in dir: URL) throws -> String {
         let p = Process()
@@ -53,8 +55,7 @@ struct RemoteConnectionTests {
     /// Neither is anywhere near the process's directory, so a relative
     /// remote libgit2 read against it would miss.
     private func makeFixture() throws -> (root: URL, bare: URL, work: URL) {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("RemoteConnectionTests-\(UUID().uuidString)")
+        let root = fixtures.url("RemoteConnectionTests-\(UUID().uuidString)")
             .resolvingSymlinksInPath()
         let bare = root.appendingPathComponent("bare"), work = root.appendingPathComponent("work")
         try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
@@ -70,6 +71,7 @@ struct RemoteConnectionTests {
 
     @Test("a configured relative remote fetches from the given location, shown as configured")
     func configuredRelativeRemoteFetches() throws {
+        defer { fixtures.removeAll() }
         let (root, bare, work) = try makeFixture()
         defer { try? FileManager.default.removeItem(at: root) }
         try runGit(["remote", "add", "local", "../bare"], in: work)
@@ -86,6 +88,7 @@ struct RemoteConnectionTests {
 
     @Test("a typed path fetches from the given location, shown as typed")
     func typedPathFetches() throws {
+        defer { fixtures.removeAll() }
         let (root, bare, work) = try makeFixture()
         defer { try? FileManager.default.removeItem(at: root) }
         let head = try runGit(["rev-parse", "HEAD"], in: work)
@@ -102,6 +105,7 @@ struct RemoteConnectionTests {
 
     @Test("the connection goes to the given location, not the configured URL")
     func connectsOnlyToTheLocation() throws {
+        defer { fixtures.removeAll() }
         let (root, bare, work) = try makeFixture()
         defer { try? FileManager.default.removeItem(at: root) }
         // Configured somewhere that doesn't exist: the location wins…
@@ -124,6 +128,7 @@ struct RemoteConnectionTests {
 
     @Test("a typed path pushes to the given location, shown as typed, and records it as typed")
     func typedPathPushes() throws {
+        defer { fixtures.removeAll() }
         let (root, bare, work) = try makeFixture()
         defer { try? FileManager.default.removeItem(at: root) }
         let old = try runGit(["rev-parse", "--short", "HEAD"], in: work)
@@ -142,6 +147,7 @@ struct RemoteConnectionTests {
 
     @Test("a configured push URL is replaced by the location, and shown as configured")
     func configuredPushURLIsReplaced() throws {
+        defer { fixtures.removeAll() }
         let (root, bare, work) = try makeFixture()
         defer { try? FileManager.default.removeItem(at: root) }
         try runGit(["remote", "add", "local", "../nowhere"], in: work)
@@ -163,6 +169,7 @@ struct RemoteConnectionTests {
 
     @Test("refused and rejected pushes name the remote as typed")
     func errorsNameTheRemoteAsTyped() throws {
+        defer { fixtures.removeAll() }
         let (root, bare, work) = try makeFixture()
         defer { try? FileManager.default.removeItem(at: root) }
 

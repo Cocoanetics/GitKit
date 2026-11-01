@@ -12,6 +12,8 @@ import Testing
 @Suite("Repository.describe")
 struct RepositoryDescribeTests {
 
+    private let fixtures = TemporaryRepositories()
+
     @discardableResult
     private func runGit(_ args: [String], in dir: URL) throws -> String {
         let p = Process()
@@ -36,9 +38,7 @@ struct RepositoryDescribeTests {
     }
 
     private func makeRepo() throws -> URL {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("Describe-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dir = try fixtures.directory("Describe-\(UUID().uuidString)")
         try runGit(["init", "-b", "main"], in: dir)
         try runGit(["config", "user.email", "t@e.com"], in: dir)
         try runGit(["config", "user.name", "T"], in: dir)
@@ -47,6 +47,7 @@ struct RepositoryDescribeTests {
 
     @Test("describe at the tagged commit returns just the tag name")
     func describeAtTag() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         try Data("a\n".utf8).write(to: dir.appendingPathComponent("a.txt"))
@@ -61,6 +62,7 @@ struct RepositoryDescribeTests {
 
     @Test("describe past the tag adds -<n>-g<sha> suffix")
     func describePastTag() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         try Data("a\n".utf8).write(to: dir.appendingPathComponent("a.txt"))
@@ -78,6 +80,7 @@ struct RepositoryDescribeTests {
 
     @Test("describe with no tags throws")
     func describeNoTags() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         try Data("a\n".utf8).write(to: dir.appendingPathComponent("a.txt"))

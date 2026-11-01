@@ -8,8 +8,11 @@ import Testing
 @Suite("Repository.amendDetailed")
 struct RepositoryAmendTests {
 
+    let fixtures = TemporaryRepositories()
+
     @Test("a new message keeps the parents, tree and author date")
     func messageChange() throws {
+        defer { fixtures.removeAll() }
         let details = try AmendFixture.expectParity(
             setup: AmendFixture.twoCommits, gitArgs: ["-m", "second reworded"],
             subject: "second reworded") { repo, env in
@@ -24,6 +27,7 @@ struct RepositoryAmendTests {
 
     @Test("--no-edit keeps the old message")
     func noEdit() throws {
+        defer { fixtures.removeAll() }
         try AmendFixture.expectParity(
             setup: AmendFixture.twoCommits, gitArgs: ["--no-edit"], subject: "second") { repo, env in
                 try repo.amendDetailed(env: env)
@@ -32,6 +36,7 @@ struct RepositoryAmendTests {
 
     @Test("staged files join the amended commit, its diffstat against the parent")
     func addedFile() throws {
+        defer { fixtures.removeAll() }
         let details = try AmendFixture.expectParity(
             setup: { dir in
                 try AmendFixture.twoCommits(dir)
@@ -48,6 +53,7 @@ struct RepositoryAmendTests {
 
     @Test("-a: tracked changes staged first, untracked files left alone")
     func stageTracked() throws {
+        defer { fixtures.removeAll() }
         try AmendFixture.expectParity(
             setup: { dir in
                 try AmendFixture.twoCommits(dir)
@@ -62,6 +68,7 @@ struct RepositoryAmendTests {
 
     @Test("a root commit is amended without (root-commit), diffed against the empty tree")
     func rootCommit() throws {
+        defer { fixtures.removeAll() }
         let details = try AmendFixture.expectParity(
             setup: { dir in
                 try AmendFixture.write("hi\n", to: "f", in: dir)
@@ -77,6 +84,7 @@ struct RepositoryAmendTests {
 
     @Test("--author replaces name and email but keeps the author date")
     func authorOverride() throws {
+        defer { fixtures.removeAll() }
         let details = try AmendFixture.expectParity(
             setup: AmendFixture.twoCommits,
             gitArgs: ["--author=Other <o@x.com>", "-m", "authored"], subject: "authored") { repo, env in
@@ -89,6 +97,7 @@ struct RepositoryAmendTests {
 
     @Test("--reset-author takes a new commit's author, and no Date line")
     func resetAuthor() throws {
+        defer { fixtures.removeAll() }
         let details = try AmendFixture.expectParity(
             setup: AmendFixture.twoCommits, gitArgs: ["--reset-author", "-m", "reset"],
             subject: "reset", env: ["GIT_AUTHOR_DATE": AmendFixture.commitDate]) { repo, env in
@@ -99,6 +108,7 @@ struct RepositoryAmendTests {
 
     @Test("a detached HEAD is amended in place")
     func detachedHead() throws {
+        defer { fixtures.removeAll() }
         let details = try AmendFixture.expectParity(
             setup: { dir in
                 try AmendFixture.twoCommits(dir)
@@ -112,6 +122,7 @@ struct RepositoryAmendTests {
 
     @Test("--no-edit re-encodes an old non-UTF-8 message as git does")
     func oldEncoding() throws {
+        defer { fixtures.removeAll() }
         try AmendFixture.expectParity(
             setup: { dir in
                 try AmendFixture.twoCommits(dir)
@@ -129,7 +140,8 @@ struct RepositoryAmendTests {
 
     @Test("the reflog records commit (amend): <subject> on HEAD and the branch")
     func reflogEntry() throws {
-        let dir = try AmendFixture.makeRepo()
+        defer { fixtures.removeAll() }
+        let dir = try AmendFixture.makeRepo(in: fixtures)
         defer { try? FileManager.default.removeItem(at: dir) }
         try AmendFixture.twoCommits(dir)
         let repo = try Repository.open(at: dir)
@@ -145,6 +157,7 @@ struct RepositoryAmendTests {
 
     @Test("the reflog subject is the first line, whitespace collapsed as git logs it")
     func reflogSubjectWhitespace() throws {
+        defer { fixtures.removeAll() }
         for message in ["  spaced   out\t subject\nmore\n", "\nafter a blank line\n"] {
             try AmendFixture.expectSameRepos(
                 setup: AmendFixture.twoCommits, gitArgs: ["--cleanup=verbatim", "-m", message]) { repo, env in
@@ -168,6 +181,7 @@ struct RepositoryAmendTests {
 
     @Test("--no-edit re-encodes to i18n.commitEncoding, not i18n.logOutputEncoding")
     func logOutputEncodingIgnored() throws {
+        defer { fixtures.removeAll() }
         // git writes the message as UTF-8 (the commit encoding), whatever
         // it displays it in.
         let latin1 = Self.encodedMessage([0x63, 0x61, 0x66, 0xE9, 0x0A], encoding: "ISO-8859-1") // "café"
@@ -182,6 +196,7 @@ struct RepositoryAmendTests {
 
     @Test("--no-edit converts any charset iconv knows, as git does")
     func iconvCharset() throws {
+        defer { fixtures.removeAll() }
         // ISO-8859-15's 0xA4 is the euro sign, which Foundation has no name for.
         let latin9 = Self.encodedMessage(Array("euro ".utf8) + [0xA4, 0x0A], encoding: "ISO-8859-15")
         try AmendFixture.expectSameRepos(
@@ -194,6 +209,7 @@ struct RepositoryAmendTests {
 
     @Test("a non-UTF-8 subject is logged in the reflog with its bytes unconverted")
     func nonUTF8ReflogSubject() throws {
+        defer { fixtures.removeAll() }
         try AmendFixture.expectSameRepos(
             setup: Self.encodedMessage(Array("caf".utf8) + [0xE9, 0x20, 0x20, 0x78, 0x0A], encoding: "ISO-8859-1"),
             gitArgs: ["--no-edit"], amend: { repo, env in try repo.amendDetailed(env: env) })
@@ -201,6 +217,7 @@ struct RepositoryAmendTests {
 
     @Test("with core.logAllRefUpdates=false the amend succeeds and writes no reflog")
     func reflogsDisabled() throws {
+        defer { fixtures.removeAll() }
         try AmendFixture.expectSameRepos(
             setup: { dir in
                 try AmendFixture.git(["config", "core.logAllRefUpdates", "false"], in: dir)
@@ -220,6 +237,7 @@ struct RepositoryAmendTests {
 
     @Test("an amend concluding a revert clears its state, sequencer included")
     func revertStateCleared() throws {
+        defer { fixtures.removeAll() }
         let state = ["REVERT_HEAD", "MERGE_MSG", "AUTO_MERGE", "sequencer"]
         try AmendFixture.expectParity(
             setup: { dir in
@@ -259,7 +277,8 @@ struct RepositoryAmendTests {
 
     @Test("a held index.lock refuses the amend and is left in place")
     func indexLocked() throws {
-        let dir = try AmendFixture.makeRepo()
+        defer { fixtures.removeAll() }
+        let dir = try AmendFixture.makeRepo(in: fixtures)
         defer { try? FileManager.default.removeItem(at: dir) }
         try AmendFixture.twoCommits(dir)
         let lock = dir.path + "/.git/index.lock"
@@ -282,6 +301,7 @@ struct RepositoryAmendTests {
 
     @Test("the message is cleaned up as git does, -m or --no-edit, per commit.cleanup")
     func messageCleanup() throws {
+        defer { fixtures.removeAll() }
         let raw = "\n\nsubject   \n\n\nbody   \n# hash\n\n"
         for mode in [nil, "strip", "verbatim", "scissors"] {
             let configure: (URL) throws -> Void = { dir in
@@ -321,7 +341,8 @@ struct RepositoryAmendTests {
 
     @Test("a message empty after cleanup is refused unless --allow-empty-message")
     func emptyMessage() throws {
-        let dir = try AmendFixture.makeRepo()
+        defer { fixtures.removeAll() }
+        let dir = try AmendFixture.makeRepo(in: fixtures)
         defer { try? FileManager.default.removeItem(at: dir) }
         try AmendFixture.twoCommits(dir)
         let git = try AmendFixture.run(["commit", "--amend", "-m", "  \n\n"], in: dir)
@@ -350,7 +371,8 @@ struct RepositoryAmendTests {
 
     @Test("an unknown commit.cleanup is refused")
     func invalidCleanupMode() throws {
-        let dir = try AmendFixture.makeRepo()
+        defer { fixtures.removeAll() }
+        let dir = try AmendFixture.makeRepo(in: fixtures)
         defer { try? FileManager.default.removeItem(at: dir) }
         try AmendFixture.twoCommits(dir)
         try AmendFixture.git(["config", "commit.cleanup", "bogus"], in: dir)
@@ -364,6 +386,7 @@ struct RepositoryAmendTests {
 
     @Test("a reflog emptied by git reflog expire gets the amend under the committer")
     func expiredReflog() throws {
+        defer { fixtures.removeAll() }
         try AmendFixture.expectSameRepos(
             setup: { dir in
                 try AmendFixture.twoCommits(dir)
@@ -376,7 +399,8 @@ struct RepositoryAmendTests {
 
     @Test("nothing to amend on an unborn HEAD")
     func nothingToAmend() throws {
-        let dir = try AmendFixture.makeRepo()
+        defer { fixtures.removeAll() }
+        let dir = try AmendFixture.makeRepo(in: fixtures)
         defer { try? FileManager.default.removeItem(at: dir) }
         let git = try AmendFixture.run(["commit", "--amend", "-m", "x"], in: dir)
         #expect(git.status == 128)
@@ -388,7 +412,8 @@ struct RepositoryAmendTests {
 
     @Test("amending during a merge is refused")
     func mergeInProgress() throws {
-        let dir = try AmendFixture.makeRepo()
+        defer { fixtures.removeAll() }
+        let dir = try AmendFixture.makeRepo(in: fixtures)
         defer { try? FileManager.default.removeItem(at: dir) }
         try AmendFixture.twoCommits(dir)
         try AmendFixture.git(["checkout", "-q", "-b", "side", "HEAD~1"], in: dir)
@@ -414,11 +439,12 @@ struct RepositoryAmendTests {
 
     @Test("an amend leaving the parent's tree is refused unless --allow-empty")
     func emptyRule() throws {
+        defer { fixtures.removeAll() }
         let setup: (URL) throws -> Void = { dir in
             try AmendFixture.twoCommits(dir)
             try AmendFixture.git(["rm", "-q", "g"], in: dir)
         }
-        let dir = try AmendFixture.makeRepo()
+        let dir = try AmendFixture.makeRepo(in: fixtures)
         defer { try? FileManager.default.removeItem(at: dir) }
         try setup(dir)
         let git = try AmendFixture.run(["commit", "--amend", "-m", "x"], in: dir)
@@ -431,7 +457,7 @@ struct RepositoryAmendTests {
         try AmendFixture.git(["reset", "-q", "--hard"], in: dir)
         try AmendFixture.git(["commit", "-q", "--allow-empty", "-m", "empty"], in: dir)
         #expect(throws: CommitAmendError.wouldBeEmpty) { try repo.amendDetailed() }
-        let root = try AmendFixture.makeRepo()
+        let root = try AmendFixture.makeRepo(in: fixtures)
         defer { try? FileManager.default.removeItem(at: root) }
         try AmendFixture.git(["commit", "-q", "--allow-empty", "-m", "empty root"], in: root)
         #expect(throws: CommitAmendError.wouldBeEmpty) {
@@ -447,6 +473,7 @@ struct RepositoryAmendTests {
 
     @Test("a merge commit may keep its first parent's tree")
     func mergeCommitTree() throws {
+        defer { fixtures.removeAll() }
         try AmendFixture.expectParity(
             setup: { dir in
                 try AmendFixture.twoCommits(dir)
@@ -469,6 +496,7 @@ extension RepositoryAmendTests {
 
     @Test("--no-edit --cleanup=verbatim skips the old message's leading blank lines, as git does")
     func verbatimKeptMessage() throws {
+        defer { fixtures.removeAll() }
         try AmendFixture.expectSameRepos(
             setup: { dir in
                 try AmendFixture.twoCommits(dir)
@@ -482,8 +510,9 @@ extension RepositoryAmendTests {
 
     @Test("in a linked worktree, an emptied branch reflog is restamped in the common dir")
     func linkedWorktreeExpiredReflog() throws {
-        let viaGit = try AmendFixture.makeRepo()
-        let viaKit = try AmendFixture.makeRepo()
+        defer { fixtures.removeAll() }
+        let viaGit = try AmendFixture.makeRepo(in: fixtures)
+        let viaKit = try AmendFixture.makeRepo(in: fixtures)
         defer {
             try? FileManager.default.removeItem(at: viaGit)
             try? FileManager.default.removeItem(at: viaKit)
@@ -511,6 +540,7 @@ extension RepositoryAmendTests {
 
     @Test("a reflog left discontinuous by git reflog delete gets the amend under the committer")
     func discontinuousReflog() throws {
+        defer { fixtures.removeAll() }
         try AmendFixture.expectSameRepos(
             setup: { dir in
                 try AmendFixture.twoCommits(dir)
@@ -524,6 +554,7 @@ extension RepositoryAmendTests {
 
     @Test("a given message gets its last line ended, as -m does, even verbatim")
     func verbatimGivenMessage() throws {
+        defer { fixtures.removeAll() }
         for message in ["x", "x\n\ny  "] {
             try AmendFixture.expectSameRepos(
                 setup: AmendFixture.twoCommits, gitArgs: ["--cleanup=verbatim", "-m", message]) { repo, env in
@@ -534,12 +565,13 @@ extension RepositoryAmendTests {
 
     @Test("an empty or multi-line comment string is refused first, as git does")
     func invalidCommentString() throws {
+        defer { fixtures.removeAll() }
         let cases: [(key: String, value: String, empty: Bool)] = [
             ("core.commentString", "", true), ("core.commentChar", "", true), ("core.commentChar", "a\nb", false)
         ]
         for (key, value, empty) in cases {
             for unborn in [false, true] {
-                let dir = try AmendFixture.makeRepo()
+                let dir = try AmendFixture.makeRepo(in: fixtures)
                 defer { try? FileManager.default.removeItem(at: dir) }
                 if !unborn { try AmendFixture.twoCommits(dir) }
                 try AmendFixture.git(["config", key, value], in: dir)
@@ -557,7 +589,8 @@ extension RepositoryAmendTests {
 
     @Test("the ref and reflog locks taken to restamp are all released")
     func reflogLocksReleased() throws {
-        let dir = try AmendFixture.makeRepo()
+        defer { fixtures.removeAll() }
+        let dir = try AmendFixture.makeRepo(in: fixtures)
         defer { try? FileManager.default.removeItem(at: dir) }
         try AmendFixture.twoCommits(dir)
         let details = try Repository.open(at: dir).amendDetailed(message: "locked\n")
@@ -571,9 +604,10 @@ extension RepositoryAmendTests {
 
     @Test("core.commentChar=auto with every candidate used is refused in any cleanup mode")
     func noCommentCharacter() throws {
+        defer { fixtures.removeAll() }
         let message = "x\n#1\n;2\n@3\n!4\n$5\n%6\n^7\n&8\n|9\n:10\n"
         for cleanup in [CommitMessageCleanup.strip, .whitespace, .verbatim] {
-            let dir = try AmendFixture.makeRepo()
+            let dir = try AmendFixture.makeRepo(in: fixtures)
             defer { try? FileManager.default.removeItem(at: dir) }
             try AmendFixture.twoCommits(dir)
             try AmendFixture.git(["config", "core.commentChar", "auto"], in: dir)

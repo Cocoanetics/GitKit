@@ -11,10 +11,10 @@ import Testing
 @Suite("Repository inspection helpers")
 struct RepositoryInspectionTests {
 
+    private let fixtures = TemporaryRepositories()
+
     private func makeRepo() throws -> URL {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("Libgit2Inspection-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dir = try fixtures.directory("Libgit2Inspection-\(UUID().uuidString)")
         try runGit(["init", "-b", "main"], in: dir)
         try runGit(["config", "user.email", "t@e.com"], in: dir)
         try runGit(["config", "user.name", "T"], in: dir)
@@ -49,6 +49,7 @@ struct RepositoryInspectionTests {
 
     @Test("isIgnored honours .gitignore")
     func isIgnored() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         try Data("*.log\n".utf8).write(to: dir.appendingPathComponent(".gitignore"))
@@ -62,6 +63,7 @@ struct RepositoryInspectionTests {
 
     @Test("localBranches lists branches in alphabetical order")
     func localBranchesList() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         try Data("hi\n".utf8).write(to: dir.appendingPathComponent("a.txt"))
@@ -77,6 +79,7 @@ struct RepositoryInspectionTests {
 
     @Test("remoteExists tracks add/lookup")
     func remoteExistsTracksAdd() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
 
@@ -91,6 +94,7 @@ struct RepositoryInspectionTests {
 
     @Test("commitDetailed reports stats and root flag")
     func commitDetailedRoot() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         try Data("a\n".utf8).write(to: dir.appendingPathComponent("a.txt"))
@@ -112,6 +116,7 @@ struct RepositoryInspectionTests {
 
     @Test("commitDetailed reports both insertions and deletions")
     func commitDetailedModification() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         try Data("v1\n".utf8).write(to: dir.appendingPathComponent("file.txt"))

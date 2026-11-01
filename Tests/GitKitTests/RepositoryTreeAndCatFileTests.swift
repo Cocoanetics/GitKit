@@ -11,6 +11,8 @@ import Testing
 @Suite("Repository.lsTree + cat-file")
 struct RepositoryTreeAndCatFileTests {
 
+    private let fixtures = TemporaryRepositories()
+
     @discardableResult
     private func runGit(_ args: [String], in dir: URL) throws -> String {
         let p = Process()
@@ -35,9 +37,7 @@ struct RepositoryTreeAndCatFileTests {
     }
 
     private func makeRepo() throws -> URL {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("Tree-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dir = try fixtures.directory("Tree-\(UUID().uuidString)")
         try runGit(["init", "-b", "main"], in: dir)
         try runGit(["config", "user.email", "t@e.com"], in: dir)
         try runGit(["config", "user.name", "T"], in: dir)
@@ -46,6 +46,7 @@ struct RepositoryTreeAndCatFileTests {
 
     @Test("ls-tree: top-level entries only by default")
     func lsTreeTopLevel() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         try Data("a\n".utf8).write(to: dir.appendingPathComponent("a.txt"))
@@ -68,6 +69,7 @@ struct RepositoryTreeAndCatFileTests {
 
     @Test("ls-tree -r flattens subtree blobs into the result")
     func lsTreeRecursive() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         try FileManager.default.createDirectory(
@@ -85,6 +87,7 @@ struct RepositoryTreeAndCatFileTests {
 
     @Test("cat-file: blob round-trips its bytes")
     func catFileBlob() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         let payload = "hello world\n"
@@ -102,6 +105,7 @@ struct RepositoryTreeAndCatFileTests {
 
     @Test("objectMetadata reports kind + size for HEAD commit")
     func objectMetadataCommit() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         try Data("a\n".utf8).write(to: dir.appendingPathComponent("a.txt"))

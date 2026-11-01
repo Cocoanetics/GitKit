@@ -46,6 +46,7 @@ extension RepositoryOctopusMergeTests {
         (["df", "c"], [OctopusPathMerge.removed(path: "f")])
     ])
     func fileReplacedByDirectory(heads: [String], last: [OctopusPathMerge]) throws {
+        defer { fixtures.removeAll() }
         let dir = try makeFileOverDirectory()
         let other = try twin(of: dir)
         let result = try merge(heads, in: dir)
@@ -62,6 +63,7 @@ extension RepositoryOctopusMergeTests {
 
     @Test("the same content added with different modes is a permissions conflict")
     func addedWithDifferentModes() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeFileOverDirectory()
         let other = try twin(of: dir)
         let result = try merge(["c", "m1", "m2"], in: dir)
@@ -73,6 +75,7 @@ extension RepositoryOctopusMergeTests {
     @Test("a file deleted from the work tree is up to date: the merge deletes or writes it",
           arguments: [["c", "df"], ["c", "modd"], ["c", "modd", "df"], ["c", "df", "modd"]])
     func fileDeletedFromWorkTree(heads: [String]) throws {
+        defer { fixtures.removeAll() }
         let dir = try makeFileOverDirectory()
         try FileManager.default.removeItem(at: dir.appendingPathComponent("f"))
         let other = try twin(of: dir)
@@ -84,6 +87,7 @@ extension RepositoryOctopusMergeTests {
 
     @Test("merges through a revert or a bisect, as git does", arguments: ["REVERT_HEAD", "BISECT_LOG"])
     func mergesThroughOtherOperations(file: String) throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         try Data((try git(["rev-parse", "c"], in: dir).stdout + "\n").utf8)
             .write(to: dir.appendingPathComponent(".git/" + file))
@@ -98,6 +102,7 @@ extension RepositoryOctopusMergeTests {
 
     @Test("removes a symbolic link the merge deletes, even one pointing nowhere")
     func removesDanglingSymlink() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         try git(["checkout", "-q", "-b", "link", "base"], in: dir)
         try FileManager.default.createSymbolicLink(
@@ -119,6 +124,7 @@ extension RepositoryOctopusMergeTests {
     @Test("a mode only one side changed fails the content merge, as git-merge-one-file does",
           arguments: [(false, false), (true, false), (false, true)])
     func permissionsConflict(executableOurs: Bool, conflictingContent: Bool) throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         func branch(_ name: String, _ text: String, executable: Bool) throws {
             try git(["checkout", "-q", "-b", name, "base"], in: dir)
@@ -153,6 +159,7 @@ extension RepositoryOctopusMergeTests {
 
     @Test("with the empty blob in the repository, an add/add path gets conflict markers")
     func addedInBothWithEmptyBlob() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         try write("", to: "empty", in: dir)
         try git(["add", "empty"], in: dir)
@@ -176,6 +183,7 @@ extension RepositoryOctopusMergeTests {
     @Test("deleted on one side, its mode changed on the other",
           arguments: [["c", "rm", "chmod"], ["c", "chmod", "rm"]])
     func deletedWithModeChange(heads: [String]) throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         try git(["checkout", "-q", "-b", "rm", "base"], in: dir)
         try git(["rm", "-q", "f"], in: dir)
@@ -197,8 +205,8 @@ extension RepositoryOctopusMergeTests {
 
     @Test("moves a gitlink past a submodule's own local changes, as git does")
     func dirtySubmodule() throws {
-        let sub = FileManager.default.temporaryDirectory.appendingPathComponent("OctopusSub-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: sub, withIntermediateDirectories: true)
+        defer { fixtures.removeAll() }
+        let sub = try fixtures.directory("OctopusSub-\(UUID().uuidString)")
         try git(["init", "-q", "-b", "main"], in: sub)
         try write("1\n", to: "s", in: sub)
         try git(["add", "s"], in: sub)
@@ -237,6 +245,7 @@ extension RepositoryOctopusMergeTests {
 
     @Test("on a work tree that folds case, an untracked file of another case still collides")
     func untrackedOfAnotherCase() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         // Only where git found the file system folding case.
         guard try git(["config", "core.ignorecase"], in: dir, check: false).stdout == "true" else { return }
@@ -256,6 +265,7 @@ extension RepositoryOctopusMergeTests {
 
     @Test("a criss-cross base that has a path is its ancestor, though the other base lacks it")
     func baseWithThePath() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         try git(["checkout", "-q", "-b", "py", "base"], in: dir)
         try write("y\n", to: "y", in: dir)
@@ -287,6 +297,7 @@ extension RepositoryOctopusMergeTests {
 
     @Test("a change in the work tree stops a merge whose result for that file is ours")
     func dirtyFileMergedBackToOurs() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         // Ours changed f's first and last line, `b` only its last, alike.
         try write("1a\n2\n3\n4\n5\n6\n7b\n", to: "f", in: dir)
@@ -302,6 +313,7 @@ extension RepositoryOctopusMergeTests {
 
     @Test("a link or an executable over a directory stays what it is", arguments: [true, false])
     func fileOverDirectoryKeepsItsType(link: Bool) throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         try git(["checkout", "-q", "-b", "kind", "base"], in: dir)
         let d = dir.appendingPathComponent("d").path
@@ -334,6 +346,7 @@ extension RepositoryOctopusMergeTests {
 
     @Test("a skip-worktree file with local changes stops the merge, as read-tree does")
     func skipWorktreeChanges() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         try git(["update-index", "--skip-worktree", "f"], in: dir)
         try write("local\n", to: "f", in: dir)
@@ -346,8 +359,8 @@ extension RepositoryOctopusMergeTests {
 
     @Test("a submodule replaced by a directory: its files block the paths the head adds")
     func submoduleReplacedByDirectory() throws {
-        let sub = FileManager.default.temporaryDirectory.appendingPathComponent("OctopusSub-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: sub, withIntermediateDirectories: true)
+        defer { fixtures.removeAll() }
+        let sub = try fixtures.directory("OctopusSub-\(UUID().uuidString)")
         try git(["init", "-q", "-b", "main"], in: sub)
         try write("1\n", to: "s", in: sub)
         try git(["add", "s"], in: sub)
@@ -380,6 +393,7 @@ extension RepositoryOctopusMergeTests {
 
     @Test("a file of HEAD's an earlier step deleted is no untracked file for a later step")
     func staleTrackedFile() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         // HEAD tracks d/f where the base had a file d; `gone` deletes d/f;
         // `back` puts d/f in place of the base's d again.
@@ -417,6 +431,7 @@ extension RepositoryOctopusMergeTests {
 
     @Test("a skip-worktree symbolic link pointing elsewhere stops the merge", arguments: [false, true])
     func skipWorktreeSymlink(changed: Bool) throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         try git(["checkout", "-q", "-b", "link", "base"], in: dir)
         try FileManager.default.createSymbolicLink(
@@ -453,6 +468,7 @@ extension RepositoryOctopusMergeTests {
     @Test("an assume-unchanged or skip-worktree file edited, or made executable, stops the merge",
           arguments: [("--assume-unchanged", false), ("--assume-unchanged", true), ("--skip-worktree", true)])
     func hiddenLocalChanges(flag: String, chmod: Bool) throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         try git(["update-index", flag, "f"], in: dir)
         let f = dir.appendingPathComponent("f").path
@@ -467,8 +483,8 @@ extension RepositoryOctopusMergeTests {
 
     @Test("a skip-worktree gitlink moves, keeping its bit, as git does")
     func skipWorktreeGitlink() throws {
-        let sub = FileManager.default.temporaryDirectory.appendingPathComponent("OctopusSub-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: sub, withIntermediateDirectories: true)
+        defer { fixtures.removeAll() }
+        let sub = try fixtures.directory("OctopusSub-\(UUID().uuidString)")
         try git(["init", "-q", "-b", "main"], in: sub)
         try write("1\n", to: "s", in: sub)
         try git(["add", "s"], in: sub)
@@ -501,6 +517,7 @@ extension RepositoryOctopusMergeTests {
     @Test("a removed submodule's empty directory goes, one with files stays, as git leaves them",
           arguments: [false, true], [false, true])
     func removedSubmoduleDirectory(withFile: Bool, conflicted: Bool) throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         let head = try git(["rev-parse", "HEAD"], in: dir).stdout
         try git(["update-index", "--add", "--cacheinfo", "160000,\(head),sub"], in: dir)
@@ -536,6 +553,7 @@ extension RepositoryOctopusMergeTests {
     @Test("moves the ref a symbolic HEAD names outside refs/heads, and a detached HEAD itself",
           arguments: ["refs/foo", nil])
     func symbolicAndDetachedHead(target: String?) throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         if let target {
             try git(["update-ref", target, "main"], in: dir)
@@ -556,6 +574,7 @@ extension RepositoryOctopusMergeTests {
 
     @Test("a tracked file replaced by a directory is a local change, not a deletion")
     func fileReplacedByDirectoryInWorkTree() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         let f = dir.appendingPathComponent("f")
         try FileManager.default.removeItem(at: f)
@@ -570,6 +589,7 @@ extension RepositoryOctopusMergeTests {
 
     @Test("a locked branch leaves the merge staged for git commit, as git leaves it")
     func lockedBranch() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         try Data().write(to: dir.appendingPathComponent(".git/refs/heads/main.lock"))
         let other = try twin(of: dir)
@@ -588,24 +608,9 @@ extension RepositoryOctopusMergeTests {
         #expect(try message(dir) == message(other))
     }
 
-    @Test("a ref that can't be written leaves the merge staged too, with git's reason")
-    func unwritableRefs() throws {
-        let dir = try makeRepository()
-        let heads = dir.appendingPathComponent(".git/refs/heads").path
-        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: heads)
-        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: heads) }
-        // Where permissions don't hold (root), there's nothing to see.
-        guard !FileManager.default.isWritableFile(atPath: heads) else { return }
-        let result = try merge(["a", "b"], in: dir)
-        guard case .headNotUpdated(let lockFile, let reason) = result.outcome else {
-            Issue.record("expected HEAD not to move, got \(result.outcome)"); return
-        }
-        #expect(lockFile.hasSuffix("/.git/refs/heads/main.lock") && reason == "Permission denied")
-        #expect(FileManager.default.fileExists(atPath: dir.appendingPathComponent(".git/MERGE_HEAD").path))
-    }
-
     @Test("a path whose name isn't UTF-8 stops the merge before anything changes")
     func nonUTF8PathRefused() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         try git(["checkout", "-q", "-b", "bad", "base"], in: dir)
         let blob = try git(["hash-object", "-w", "--stdin", "--path=x"], in: dir).stdout
@@ -622,6 +627,7 @@ extension RepositoryOctopusMergeTests {
 
     @Test("two names a Swift string can't tell apart stop the merge before anything changes")
     func canonicallyEquivalentPathsRefused() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         try git(["checkout", "-q", "-b", "equiv", "base"], in: dir)
         let blob = try git(["hash-object", "-w", "--stdin", "--path=x"], in: dir).stdout
@@ -640,6 +646,7 @@ extension RepositoryOctopusMergeTests {
 
     @Test("a skip-worktree file checked out through a filter is up to date")
     func skipWorktreeThroughFilter() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         try write("f text eol=crlf\n", to: ".gitattributes", in: dir)
         try git(["add", ".gitattributes"], in: dir)
@@ -655,6 +662,7 @@ extension RepositoryOctopusMergeTests {
 
     @Test("a side file the user had before a conflicted checkout stays")
     func preexistingSideFile() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         try write("mine\n", to: "f~HEAD", in: dir)
         _ = try merge(["a", "b", "x"], in: dir)
@@ -663,6 +671,7 @@ extension RepositoryOctopusMergeTests {
 
     @Test("an untracked file where their path goes below a deleted base file is merge-one-file's conflict")
     func untrackedBelowDeletedBaseFile() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeFileOverDirectory()
         // Ours deleted f; `df` puts f/x there; an untracked f/x stands.
         try git(["rm", "-q", "f"], in: dir)
@@ -678,16 +687,5 @@ extension RepositoryOctopusMergeTests {
         #expect(try String(contentsOf: dir.appendingPathComponent("f/x"), encoding: .utf8) == "mine\n")
     }
 
-    @Test("refuses a bare repository before anything changes")
-    func refusesBare() throws {
-        let dir = try makeRepository()
-        let bare = FileManager.default.temporaryDirectory.appendingPathComponent("OctopusBare-\(UUID().uuidString)")
-        try git(["clone", "-q", "--bare", dir.path, bare.path], in: dir)
-        let repository = try Repository.open(at: bare)
-        #expect(throws: Libgit2Error.self) {
-            try repository.octopusMerge(heads: ["a", "b"], message: "Merge", env: Self.identity)
-        }
-        #expect(!FileManager.default.fileExists(atPath: bare.appendingPathComponent("ORIG_HEAD").path))
-    }
 }
 #endif

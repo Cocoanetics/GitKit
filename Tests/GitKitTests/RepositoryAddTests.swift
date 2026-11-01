@@ -11,10 +11,10 @@ import Testing
 @Suite("Repository.add")
 struct RepositoryAddTests {
 
+    private let fixtures = TemporaryRepositories()
+
     private func makeRepo() throws -> URL {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("RepositoryAddTests-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dir = try fixtures.directory("RepositoryAddTests-\(UUID().uuidString)")
         try runGit(["init", "-b", "main"], in: dir)
         try runGit(["config", "user.email", "t@e.com"], in: dir)
         try runGit(["config", "user.name", "T"], in: dir)
@@ -49,6 +49,7 @@ struct RepositoryAddTests {
 
     @Test("add with empty paths stages everything")
     func addEverything() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         try Data("a\n".utf8).write(to: dir.appendingPathComponent("a.txt"))
@@ -63,6 +64,7 @@ struct RepositoryAddTests {
 
     @Test("add with explicit pathspec stages only that path")
     func addOnePath() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         try Data("a\n".utf8).write(to: dir.appendingPathComponent("a.txt"))
@@ -77,6 +79,7 @@ struct RepositoryAddTests {
 
     @Test("add with multiple pathspecs stages each")
     func addMultiplePaths() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         try Data("a\n".utf8).write(to: dir.appendingPathComponent("a.txt"))
@@ -92,6 +95,7 @@ struct RepositoryAddTests {
 
     @Test("add then commit produces a commit with only staged paths")
     func addThenCommit() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         try Data("a\n".utf8).write(to: dir.appendingPathComponent("a.txt"))

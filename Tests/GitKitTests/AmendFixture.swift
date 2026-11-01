@@ -18,10 +18,8 @@ enum AmendFixture {
         let description: String
     }
 
-    static func makeRepo() throws -> URL {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("RepositoryAmendTests-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    static func makeRepo(in fixtures: TemporaryRepositories) throws -> URL {
+        let dir = try fixtures.directory("RepositoryAmendTests-\(UUID().uuidString)")
         try git(["init", "-q", "-b", "main"], in: dir)
         try git(["config", "user.email", "t@e.com"], in: dir)
         try git(["config", "user.name", "T"], in: dir)
@@ -142,12 +140,10 @@ enum AmendFixture {
         after: (_ viaGit: URL, _ viaKit: URL) throws -> Void = { _, _ in },
         amend: (Repository, [String: String]) throws -> Libgit2CommitDetails
     ) throws -> Libgit2CommitDetails {
-        let viaGit = try makeRepo()
-        let viaKit = try makeRepo()
-        defer {
-            try? FileManager.default.removeItem(at: viaGit)
-            try? FileManager.default.removeItem(at: viaKit)
-        }
+        let fixtures = TemporaryRepositories()
+        defer { fixtures.removeAll() }
+        let viaGit = try makeRepo(in: fixtures)
+        let viaKit = try makeRepo(in: fixtures)
         try setup(viaGit)
         try setup(viaKit)
         let amendEnv = env.merging(["GIT_COMMITTER_DATE": commitDate]) { $1 }
@@ -183,12 +179,10 @@ enum AmendFixture {
         after: (_ viaGit: URL, _ viaKit: URL) throws -> Void = { _, _ in },
         amend: (Repository, [String: String]) throws -> Void
     ) throws {
-        let viaGit = try makeRepo()
-        let viaKit = try makeRepo()
-        defer {
-            try? FileManager.default.removeItem(at: viaGit)
-            try? FileManager.default.removeItem(at: viaKit)
-        }
+        let fixtures = TemporaryRepositories()
+        defer { fixtures.removeAll() }
+        let viaGit = try makeRepo(in: fixtures)
+        let viaKit = try makeRepo(in: fixtures)
         try setup(viaGit)
         try setup(viaKit)
         let env = env.merging(["GIT_COMMITTER_DATE": commitDate]) { $1 }

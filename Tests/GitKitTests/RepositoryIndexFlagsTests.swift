@@ -8,11 +8,11 @@ import Testing
 @Suite("Repository index entry flags")
 struct RepositoryIndexFlagsTests {
 
+    private let fixtures = TemporaryRepositories()
+
     /// A repository with two committed files, `config.json` and `other.txt`.
     private func makeRepo() throws -> URL {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("RepositoryIndexFlagsTests-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dir = try fixtures.directory("RepositoryIndexFlagsTests-\(UUID().uuidString)")
         try runGit(["init", "-b", "main"], in: dir)
         try runGit(["config", "user.email", "t@e.com"], in: dir)
         try runGit(["config", "user.name", "T"], in: dir)
@@ -62,6 +62,7 @@ struct RepositoryIndexFlagsTests {
 
     @Test("isTracked matches git ls-files --error-unmatch for files, new files and directories")
     func isTracked() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         try FileManager.default.createDirectory(
@@ -77,6 +78,7 @@ struct RepositoryIndexFlagsTests {
 
     @Test("isTracked sees a path git added after the repository was opened")
     func isTrackedRereadsTheIndex() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         let repo = try Repository.open(at: dir)
@@ -89,6 +91,7 @@ struct RepositoryIndexFlagsTests {
 
     @Test("setSkipWorktree matches git update-index --skip-worktree and ls-files -v")
     func skipWorktreeParity() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         let repo = try Repository.open(at: dir)
@@ -106,6 +109,7 @@ struct RepositoryIndexFlagsTests {
 
     @Test("GitKit reads a skip-worktree bit that git set")
     func readsGitsSkipWorktree() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         try runGit(["update-index", "--skip-worktree", "config.json"], in: dir)
@@ -119,6 +123,7 @@ struct RepositoryIndexFlagsTests {
 
     @Test("setAssumeUnchanged matches git update-index --assume-unchanged")
     func assumeUnchangedParity() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         let repo = try Repository.open(at: dir)
@@ -133,6 +138,7 @@ struct RepositoryIndexFlagsTests {
 
     @Test("a skip-worktree file's local change is neither reported nor staged")
     func skipWorktreeKeepsChangesOutOfStageAll() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         let repo = try Repository.open(at: dir)
@@ -153,6 +159,7 @@ struct RepositoryIndexFlagsTests {
 
     @Test("with core.ignorecase, a case-mismatched path is neither tracked nor marked")
     func exactCaseUnderIgnoreCase() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         try runGit(["config", "core.ignorecase", "true"], in: dir)
@@ -167,6 +174,7 @@ struct RepositoryIndexFlagsTests {
 
     @Test("indexedEntries sees flags and entries git changed after the repository was opened")
     func indexedEntriesRereadsTheIndex() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         let repo = try Repository.open(at: dir)
@@ -178,6 +186,7 @@ struct RepositoryIndexFlagsTests {
 
     @Test("marking a file keeps what git staged after the repository was opened")
     func setterDoesNotOverwriteANewerIndex() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         let repo = try Repository.open(at: dir)
@@ -192,6 +201,7 @@ struct RepositoryIndexFlagsTests {
 
     @Test("an untracked path throws like git's 'Unable to mark file'")
     func untrackedPathThrows() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         try Data("new\n".utf8).write(to: dir.appendingPathComponent("new.txt"))
@@ -202,6 +212,7 @@ struct RepositoryIndexFlagsTests {
 
     @Test("a held index.lock throws isLocked and leaves the index unchanged")
     func heldLockThrowsWithoutChangingTheIndex() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         let repo = try Repository.open(at: dir)

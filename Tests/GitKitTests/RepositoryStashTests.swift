@@ -12,10 +12,10 @@ import Testing
 @Suite("Repository.stash")
 struct RepositoryStashTests {
 
+    private let fixtures = TemporaryRepositories()
+
     private func makeRepoWithCommit() throws -> URL {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("StashTests-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dir = try fixtures.directory("StashTests-\(UUID().uuidString)")
         try runGit(["init", "-b", "main"], in: dir)
         try runGit(["config", "user.email", "t@e.com"], in: dir)
         try runGit(["config", "user.name", "T"], in: dir)
@@ -53,6 +53,7 @@ struct RepositoryStashTests {
 
     @Test("save then list captures the entry with index 0")
     func saveAndList() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepoWithCommit()
         defer { try? FileManager.default.removeItem(at: dir) }
         try Data("v2\n".utf8).write(to: dir.appendingPathComponent("file.txt"))
@@ -70,6 +71,7 @@ struct RepositoryStashTests {
 
     @Test("apply restores the working tree change")
     func applyRestoresWorkingTree() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepoWithCommit()
         defer { try? FileManager.default.removeItem(at: dir) }
         try Data("v2\n".utf8).write(to: dir.appendingPathComponent("file.txt"))
@@ -92,6 +94,7 @@ struct RepositoryStashTests {
 
     @Test("pop applies and removes the entry")
     func popAppliesAndRemoves() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepoWithCommit()
         defer { try? FileManager.default.removeItem(at: dir) }
         try Data("v2\n".utf8).write(to: dir.appendingPathComponent("file.txt"))
@@ -108,6 +111,7 @@ struct RepositoryStashTests {
 
     @Test("drop removes one entry without applying it")
     func dropRemoves() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepoWithCommit()
         defer { try? FileManager.default.removeItem(at: dir) }
         try Data("v2\n".utf8).write(to: dir.appendingPathComponent("file.txt"))
@@ -125,6 +129,7 @@ struct RepositoryStashTests {
 
     @Test("clear removes every entry, newest-to-oldest")
     func clearRemovesAll() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepoWithCommit()
         defer { try? FileManager.default.removeItem(at: dir) }
 
@@ -144,6 +149,7 @@ struct RepositoryStashTests {
 
     @Test("show returns diff stats against the parent commit")
     func showReportsStats() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepoWithCommit()
         defer { try? FileManager.default.removeItem(at: dir) }
         try Data("v2\nadded\n".utf8).write(to: dir.appendingPathComponent("file.txt"))
@@ -158,6 +164,7 @@ struct RepositoryStashTests {
 
     @Test("branch creates a new branch and applies the stash there")
     func branchAppliesOnNewBranch() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepoWithCommit()
         defer { try? FileManager.default.removeItem(at: dir) }
         try Data("v2\n".utf8).write(to: dir.appendingPathComponent("file.txt"))

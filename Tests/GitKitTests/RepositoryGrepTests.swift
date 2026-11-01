@@ -10,10 +10,10 @@ import Testing
 @Suite("Repository.grep")
 struct RepositoryGrepTests {
 
+    private let fixtures = TemporaryRepositories()
+
     private func makeRepo() throws -> URL {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("Libgit2Grep-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dir = try fixtures.directory("Libgit2Grep-\(UUID().uuidString)")
         try runGit(["init", "-b", "main"], in: dir)
         try runGit(["config", "user.email", "t@e.com"], in: dir)
         try runGit(["config", "user.name", "T"], in: dir)
@@ -60,6 +60,7 @@ struct RepositoryGrepTests {
 
     @Test("grep matches a tracked line with path + 1-indexed line number")
     func tracked() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         try write("hello world\nfoo bar\nbaz\n", to: "a.txt", in: dir)
@@ -77,6 +78,7 @@ struct RepositoryGrepTests {
 
     @Test("grep skips gitignored files because they aren't in the index")
     func skipsIgnored() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         try write("*.log\n", to: ".gitignore", in: dir)
@@ -92,6 +94,7 @@ struct RepositoryGrepTests {
 
     @Test("grep --untracked includes untracked-not-ignored files")
     func untracked() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         try write("*.log\n", to: ".gitignore", in: dir)
@@ -115,6 +118,7 @@ struct RepositoryGrepTests {
 
     @Test("grep honours .caseInsensitive option")
     func caseInsensitive() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         try write("HELLO\nhello\nHeLLo\n", to: "a.txt", in: dir)
@@ -133,6 +137,7 @@ struct RepositoryGrepTests {
 
     @Test("grep pathFilters narrow by basename glob")
     func pathFilters() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         try write("needle\n", to: "src/a.swift", in: dir)
@@ -148,6 +153,7 @@ struct RepositoryGrepTests {
 
     @Test("grep skips binary files silently")
     func skipsBinary() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         try write("text needle\n", to: "a.txt", in: dir)

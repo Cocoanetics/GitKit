@@ -11,6 +11,8 @@ import Testing
 @Suite("Repository.log")
 struct RepositoryLogTests {
 
+    private let fixtures = TemporaryRepositories()
+
     @discardableResult
     private func runGit(_ args: [String], in dir: URL) throws -> String {
         let p = Process()
@@ -38,9 +40,7 @@ struct RepositoryLogTests {
     /// Build a repo with three sequential commits c1/c2/c3 each
     /// touching its own file `fN.txt`. Used by most tests.
     private func makeLinearRepo() throws -> URL {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("LogTests-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dir = try fixtures.directory("LogTests-\(UUID().uuidString)")
         try runGit(["init", "-b", "main"], in: dir)
         try runGit(["config", "user.email", "tester@example.com"], in: dir)
         try runGit(["config", "user.name", "Test User"], in: dir)
@@ -54,6 +54,7 @@ struct RepositoryLogTests {
 
     @Test("default walk returns all commits, newest first")
     func defaultWalk() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeLinearRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
 
@@ -68,6 +69,7 @@ struct RepositoryLogTests {
 
     @Test("maxCount caps the result")
     func maxCount() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeLinearRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         let entries = try Repository.open(at: dir)
@@ -78,6 +80,7 @@ struct RepositoryLogTests {
 
     @Test("range query (a..b form) excludes a's ancestors")
     func rangeQuery() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeLinearRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         // HEAD~2..HEAD = commit 2 + commit 3 (everything since the
@@ -89,6 +92,7 @@ struct RepositoryLogTests {
 
     @Test("path filter restricts to commits touching <path>")
     func pathFilter() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeLinearRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         let entries = try Repository.open(at: dir)
@@ -99,6 +103,7 @@ struct RepositoryLogTests {
 
     @Test("merge commits expose multiple parents")
     func mergeCommitParents() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeLinearRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         try runGit(["checkout", "-b", "feat"], in: dir)
@@ -117,6 +122,7 @@ struct RepositoryLogTests {
 
     @Test("default format matches `git log` byte-for-byte (sans variable date)")
     func defaultFormatParity() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeLinearRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         let entries = try Repository.open(at: dir).log()
@@ -144,6 +150,7 @@ struct RepositoryLogTests {
 
     @Test("oneline format matches real git")
     func onelineFormatParity() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeLinearRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         let entries = try Repository.open(at: dir).log()
@@ -159,6 +166,7 @@ struct RepositoryLogTests {
 
     @Test("format string %H%n%an%n%s expands correctly")
     func formatStringExpansion() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeLinearRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         let entries = try Repository.open(at: dir).log()
@@ -173,6 +181,7 @@ struct RepositoryLogTests {
 
     @Test("body separates from subject correctly")
     func subjectAndBody() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeLinearRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         let entries = try Repository.open(at: dir).log()
@@ -183,9 +192,8 @@ struct RepositoryLogTests {
 
     @Test("empty repo returns empty log without throwing")
     func emptyRepoNoCrash() throws {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("LogEmpty-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { fixtures.removeAll() }
+        let dir = try fixtures.directory("LogEmpty-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: dir) }
         try runGit(["init", "-b", "main"], in: dir)
 

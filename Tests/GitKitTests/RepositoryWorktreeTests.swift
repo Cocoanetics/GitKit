@@ -10,6 +10,8 @@ import Testing
 @Suite("Repository worktrees")
 struct RepositoryWorktreeTests {
 
+    private let fixtures = TemporaryRepositories()
+
     @discardableResult
     private func runGit(_ args: [String], in dir: URL) throws -> String {
         let p = Process()
@@ -37,9 +39,7 @@ struct RepositoryWorktreeTests {
     }
 
     private func makeRepo() throws -> URL {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("WorktreeTests-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dir = try fixtures.directory("WorktreeTests-\(UUID().uuidString)")
         try runGit(["init", "-b", "main"], in: dir)
         try runGit(["config", "user.email", "t@e.com"], in: dir)
         try runGit(["config", "user.name", "T"], in: dir)
@@ -50,9 +50,7 @@ struct RepositoryWorktreeTests {
     }
 
     private func makeSubmoduleSource() throws -> URL {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("WorktreeSubmodule-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dir = try fixtures.directory("WorktreeSubmodule-\(UUID().uuidString)")
         try runGit(["init", "-b", "main"], in: dir)
         try runGit(["config", "user.email", "t@e.com"], in: dir)
         try runGit(["config", "user.name", "T"], in: dir)
@@ -73,6 +71,7 @@ struct RepositoryWorktreeTests {
 
     @Test("add creates branch, list reports metadata, remove deletes directory")
     func addListRemoveRoundTrip() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         let worktree = siblingWorktree(of: dir)
         defer { try? FileManager.default.removeItem(at: worktree) }
@@ -109,6 +108,7 @@ struct RepositoryWorktreeTests {
 
     @Test("list reports primary first when opened from linked worktree")
     func listFromLinkedWorktreeReportsPrimaryFirst() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         let worktree = siblingWorktree(of: dir)
         defer { try? FileManager.default.removeItem(at: worktree) }
@@ -140,6 +140,7 @@ struct RepositoryWorktreeTests {
 
     @Test("add can check out an existing branch")
     func addExistingBranch() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         let worktree = siblingWorktree(of: dir)
         defer { try? FileManager.default.removeItem(at: worktree) }
@@ -156,6 +157,7 @@ struct RepositoryWorktreeTests {
 
     @Test("remove refuses dirty worktree unless forced")
     func removeDirtyRequiresForce() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         let worktree = siblingWorktree(of: dir)
         defer { try? FileManager.default.removeItem(at: worktree) }
@@ -179,9 +181,9 @@ struct RepositoryWorktreeTests {
 
     @Test("add chooses unique names for duplicate path basenames")
     func addDuplicateBasenames() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
-        let parent = FileManager.default.temporaryDirectory
-            .appendingPathComponent("WorktreeParents-\(UUID().uuidString)")
+        let parent = fixtures.url("WorktreeParents-\(UUID().uuidString)")
         let first = parent.appendingPathComponent("one/wt")
         let second = parent.appendingPathComponent("two/wt")
         try FileManager.default.createDirectory(
@@ -207,6 +209,7 @@ struct RepositoryWorktreeTests {
 
     @Test("add creates missing branch at an explicit start point")
     func addCreatesBranchAtStartPoint() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         let worktree = siblingWorktree(of: dir)
         defer { try? FileManager.default.removeItem(at: worktree) }
@@ -230,6 +233,7 @@ struct RepositoryWorktreeTests {
 
     @Test("add tracks a remote-tracking start point, like git worktree add")
     func addTracksRemoteTrackingStartPoint() throws {
+        defer { fixtures.removeAll() }
         let origin = try makeRepo()
         defer { try? FileManager.default.removeItem(at: origin) }
 
@@ -254,6 +258,7 @@ struct RepositoryWorktreeTests {
 
     @Test("prune removes administrative data for worktrees whose directory is gone")
     func pruneRemovesMissingWorktree() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         let worktree = siblingWorktree(of: dir)
         defer { try? FileManager.default.removeItem(at: worktree) }
@@ -273,6 +278,7 @@ struct RepositoryWorktreeTests {
 
     @Test("prune leaves worktrees with a present directory untouched")
     func pruneLeavesPresentWorktreeAlone() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         let worktree = siblingWorktree(of: dir)
         defer { try? FileManager.default.removeItem(at: worktree) }
@@ -291,6 +297,7 @@ struct RepositoryWorktreeTests {
 
     @Test("prune leaves a locked worktree's administrative data alone")
     func pruneLeavesLockedWorktreeAlone() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         let worktree = siblingWorktree(of: dir)
         defer { try? FileManager.default.removeItem(at: worktree) }
@@ -312,6 +319,7 @@ struct RepositoryWorktreeTests {
 
     @Test("remove refuses checked-out submodules unless forced")
     func removeSubmoduleRequiresForce() throws {
+        defer { fixtures.removeAll() }
         let submoduleSource = try makeSubmoduleSource()
         let dir = try makeRepo()
         let worktree = siblingWorktree(of: dir)

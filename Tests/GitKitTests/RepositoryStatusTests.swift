@@ -11,6 +11,8 @@ import Testing
 @Suite("Repository.status")
 struct RepositoryStatusTests {
 
+    private let fixtures = TemporaryRepositories()
+
     @discardableResult
     private func runGit(_ args: [String], in dir: URL) throws -> String {
         let p = Process()
@@ -37,9 +39,7 @@ struct RepositoryStatusTests {
     }
 
     private func makeRepoMixedState() throws -> URL {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("StatusTests-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dir = try fixtures.directory("StatusTests-\(UUID().uuidString)")
         try runGit(["init", "-b", "main"], in: dir)
         try runGit(["config", "user.email", "t@e.com"], in: dir)
         try runGit(["config", "user.name", "T"], in: dir)
@@ -58,6 +58,7 @@ struct RepositoryStatusTests {
 
     @Test("status splits entries into staged / unstaged / untracked")
     func threeWaySplit() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepoMixedState()
         defer { try? FileManager.default.removeItem(at: dir) }
 
@@ -74,9 +75,8 @@ struct RepositoryStatusTests {
 
     @Test("clean tree: no entries, isClean true")
     func cleanTree() throws {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("StatusTests-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { fixtures.removeAll() }
+        let dir = try fixtures.directory("StatusTests-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: dir) }
         try runGit(["init", "-b", "main"], in: dir)
         try runGit(["config", "user.email", "t@e.com"], in: dir)
@@ -92,9 +92,8 @@ struct RepositoryStatusTests {
 
     @Test("unborn HEAD: isUnborn=true, branchName still resolved")
     func unbornHead() throws {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("StatusTests-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { fixtures.removeAll() }
+        let dir = try fixtures.directory("StatusTests-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: dir) }
         try runGit(["init", "-b", "main"], in: dir)
         try Data("x\n".utf8).write(to: dir.appendingPathComponent("a.txt"))
@@ -107,6 +106,7 @@ struct RepositoryStatusTests {
 
     @Test("short format matches `git status --porcelain` byte-for-byte")
     func shortFormatParity() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepoMixedState()
         defer { try? FileManager.default.removeItem(at: dir) }
         let ours = try Repository.open(at: dir)
@@ -117,6 +117,7 @@ struct RepositoryStatusTests {
 
     @Test("verbose format matches `git status` byte-for-byte")
     func verboseFormatParity() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepoMixedState()
         defer { try? FileManager.default.removeItem(at: dir) }
         let ours = try Repository.open(at: dir)
@@ -132,6 +133,7 @@ struct RepositoryStatusTests {
 
     @Test("short -b prints `## <branch>` header")
     func shortBranchHeader() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepoMixedState()
         defer { try? FileManager.default.removeItem(at: dir) }
         let ours = try Repository.open(at: dir)
@@ -142,10 +144,9 @@ struct RepositoryStatusTests {
 
     @Test("conflicted entries surface as isConflicted")
     func conflictedEntry() throws {
+        defer { fixtures.removeAll() }
         // Build a real merge conflict via the CLI, then read status.
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("StatusTests-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dir = try fixtures.directory("StatusTests-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: dir) }
         try runGit(["init", "-b", "main"], in: dir)
         try runGit(["config", "user.email", "t@e.com"], in: dir)

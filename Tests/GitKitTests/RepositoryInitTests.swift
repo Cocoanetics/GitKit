@@ -5,13 +5,15 @@ import Testing
 @Suite("Repository.initialize")
 struct RepositoryInitTests {
 
+    private let fixtures = TemporaryRepositories()
+
     private func tmpDir() -> URL {
-        FileManager.default.temporaryDirectory
-            .appendingPathComponent("InitRepo-\(UUID().uuidString)")
+        fixtures.url("InitRepo-\(UUID().uuidString)")
     }
 
     @Test("init creates a .git directory with HEAD pointing at the default branch")
     func initWorking() throws {
+        defer { fixtures.removeAll() }
         let dir = tmpDir()
         defer { try? FileManager.default.removeItem(at: dir) }
         try Repository.initialize(at: dir, initialBranch: "main")
@@ -24,6 +26,7 @@ struct RepositoryInitTests {
 
     @Test("init --bare lays out the bare object store directly in the dir")
     func initBare() throws {
+        defer { fixtures.removeAll() }
         let dir = tmpDir()
         defer { try? FileManager.default.removeItem(at: dir) }
         try Repository.initialize(at: dir, bare: true, initialBranch: "main")
@@ -35,6 +38,7 @@ struct RepositoryInitTests {
 
     @Test("init defaults to master when no initial branch is given")
     func initDefaultBranch() throws {
+        defer { fixtures.removeAll() }
         let dir = tmpDir()
         defer { try? FileManager.default.removeItem(at: dir) }
         try Repository.initialize(at: dir)
@@ -48,6 +52,7 @@ struct RepositoryInitTests {
 
     @Test("init with reinit=true succeeds on an existing repo")
     func reinitIdempotent() throws {
+        defer { fixtures.removeAll() }
         let dir = tmpDir()
         defer { try? FileManager.default.removeItem(at: dir) }
         try Repository.initialize(at: dir, initialBranch: "main")

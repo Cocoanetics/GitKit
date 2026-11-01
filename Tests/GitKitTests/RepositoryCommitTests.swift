@@ -11,13 +11,13 @@ import Testing
 @Suite("Repository.commit")
 struct RepositoryCommitTests {
 
+    private let fixtures = TemporaryRepositories()
+
     /// Build a tmp repo using the `git` CLI for setup. The CLI is *only*
     /// for fixture creation; everything we assert against goes through
     /// `Repository` so the test exercises libgit2 end-to-end.
     private func makeRepo() throws -> URL {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("RepositoryCommitTests-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dir = try fixtures.directory("RepositoryCommitTests-\(UUID().uuidString)")
         try runGit(["init", "-b", "main"], in: dir)
         try runGit(["config", "user.email", "test@example.com"], in: dir)
         try runGit(["config", "user.name", "Test"], in: dir)
@@ -52,6 +52,7 @@ struct RepositoryCommitTests {
 
     @Test("first commit on unborn HEAD")
     func firstCommit() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         try Data("hello\n".utf8).write(to: dir.appendingPathComponent("README.md"))
@@ -77,6 +78,7 @@ struct RepositoryCommitTests {
 
     @Test("second commit on top of first")
     func secondCommit() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
 
@@ -103,6 +105,7 @@ struct RepositoryCommitTests {
 
     @Test("empty commit refused without --allow-empty")
     func emptyCommitRefused() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
 
@@ -122,6 +125,7 @@ struct RepositoryCommitTests {
 
     @Test("empty commit allowed with --allow-empty")
     func emptyCommitAllowed() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
 
@@ -143,6 +147,7 @@ struct RepositoryCommitTests {
 
     @Test("commits with nil author use repo config")
     func defaultSignatureFromConfig() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         try Data("x\n".utf8).write(to: dir.appendingPathComponent("x.txt"))

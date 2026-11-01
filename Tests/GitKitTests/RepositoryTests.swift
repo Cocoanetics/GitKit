@@ -19,13 +19,13 @@ private final class ProgressLog: @unchecked Sendable {
 @Suite("Repository")
 struct RepositoryTests {
 
+    private let fixtures = TemporaryRepositories()
+
     // Local-only round-trip — no network. We init a repo with the
     // command-line `git` binary (so we don't depend on libgit2's init
     // path in the test), then exercise the libgit2-backed reads.
     private func makeFixtureRepo(withCommit: Bool = true) throws -> URL {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("RepositoryTests-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dir = try fixtures.directory("RepositoryTests-\(UUID().uuidString)")
 
         try runGit(["init", "-b", "main"], in: dir)
         try runGit(["config", "user.email", "test@example.com"], in: dir)
@@ -41,9 +41,7 @@ struct RepositoryTests {
     }
 
     private func makeBareOrigin() throws -> URL {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("RepositoryTests-origin-\(UUID().uuidString).git")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dir = try fixtures.directory("RepositoryTests-origin-\(UUID().uuidString).git")
         try runGit(["init", "--bare"], in: dir)
         return dir
     }
@@ -76,8 +74,8 @@ struct RepositoryTests {
 
     @Test("currentBranch reports the HEAD shorthand")
     func currentBranch() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeFixtureRepo()
-        defer { try? FileManager.default.removeItem(at: dir) }
 
         let repo = try Repository.open(at: dir)
         let branch = try repo.currentBranch()
@@ -86,8 +84,8 @@ struct RepositoryTests {
 
     @Test("currentBranch returns nil when HEAD is unborn")
     func currentBranchUnborn() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeFixtureRepo(withCommit: false)
-        defer { try? FileManager.default.removeItem(at: dir) }
 
         let repo = try Repository.open(at: dir)
         let branch = try repo.currentBranch()
@@ -96,8 +94,8 @@ struct RepositoryTests {
 
     @Test("addRemote then remoteURL round-trips a URL")
     func addAndReadRemote() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeFixtureRepo()
-        defer { try? FileManager.default.removeItem(at: dir) }
 
         let repo = try Repository.open(at: dir)
         let url = URL(string: "https://github.com/example/repo.git")!
@@ -109,10 +107,9 @@ struct RepositoryTests {
 
     @Test("push accepts a short main branch refspec")
     func pushShortMainBranch() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeFixtureRepo()
-        defer { try? FileManager.default.removeItem(at: dir) }
         let origin = try makeBareOrigin()
-        defer { try? FileManager.default.removeItem(at: origin) }
 
         let repo = try Repository.open(at: dir)
         try repo.addRemote(name: "origin", url: origin)
@@ -127,10 +124,9 @@ struct RepositoryTests {
 
     @Test("push prints git's summary for each kind of ref update")
     func pushSummaryLines() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeFixtureRepo()
-        defer { try? FileManager.default.removeItem(at: dir) }
         let origin = try makeBareOrigin()
-        defer { try? FileManager.default.removeItem(at: origin) }
 
         let repo = try Repository.open(at: dir)
         try repo.addRemote(name: "origin", url: origin)
@@ -208,10 +204,9 @@ struct RepositoryTests {
 
     @Test("fetch and push take a path, like git's <repository>")
     func fetchAndPushAPath() throws {
+        defer { fixtures.removeAll() }
         let source = try makeFixtureRepo()
-        defer { try? FileManager.default.removeItem(at: source) }
         let origin = try makeBareOrigin()
-        defer { try? FileManager.default.removeItem(at: origin) }
 
         // push <path> main, with -u: no remote is configured.
         let repo = try Repository.open(at: source)
@@ -225,7 +220,6 @@ struct RepositoryTests {
 
         // fetch <path> <refspec>, and fetch <path> main into FETCH_HEAD.
         let dest = try makeFixtureRepo(withCommit: false)
-        defer { try? FileManager.default.removeItem(at: dest) }
         let fetcher = try Repository.open(at: dest)
         try fetcher.fetch(remote: origin.path, refspec: "refs/heads/main:refs/heads/fetched",
                           progress: { _ in })
@@ -237,10 +231,9 @@ struct RepositoryTests {
 
     @Test("a tracking lease on a URL or path expects the branch absent")
     func trackingLeaseOnAPath() throws {
+        defer { fixtures.removeAll() }
         let source = try makeFixtureRepo()
-        defer { try? FileManager.default.removeItem(at: source) }
         let origin = try makeBareOrigin()
-        defer { try? FileManager.default.removeItem(at: origin) }
 
         let repo = try Repository.open(at: source)
         // Absent on the remote: the leased push goes through.
@@ -258,8 +251,8 @@ struct RepositoryTests {
 
     @Test("a remote that is neither configured nor a repository fails")
     func unknownRemoteFails() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeFixtureRepo()
-        defer { try? FileManager.default.removeItem(at: dir) }
         let repo = try Repository.open(at: dir)
         #expect(throws: Libgit2Error.self) {
             try repo.fetch(remote: "orign", refspec: "main", progress: { _ in })
@@ -268,10 +261,9 @@ struct RepositoryTests {
 
     @Test("push accepts a short nested branch refspec")
     func pushShortNestedBranch() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeFixtureRepo()
-        defer { try? FileManager.default.removeItem(at: dir) }
         let origin = try makeBareOrigin()
-        defer { try? FileManager.default.removeItem(at: origin) }
 
         try runGit(["checkout", "-b", "agent/issue-1"], in: dir)
         let repo = try Repository.open(at: dir)
@@ -289,13 +281,10 @@ struct RepositoryTests {
 
     @Test("push accepts a short nested branch refspec from a linked worktree")
     func pushShortNestedBranchFromWorktree() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeFixtureRepo()
-        defer { try? FileManager.default.removeItem(at: dir) }
         let origin = try makeBareOrigin()
-        defer { try? FileManager.default.removeItem(at: origin) }
-        let worktree = FileManager.default.temporaryDirectory
-            .appendingPathComponent("RepositoryTests-worktree-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: worktree) }
+        let worktree = fixtures.url("RepositoryTests-worktree-\(UUID().uuidString)")
 
         let repo = try Repository.open(at: dir)
         try repo.addRemote(name: "origin", url: origin)
@@ -315,10 +304,9 @@ struct RepositoryTests {
 
     @Test("push accepts detached HEAD and retains fast-forward protection")
     func pushDetachedHEAD() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeFixtureRepo()
-        defer { try? FileManager.default.removeItem(at: dir) }
         let origin = try makeBareOrigin()
-        defer { try? FileManager.default.removeItem(at: origin) }
 
         let headSHA = try runGit(["rev-parse", "HEAD"], in: dir)
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -363,10 +351,9 @@ struct RepositoryTests {
 
     @Test("push HEAD sets upstream for the attached branch")
     func pushAttachedHEADSetUpstream() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeFixtureRepo()
-        defer { try? FileManager.default.removeItem(at: dir) }
         let origin = try makeBareOrigin()
-        defer { try? FileManager.default.removeItem(at: origin) }
 
         let repo = try Repository.open(at: dir)
         try repo.addRemote(name: "origin", url: origin)
@@ -384,10 +371,9 @@ struct RepositoryTests {
 
     @Test("push accepts a short tag refspec")
     func pushShortTag() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeFixtureRepo()
-        defer { try? FileManager.default.removeItem(at: dir) }
         let origin = try makeBareOrigin()
-        defer { try? FileManager.default.removeItem(at: origin) }
 
         try runGit(["tag", "release"], in: dir)
         let repo = try Repository.open(at: dir)
@@ -403,10 +389,9 @@ struct RepositoryTests {
 
     @Test("push rejects ambiguous branch and tag shorthand")
     func pushRejectsAmbiguousBranchAndTag() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeFixtureRepo()
-        defer { try? FileManager.default.removeItem(at: dir) }
         let origin = try makeBareOrigin()
-        defer { try? FileManager.default.removeItem(at: origin) }
 
         try runGit(["branch", "release"], in: dir)
         try runGit(["tag", "release"], in: dir)
@@ -425,10 +410,9 @@ struct RepositoryTests {
 
     @Test("push setUpstream tracks destination branch for renamed refspec")
     func pushSetUpstreamTracksDestinationBranch() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeFixtureRepo()
-        defer { try? FileManager.default.removeItem(at: dir) }
         let origin = try makeBareOrigin()
-        defer { try? FileManager.default.removeItem(at: origin) }
 
         try runGit(["checkout", "-b", "local"], in: dir)
         let repo = try Repository.open(at: dir)
@@ -447,13 +431,10 @@ struct RepositoryTests {
 
     @Test("push forceWithLease rejects stale leases and accepts matching leases")
     func pushForceWithLease() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeFixtureRepo()
-        defer { try? FileManager.default.removeItem(at: dir) }
         let origin = try makeBareOrigin()
-        defer { try? FileManager.default.removeItem(at: origin) }
-        let other = FileManager.default.temporaryDirectory
-            .appendingPathComponent("RepositoryTests-other-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: other) }
+        let other = fixtures.url("RepositoryTests-other-\(UUID().uuidString)")
 
         let repo = try Repository.open(at: dir)
         try repo.addRemote(name: "origin", url: origin)
@@ -518,8 +499,8 @@ struct RepositoryTests {
 
     @Test("remoteURL returns nil for a missing remote")
     func remoteURLMissing() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeFixtureRepo()
-        defer { try? FileManager.default.removeItem(at: dir) }
 
         let repo = try Repository.open(at: dir)
         let read = try repo.remoteURL(named: "origin")
@@ -528,8 +509,8 @@ struct RepositoryTests {
 
     @Test("upstreamBranch returns the abbreviated upstream ref")
     func upstreamBranch() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeFixtureRepo()
-        defer { try? FileManager.default.removeItem(at: dir) }
 
         // Configure a fake upstream — no fetch / push, just config writes.
         // `git_branch_upstream_name` needs the remote to exist so it can
@@ -546,8 +527,8 @@ struct RepositoryTests {
 
     @Test("upstreamBranch returns nil when no upstream is set")
     func upstreamBranchNone() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeFixtureRepo()
-        defer { try? FileManager.default.removeItem(at: dir) }
 
         let repo = try Repository.open(at: dir)
         let upstream = try repo.upstreamBranch(of: "main")
