@@ -45,6 +45,19 @@ struct RepositoryReferenceTests {
         ], in: dir).split(separator: "\n").map(String.init)
     }
 
+    /// Store refs whose names are canonically equivalent directly in packed-refs.
+    /// Some macOS file systems normalize loose-ref filenames, so they cannot hold
+    /// both spellings at once even though Git's packed-ref format can.
+    private func appendPackedRefs(_ names: [String], oid: String, in dir: URL) throws {
+        let file = dir.appendingPathComponent(".git/packed-refs")
+        var data = (try? Data(contentsOf: file))
+            ?? Data("# pack-refs with: peeled fully-peeled\n".utf8)
+        for name in names {
+            data.append(Data("\(oid) \(name)\n".utf8))
+        }
+        try data.write(to: file)
+    }
+
     @Test("fetched remote branches match git, including symbolic HEAD and packed refs")
     func remoteBranchesParity() throws {
         let source = try makeRepo()
@@ -59,6 +72,16 @@ struct RepositoryReferenceTests {
             try runGit(["fetch", remote], in: dir)
             try runGit(["remote", "set-head", remote, "main"], in: dir)
         }
+        let remoteOID = try runGit(
+            ["rev-parse", "refs/remotes/origin/main"], in: dir
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        try appendPackedRefs(
+            ["origin", "origin-extra", "upstream"].flatMap { remote in
+                ["refs/remotes/\(remote)/e\u{301}",
+                 "refs/remotes/\(remote)/z",
+                 "refs/remotes/\(remote)/é"]
+            },
+            oid: remoteOID, in: dir)
         try runGit(["update-ref", "refs/heads/local-only", "refs/remotes/origin/main"], in: dir)
         let repo = try Repository.open(at: dir)
 
@@ -71,10 +94,13 @@ struct RepositoryReferenceTests {
                 "branch", "-r", "--sort=refname", "--format=%(refname:strip=2)"
             ], in: dir).split(separator: "\n").map(String.init)
             #expect(branches.map(\.name) == gitNames)
-            #expect(branches.count == 9)
+            #expect(branches.count == 18)
             #expect(branches.contains { $0.name == "origin/HEAD" })
             let origin = try repo.remoteBranches(remote: "origin")
-            #expect(origin.map(\.name) == ["origin/HEAD", "origin/feature/nested", "origin/main"])
+            #expect(origin.map(\.name) == [
+                "origin/HEAD", "origin/e\u{301}", "origin/feature/nested",
+                "origin/main", "origin/z", "origin/é"
+            ])
             #expect(try repo.remoteBranches(remote: "missing").isEmpty)
             let refs = try repo.references(matching: "refs/remotes/*")
             #expect(refs.map { "\($0.name) \($0.targetSHA)" } == rows)
@@ -93,13 +119,18 @@ struct RepositoryReferenceTests {
         try runGit(["tag", "-a", "v2", "-m", "release"], in: dir)
         try runGit(["tag", "releases/v3"], in: dir)
         try runGit(["update-ref", "refs/custom/published", "HEAD"], in: dir)
+        let headOID = try runGit(["rev-parse", "HEAD"], in: dir)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        try appendPackedRefs(
+            ["refs/custom/e\u{301}", "refs/custom/z", "refs/custom/é"],
+            oid: headOID, in: dir)
         let repo = try Repository.open(at: dir)
 
         for packed in [false, true] {
             if packed { try runGit(["pack-refs", "--all", "--prune"], in: dir) }
             let all = try repo.references()
             #expect(all.map { "\($0.name) \($0.targetSHA)" } == (try gitRows(in: dir)))
-            #expect(all.count == 5)
+            #expect(all.count == 8)
             let tags = try repo.references(matching: "refs/tags/*")
             #expect(tags.map { "\($0.name) \($0.targetSHA)" } == (try gitRows(in: dir, pattern: "refs/tags")))
             #expect(tags.map(\.name) == ["refs/tags/releases/v3", "refs/tags/v1", "refs/tags/v2"])
@@ -110,7 +141,10 @@ struct RepositoryReferenceTests {
             let tagSHA = try runGit(["rev-parse", "v2"], in: dir).trimmingCharacters(in: .whitespacesAndNewlines)
             #expect(annotated.targetSHA == tagSHA)
             #expect(annotated.targetSHA != (try repo.resolveOID("HEAD")))
-            #expect(try repo.references(matching: "refs/custom/*").count == 1)
+            #expect(try repo.references(matching: "refs/custom/*").map(\.name) == [
+                "refs/custom/e\u{301}", "refs/custom/published",
+                "refs/custom/z", "refs/custom/é"
+            ])
             #expect(try repo.references(matching: "refs/missing/*").isEmpty)
         }
     }

@@ -50,7 +50,7 @@ extension Repository {
                     targetSHA: entry.targetSHA))
             }
         }
-        return branches.sorted { $0.name < $1.name }
+        return branches.sorted { refnamePrecedes($0.name, $1.name) }
     }
 
     /// List references matching a libgit2 fnmatch glob against full ref names
@@ -79,7 +79,7 @@ extension Repository {
                 entries.append(entry)
             }
         }
-        return entries.sorted { $0.name < $1.name }
+        return entries.sorted { refnamePrecedes($0.name, $1.name) }
     }
 
     private func referenceEntry(from ref: OpaquePointer?) throws -> ReferenceEntry? {
@@ -95,4 +95,11 @@ extension Repository {
             name: String(cString: cstr), targetSHA: formatOID(&oid),
             symbolicTarget: symbolicTarget)
     }
+}
+
+/// Git orders refnames by their bytes. Swift's String comparison treats
+/// canonically equivalent Unicode spellings as equal, which can reorder a
+/// following name relative to `git for-each-ref --sort=refname`.
+private func refnamePrecedes(_ left: String, _ right: String) -> Bool {
+    left.utf8.lexicographicallyPrecedes(right.utf8)
 }
