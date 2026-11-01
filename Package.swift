@@ -29,6 +29,9 @@ import PackageDescription
 //   • remote.c is shimmed the same way so a negative fetch refspec keeps
 //     the refs it excludes out of the ref updates and FETCH_HEAD, as git
 //     does; upstream libgit2 only leaves them out of the negotiation.
+//   • config_file.c is shimmed the same way so `git config set/unset` count
+//     only the entries of the file being written, not those an `[include]`
+//     file repeats, as git does.
 //   • Consumers only import `GitKit`.
 // =============================================================================
 
@@ -134,6 +137,10 @@ var excludes: [String] = [
     // Compiled via Sources/Clibgit2Patches/remote_patched.c, whose ref
     // updates honour negative fetch refspecs.
     "src/libgit2/remote.c",
+
+    // Compiled via Sources/Clibgit2Patches/config_file_patched.c, whose
+    // set/unset consider only the entries of the file being written.
+    "src/libgit2/config_file.c",
 ]
 
 // Header search paths for the .c compilation, relative to Clibgit2's path

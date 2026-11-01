@@ -284,6 +284,11 @@ behaves, each reported upstream:
   (`refs/tags/v1:refs/custom/x`) take effect, where libgit2's tag
   auto-following claimed the tag first and never applied the refspec
   (libgit2/libgit2#7438).
+- `config_file_patched.c` makes `configSet` / `configUnset` consider only the
+  entries of the file being written. libgit2 counted the entries of
+  `[include]`d files too, so a key an included file repeats failed with
+  "entry is not unique due to being included"; git writes to the file and
+  leaves the include alone.
 
 ## The curated module and vendored headers (Windows, and why the submodule stays pristine)
 
