@@ -85,8 +85,12 @@ final class ConfigIncludePolicyBox {
         var previousPayload: UnsafeMutableRawPointer?
         gitkit_config_set_thread_include_callback(
             configIncludeTrampoline, payload, &previousCallback, &previousPayload)
+        // The payload is unretained in C: the closure holds the box, so it
+        // lives until the policy is restored.
         return {
-            gitkit_config_set_thread_include_callback(previousCallback, previousPayload, nil, nil)
+            withExtendedLifetime(self) {
+                gitkit_config_set_thread_include_callback(previousCallback, previousPayload, nil, nil)
+            }
         }
     }
 }
