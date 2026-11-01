@@ -1,0 +1,28 @@
+Subject: [PATCH] config: don't use an uninitialised entry when a backend's get fails
+
+get_entry() passes the address of an uninitialised local to the backend's
+`get` and, for any result other than GIT_ENOTFOUND, stores `&be->entry`
+in `*out`. A backend that fails with an error, as the file backend does
+when reloading a changed config fails (an include that became unreadable,
+say), leaves `be` untouched, so `*out` points at garbage and the caller
+frees through it.
+
+Initialise `be` and only hand out its entry when there is one.
+---
+diff --git a/src/libgit2/config.c b/src/libgit2/config.c
+--- a/src/libgit2/config.c
++++ b/src/libgit2/config.c
+@@ -805,10 +805,12 @@
+ 		GIT_ASSERT(entry->instance && entry->instance->backend);
+ 
+ 		backend = entry->instance->backend;
++		be = NULL;
+ 		res = backend->get(backend, key, &be);
+ 
+ 		if (res != GIT_ENOTFOUND) {
+-			*out = &be->entry;
++			/* `be` is only set when the backend found the entry */
++			*out = be ? &be->entry : NULL;
+ 			break;
+ 		}
+ 	}

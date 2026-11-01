@@ -1,0 +1,183 @@
+Subject: [PATCH] config: let the user refuse the files an include makes libgit2 read
+
+An application that restricts what a config may read (a sandbox, a
+server reading user-supplied repositories) can't tell which files
+libgit2 opens for `[include]` and `[includeIf]`, and can't refuse one.
+
+Add GIT_OPT_SET_CONFIG_INCLUDE_CALLBACK. The callback is called for each
+include file before it is stat'd or read - nested includes too - with the
+file's path, the path of the config file that named it and the depth. A
+non-zero return refuses the include: the config fails to load with
+"include of '<path>' is not authorised". With no callback nothing
+changes.
+
+The callback is process-wide like the other options; a per-repository
+variant would hang off the config backend instead.
+---
+diff --git a/include/git2/common.h b/include/git2/common.h
+--- a/include/git2/common.h
++++ b/include/git2/common.h
+@@ -257,10 +257,24 @@
+ 	GIT_OPT_GET_SERVER_TIMEOUT,
+ 	GIT_OPT_SET_USER_AGENT_PRODUCT,
+ 	GIT_OPT_GET_USER_AGENT_PRODUCT,
+-	GIT_OPT_ADD_SSL_X509_CERT
++	GIT_OPT_ADD_SSL_X509_CERT,
++	GIT_OPT_SET_CONFIG_INCLUDE_CALLBACK
+ } git_libgit2_opt_t;
+ 
+ /**
++ * Callback asked before an included config file is read.
++ *
++ * @param path the included file
++ * @param including_path the config file with the include directive
++ * @param depth 1 for a file included by the config itself, 2 for one
++ *              that file includes, ...
++ * @param payload the payload given with the callback
++ * @return 0 to read the file, anything else to refuse it
++ */
++typedef int GIT_CALLBACK(git_config_include_cb)(
++	const char *path, const char *including_path, int depth, void *payload);
++
++/**
+  * Set or query a library global option
+  *
+  * Available options:
+@@ -562,6 +576,14 @@
+  *   opts(GIT_OPT_SET_SERVER_TIMEOUT, int timeout)
+  *      > Sets the timeout (in milliseconds) for reading from and writing
+  *      > to a remote server. Set to 0 to use the system default.
++ *
++ *   opts(GIT_OPT_SET_CONFIG_INCLUDE_CALLBACK, git_config_include_cb callback, void *payload)
++ *      > Sets a callback that is asked about every file an `[include]` or
++ *      > `[includeIf]` directive makes libgit2 read, before it is read: the
++ *      > path of the include, the path of the config file that named it
++ *      > and the include depth (1 for a file the config itself includes).
++ *      > Return 0 to read it; any other value refuses it and the config
++ *      > fails to load. Set a NULL callback to remove it.
+  *
+  * @param option Option key
+  * @return 0 on success, <0 on failure
+diff --git a/src/libgit2/config.h b/src/libgit2/config.h
+--- a/src/libgit2/config.h
++++ b/src/libgit2/config.h
+@@ -112,4 +112,7 @@
+ 	void *data,
+ 	int commit);
+ 
++/* Ask `cb` before every `[include]` file is read; NULL for none. */
++extern void git_config__set_include_callback(git_config_include_cb cb, void *payload);
++
+ #endif
+diff --git a/src/libgit2/config_file.c b/src/libgit2/config_file.c
+--- a/src/libgit2/config_file.c
++++ b/src/libgit2/config_file.c
+@@ -26,6 +26,15 @@
+ 
+ #define CONFIG_FILE_TYPE "file"
+ 
++static git_config_include_cb include_callback;
++static void *include_callback_payload;
++
++void git_config__set_include_callback(git_config_include_cb cb, void *payload)
++{
++	include_callback = cb;
++	include_callback_payload = payload;
++}
++
+ typedef struct config_file {
+ 	git_futils_filestamp stamp;
+ 	unsigned char checksum[GIT_HASH_SHA256_SIZE];
+@@ -580,6 +589,14 @@
+ 
+ 	if (result < 0)
+ 		return result;
++
++	if (include_callback &&
++	    include_callback(path.ptr, parse_data->file->path,
++	                     (int)parse_data->depth + 1, include_callback_payload) != 0) {
++		git_error_set(GIT_ERROR_CONFIG, "include of '%s' is not authorised", path.ptr);
++		git_str_dispose(&path);
++		return -1;
++	}
+ 
+ 	include = git_array_alloc(parse_data->file->includes);
+ 	GIT_ERROR_CHECK_ALLOC(include);
+diff --git a/src/libgit2/settings.c b/src/libgit2/settings.c
+--- a/src/libgit2/settings.c
++++ b/src/libgit2/settings.c
+@@ -457,6 +457,15 @@
+ 		}
+ 		break;
+ 
++	case GIT_OPT_SET_CONFIG_INCLUDE_CALLBACK:
++		{
++			git_config_include_cb cb = va_arg(ap, git_config_include_cb);
++			void *payload = va_arg(ap, void *);
++
++			git_config__set_include_callback(cb, payload);
++		}
++		break;
++
+ 	default:
+ 		git_error_set(GIT_ERROR_INVALID, "invalid option key");
+ 		error = -1;
+diff --git a/tests/libgit2/config/include.c b/tests/libgit2/config/include.c
+--- a/tests/libgit2/config/include.c
++++ b/tests/libgit2/config/include.c
+@@ -265,3 +265,55 @@
+ 	cl_git_pass(p_unlink("top-level"));
+ 	cl_git_pass(p_unlink("included"));
+ }
++
++static int included;
++static char included_names[4][64];
++
++static int count_includes(const char *path, const char *including_path, int depth, void *payload)
++{
++	const char *name = strrchr(path, '/');
++	int *refuse = payload;
++
++	GIT_UNUSED(including_path);
++	cl_assert(depth >= 1);
++	cl_assert(included < 4);
++
++	strncpy(included_names[included++], name ? name + 1 : path, 63);
++	return *refuse ? 1 : 0;
++}
++
++void test_config_include__callback_can_refuse_an_include(void)
++{
++	int refuse = 0;
++
++	cl_git_mkfile("config-hook-nested", "[hook]\n\tnested = 2\n");
++	cl_git_mkfile("config-hook-included", "[include]\n\tpath = config-hook-nested\n[hook]\n\tone = 1\n");
++	cl_git_mkfile("config-hook", "[include]\n\tpath = config-hook-included\n");
++
++	/* every include is offered, the nested one too */
++	included = 0;
++	cl_git_pass(git_libgit2_opts(GIT_OPT_SET_CONFIG_INCLUDE_CALLBACK, count_includes, &refuse));
++	cl_git_pass(git_config_open_ondisk(&cfg, "config-hook"));
++	cl_assert_equal_i(2, included);
++	cl_assert_equal_s("config-hook-included", included_names[0]);
++	cl_assert_equal_s("config-hook-nested", included_names[1]);
++	cl_git_pass(git_config_get_string_buf(&buf, cfg, "hook.nested"));
++	cl_assert_equal_s("2", buf.ptr);
++	git_config_free(cfg);
++	cfg = NULL;
++
++	/* a refusal fails the load before the file is read */
++	refuse = 1;
++	included = 0;
++	cl_git_fail(git_config_open_ondisk(&cfg, "config-hook"));
++	cl_assert_equal_i(1, included);
++	cl_assert(strstr(git_error_last()->message, "config-hook-included' is not authorised") != NULL);
++
++	/* with no callback, includes are read as before */
++	cl_git_pass(git_libgit2_opts(GIT_OPT_SET_CONFIG_INCLUDE_CALLBACK, NULL, NULL));
++	cl_git_pass(git_config_open_ondisk(&cfg, "config-hook"));
++
++	cl_git_pass(p_unlink("config-hook"));
++	cl_git_pass(p_unlink("config-hook-included"));
++	cl_git_pass(p_unlink("config-hook-nested"));
++}

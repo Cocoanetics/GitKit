@@ -289,6 +289,29 @@ behaves, each reported upstream:
   `[include]`d files too, so a key an included file repeats failed with
   "entry is not unique due to being included"; git writes to the file and
   leaves the include alone.
+  The same shim lets a host authorise the include files libgit2 reads (see
+  below), and keeps libgit2 from crashing when a config reload fails: its
+  `get_entry()` freed through an uninitialised pointer after a backend `get`
+  error.
+
+#### Authorising `[include]` files
+
+A sandbox has to know which files a config reads. `ConfigIncludePolicy` is
+asked for every `[include]`, matching `[includeIf]` and nested include, before
+the file is stat'd or read; returning `false` fails the config load with
+`include of '<path>' is not authorised`. Policies are per repository, so
+several sandboxes can share a process; with none, includes are read as before.
+
+```swift
+let policy = ConfigIncludePolicy { include in
+    sandbox.mayRead(include.path)       // also: include.includedFrom, include.depth
+}
+let repo = try Repository.open(at: url, includePolicy: policy)
+// or: try repo.setIncludePolicy(policy)
+// fallback for repositories without one: ConfigIncludePolicy.setDefault(policy)
+```
+
+From C (`CGitKit`): `gitkit_config_set_include_callback(repo, cb, payload)`.
 
 ## The curated module and vendored headers (Windows, and why the submodule stays pristine)
 
@@ -364,6 +387,16 @@ The rules that came out of it:
   *system* headers — `_GNU_SOURCE`, `OPENSSL_API_COMPAT`, `_WIN32_WINNT`.)
 - A bump past the rename (a future 1.10/2.x) must translate the matrix
   *forward* again.
+- On every submodule bump, **re-audit the shims that wrap a libgit2 file by
+  renaming things inside it** — they depend on its internals.
+  `config_file_patched.c` assumes `config_file.c` reads each include through
+  one `p_stat()` in `config_file_read()` (at `depth > 0`), calls
+  `git_config_list_get_unique()` from `config_file_set()` / `config_file_delete()`,
+  uses `git_fs_path_set_error()` right after that `p_stat()`, and assigns
+  `config_file_get` in `git_config_backend_from_file()`; and that the entries
+  of the file being written are those at `include_depth` 0. A rename or a new
+  call site silently loses the patch — the `ConfigInclude*Tests` fail then.
+  Check the other `*_patched.c` the same way.
 
 ## Repository layout
 

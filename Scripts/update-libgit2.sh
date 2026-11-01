@@ -55,4 +55,5 @@ print("Regenerated umbrella with %d git2/sys headers." % len(headers))
 PY
 
 echo "Submodule now at libgit2 $(git describe --tags); re-vendored $(find "$vendor/git2" -name '*.h' | wc -l | tr -d ' ')+1 public headers."
+echo "Re-audit the shims in Sources/Clibgit2Patches/*_patched.c against the new sources (config_file_patched.c: see the README's bump rules)."
 echo "Next: (cd $root && swift test) then commit + tag '${tag#v}'."

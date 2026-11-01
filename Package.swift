@@ -31,7 +31,8 @@ import PackageDescription
 //     does; upstream libgit2 only leaves them out of the negotiation.
 //   • config_file.c is shimmed the same way so `git config set/unset` count
 //     only the entries of the file being written, not those an `[include]`
-//     file repeats, as git does.
+//     file repeats, as git does, and a host can authorise the `[include]`
+//     files libgit2 reads (ConfigIncludePolicy).
 //   • Consumers only import `GitKit`.
 // =============================================================================
 
@@ -139,7 +140,8 @@ var excludes: [String] = [
     "src/libgit2/remote.c",
 
     // Compiled via Sources/Clibgit2Patches/config_file_patched.c, whose
-    // set/unset consider only the entries of the file being written.
+    // set/unset consider only the entries of the file being written and
+    // every include file is offered to the host's policy before it is read.
     "src/libgit2/config_file.c",
 ]
 

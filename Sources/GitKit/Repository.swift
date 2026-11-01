@@ -25,11 +25,18 @@ public final class Repository {
     /// call sites.
     var repo: OpaquePointer { pointer }
 
+    /// Keeps the registered include policy's payload alive; see
+    /// ``setIncludePolicy(_:)``.
+    var includePolicyBox: ConfigIncludePolicyBox?
+
     init(pointer: OpaquePointer) {
         self.pointer = pointer
     }
 
     deinit {
+        if includePolicyBox != nil {
+            gitkit_config_set_include_callback(pointer, nil, nil)
+        }
         git_repository_free(pointer)
     }
 
@@ -53,14 +60,27 @@ public final class Repository {
 
     /// Open the repository at (or above) `url`, exactly like
     /// `git_repository_open_ext` with default flags.
-    public static func open(at url: URL) throws -> Repository {
+    ///
+    /// - Parameter includePolicy: Authorises the `[include]` / `[includeIf]`
+    ///   files this repository's config reads, starting with the ones read
+    ///   by the open itself. A refused include fails the open. `nil` keeps
+    ///   the process default (``ConfigIncludePolicy/setDefault(_:)``), if any.
+    public static func open(
+        at url: URL, includePolicy: ConfigIncludePolicy? = nil
+    ) throws -> Repository {
         Libgit2.ensureInitialized()
+        let box = includePolicy.map(ConfigIncludePolicyBox.init)
+        if let box { box.setForCurrentThread() }
+        defer { if box != nil { gitkit_config_set_thread_include_callback(nil, nil) } }
+
         var repo: OpaquePointer?
         try check(git_repository_open_ext(&repo, url.path, 0, nil))
         guard let repo else {
             throw Libgit2Error(code: -1, klass: 0, message: "git_repository_open_ext returned no repository")
         }
-        return Repository(pointer: repo)
+        let opened = Repository(pointer: repo)
+        if let box { try opened.register(box) }
+        return opened
     }
 
     /// Initialise a brand-new repository at `url` (creating the directory
