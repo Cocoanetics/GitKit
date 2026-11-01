@@ -1,6 +1,17 @@
 import Foundation
 import CGitKit
 
+/// The lease expectation used by force-with-lease pushes.
+public enum PushLease: Sendable, Equatable {
+    /// Mirror `git push --force-with-lease`: expect the destination branch
+    /// to match `refs/remotes/<remote>/<branch>`. If that tracking ref is
+    /// absent, the remote branch must also be absent.
+    case tracking
+    /// Expect the destination ref to still point at this full 40-character
+    /// object ID.
+    case expecting(String)
+}
+
 /// What `git push --force-with-lease` asks of the refs a push updates:
 /// each ref a lease covers must still be where the lease expects it on
 /// the remote, and is then forced; one that isn't is refused as
@@ -65,7 +76,7 @@ public struct PushLeases: Sendable, Equatable {
 extension Repository {
 
     /// Push `refspecs` to `remote` in one operation, as
-    /// ``push(remote:refspecs:setUpstream:connectingTo:credentials:progress:)`` does,
+    /// ``push(remote:refspecs:setUpstream:connectingTo:credentials:pushOptions:progress:)`` does,
     /// with `git push --force-with-lease` semantics for the refs
     /// `leases` covers.
     ///
@@ -86,8 +97,12 @@ extension Repository {
     ///     upstream afterwards, as `git push -u` does.
     ///   - leases: The `--force-with-lease` options given.
     ///   - location: Where to connect instead, as for
-    ///     ``push(remote:refspecs:setUpstream:connectingTo:credentials:progress:)``.
+    ///     ``push(remote:refspecs:setUpstream:connectingTo:credentials:pushOptions:progress:)``.
     ///   - credentials: Invoked by the transport on auth challenges.
+    ///   - pushOptions: Options sent to the server, as `git push -o`
+    ///     does; as for ``push(remote:refspec:setUpstream:credentials:pushOptions:progress:)``,
+    ///     the server has to advertise them ("push-options not supported
+    ///     by remote" otherwise), and a local path never supports them.
     ///   - progress: Sink for real-git-style progress lines (defaults to
     ///     the process's stderr).
     /// - Returns: The refspecs pushed, one per ref and fully qualified.
@@ -99,6 +114,7 @@ extension Repository {
         leases: PushLeases,
         connectingTo location: String? = nil,
         credentials: CredentialProvider? = nil,
+        pushOptions: [String] = [],
         progress: @escaping @Sendable (String) -> Void = GitProgress.standardError
     ) throws -> [String] {
         // As git does, every expected object ID is read before anything
@@ -114,7 +130,36 @@ extension Repository {
         return try pushImpl(
             remote: remote, refspecs: refspecs, setUpstream: setUpstream,
             location: location, forceWithLease: nil, leases: leases,
-            credentials: credentials, progress: progress)
+            credentials: credentials, pushOptions: pushOptions, progress: progress)
+    }
+
+    /// Refuses push options the push-option pkt-line can't carry.
+    func validatePushOptions(_ pushOptions: [String]) throws {
+        for option in pushOptions where option.utf8.contains(where: { $0 == 0 || $0 == 0x0A }) {
+            throw Libgit2Error(
+                code: GIT_EINVALID.rawValue, klass: Int32(GIT_ERROR_INVALID.rawValue),
+                message: "push option must not contain a newline or NUL")
+        }
+    }
+
+    /// `git_remote_push` of `refspecs` with `pushOptions` as the remote's
+    /// push options; the C strings live for the duration of the call.
+    func sendPush(
+        _ remote: OpaquePointer?, refspecs: [String], pushOptions: [String],
+        options opts: inout git_push_options
+    ) -> Int32 {
+        withCStringArray(refspecs) { copies in
+            withCStringArray(pushOptions) { optionCopies in
+                copies.withUnsafeMutableBufferPointer { buffer in
+                    optionCopies.withUnsafeMutableBufferPointer { optionBuffer in
+                        var arr = git_strarray(strings: buffer.baseAddress, count: buffer.count)
+                        opts.remote_push_options = git_strarray(
+                            strings: optionBuffer.baseAddress, count: optionBuffer.count)
+                        return git_remote_push(remote, &arr, &opts)
+                    }
+                }
+            }
+        }
     }
 
     /// `refspecs` as git settles them before a push: the leases force
