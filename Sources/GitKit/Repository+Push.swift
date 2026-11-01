@@ -1,17 +1,6 @@
 import Foundation
 import CGitKit
 
-/// The lease expectation used by force-with-lease pushes.
-public enum PushLease: Sendable, Equatable {
-    /// Mirror `git push --force-with-lease`: expect the destination branch
-    /// to match `refs/remotes/<remote>/<branch>`. If that tracking ref is
-    /// absent, the remote branch must also be absent.
-    case tracking
-    /// Expect the destination ref to still point at this full 40-character
-    /// object ID.
-    case expecting(String)
-}
-
 extension Repository {
 
     /// Push `refspec` to `remote`. Mirrors `git push <remote> <refspec>`
@@ -24,22 +13,25 @@ extension Repository {
     ///     `"refs/heads/main:refs/heads/main"`).
     ///   - setUpstream: When `true`, configure the pushed branch's upstream
     ///     afterwards — the `git push -u` semantics libgit2 doesn't bundle.
-    ///   - pushOptions: Options sent to the server, as `git push -o`
-    ///     does (e.g. `"ci.skip"`); none by default.
     ///   - credentials: Invoked by the transport on auth challenges.
+    ///   - pushOptions: Options sent as `git push -o` does (e.g.
+    ///     `"ci.skip"`). The server has to advertise them, else the push
+    ///     fails, before sending, with "push-options not supported by
+    ///     remote"; a local path never supports them. A newline or NUL
+    ///     in an option throws `GIT_EINVALID`.
     ///   - progress: Sink for real-git-style progress lines (defaults to
     ///     the process's stderr).
     public func push(
         remote: String,
         refspec: String,
         setUpstream: Bool,
-        pushOptions: [String] = [],
         credentials: CredentialProvider? = nil,
+        pushOptions: [String] = [],
         progress: @escaping @Sendable (String) -> Void = GitProgress.standardError
     ) throws {
         try pushImpl(
             remote: remote, refspecs: [refspec], setUpstream: setUpstream,
-            location: nil, forceWithLease: nil, pushOptions: pushOptions, credentials: credentials, progress: progress)
+            location: nil, forceWithLease: nil, credentials: credentials, pushOptions: pushOptions, progress: progress)
     }
 
     /// Push `refspecs` to `remote` in one operation — one connection, one
@@ -75,9 +67,12 @@ extension Repository {
     ///     ``PushRefusedError/url`` — still shows its URL as configured, or
     ///     `remote` as given. `nil` (the default) connects where libgit2
     ///     reads `remote` to be.
-    ///   - pushOptions: Options sent to the server, as `git push -o`
-    ///     does (e.g. `"ci.skip"`); none by default.
     ///   - credentials: Invoked by the transport on auth challenges.
+    ///   - pushOptions: Options sent as `git push -o` does (e.g.
+    ///     `"ci.skip"`). The server has to advertise them, else the push
+    ///     fails, before sending, with "push-options not supported by
+    ///     remote"; a local path never supports them. A newline or NUL
+    ///     in an option throws `GIT_EINVALID`.
     ///   - progress: Sink for real-git-style progress lines (defaults to
     ///     the process's stderr).
     /// - Returns: The refspecs pushed, one per ref and fully qualified
@@ -89,14 +84,14 @@ extension Repository {
         refspecs: [String],
         setUpstream: Bool,
         connectingTo location: String? = nil,
-        pushOptions: [String] = [],
         credentials: CredentialProvider? = nil,
+        pushOptions: [String] = [],
         progress: @escaping @Sendable (String) -> Void = GitProgress.standardError
     ) throws -> [String] {
         try pushImpl(
             remote: remote, refspecs: refspecs, setUpstream: setUpstream,
-            location: location, forceWithLease: nil, pushOptions: pushOptions,
-            credentials: credentials, progress: progress)
+            location: location, forceWithLease: nil, credentials: credentials,
+            pushOptions: pushOptions, progress: progress)
     }
 
     /// Push `refspec` to `remote` with `--force-with-lease` semantics.
@@ -123,9 +118,12 @@ extension Repository {
     ///     ``PushRefusedError/url`` — still shows its URL as configured, or
     ///     `remote` as given. `nil` (the default) connects where libgit2
     ///     reads `remote` to be.
-    ///   - pushOptions: Options sent to the server, as `git push -o`
-    ///     does (e.g. `"ci.skip"`); none by default.
     ///   - credentials: Invoked by the transport on auth challenges.
+    ///   - pushOptions: Options sent as `git push -o` does (e.g.
+    ///     `"ci.skip"`). The server has to advertise them, else the push
+    ///     fails, before sending, with "push-options not supported by
+    ///     remote"; a local path never supports them. A newline or NUL
+    ///     in an option throws `GIT_EINVALID`.
     ///   - progress: Sink for real-git-style progress lines (defaults to
     ///     the process's stderr).
     public func push(
@@ -134,14 +132,14 @@ extension Repository {
         setUpstream: Bool,
         forceWithLease lease: PushLease,
         connectingTo location: String? = nil,
-        pushOptions: [String] = [],
         credentials: CredentialProvider? = nil,
+        pushOptions: [String] = [],
         progress: @escaping @Sendable (String) -> Void = GitProgress.standardError
     ) throws {
         try pushImpl(
             remote: remote, refspecs: [refspec], setUpstream: setUpstream,
-            location: location, forceWithLease: lease, pushOptions: pushOptions,
-            credentials: credentials, progress: progress)
+            location: location, forceWithLease: lease, credentials: credentials,
+            pushOptions: pushOptions, progress: progress)
     }
 
     /// What a push came to: refs sent, or nothing to send.
@@ -166,10 +164,11 @@ extension Repository {
         location: String?,
         forceWithLease lease: PushLease?,
         leases: PushLeases? = nil,
-        pushOptions: [String] = [],
         credentials: CredentialProvider?,
+        pushOptions: [String] = [],
         progress: @escaping @Sendable (String) -> Void
     ) throws -> [String] {
+        try validatePushOptions(pushOptions)
         let (remoteHandle, isConfigured) = try lookupRemote(remote)
         defer { git_remote_free(remoteHandle) }
 
