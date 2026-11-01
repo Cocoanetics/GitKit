@@ -224,7 +224,7 @@ struct ConfigIncludePolicyTests {
         defer { ConfigIncludePolicy.setDefault(nil) }
 
         // Refuse only this test's repository, whichever policy is current.
-        let make = { ConfigIncludePolicy { !$0.path.contains(marker) } }
+        let make: @Sendable () -> ConfigIncludePolicy = { ConfigIncludePolicy { !$0.path.contains(marker) } }
         ConfigIncludePolicy.setDefault(make())
 
         let swapper = DispatchGroup()
