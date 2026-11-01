@@ -65,7 +65,7 @@ public struct PushLeases: Sendable, Equatable {
 extension Repository {
 
     /// Push `refspecs` to `remote` in one operation, as
-    /// ``push(remote:refspecs:setUpstream:connectingTo:credentials:progress:)`` does,
+    /// ``push(remote:refspecs:setUpstream:connectingTo:pushOptions:credentials:progress:)`` does,
     /// with `git push --force-with-lease` semantics for the refs
     /// `leases` covers.
     ///
@@ -86,7 +86,9 @@ extension Repository {
     ///     upstream afterwards, as `git push -u` does.
     ///   - leases: The `--force-with-lease` options given.
     ///   - location: Where to connect instead, as for
-    ///     ``push(remote:refspecs:setUpstream:connectingTo:credentials:progress:)``.
+    ///     ``push(remote:refspecs:setUpstream:connectingTo:pushOptions:credentials:progress:)``.
+    ///   - pushOptions: Push options to send to the server, as
+    ///     `git push -o <option>` does (e.g. `"ci.skip"`).
     ///   - credentials: Invoked by the transport on auth challenges.
     ///   - progress: Sink for real-git-style progress lines (defaults to
     ///     the process's stderr).
@@ -98,6 +100,7 @@ extension Repository {
         setUpstream: Bool,
         leases: PushLeases,
         connectingTo location: String? = nil,
+        pushOptions: [String] = [],
         credentials: CredentialProvider? = nil,
         progress: @escaping @Sendable (String) -> Void = GitProgress.standardError
     ) throws -> [String] {
@@ -114,7 +117,27 @@ extension Repository {
         return try pushImpl(
             remote: remote, refspecs: refspecs, setUpstream: setUpstream,
             location: location, forceWithLease: nil, leases: leases,
-            credentials: credentials, progress: progress)
+            pushOptions: pushOptions, credentials: credentials, progress: progress)
+    }
+
+    /// `git_remote_push` of `refspecs` with `pushOptions` as the remote's
+    /// push options; the C strings live for the duration of the call.
+    func sendPush(
+        _ remote: OpaquePointer?, refspecs: [String], pushOptions: [String],
+        options opts: inout git_push_options
+    ) -> Int32 {
+        withCStringArray(refspecs) { copies in
+            withCStringArray(pushOptions) { optionCopies in
+                copies.withUnsafeMutableBufferPointer { buffer in
+                    optionCopies.withUnsafeMutableBufferPointer { optionBuffer in
+                        var arr = git_strarray(strings: buffer.baseAddress, count: buffer.count)
+                        opts.remote_push_options = git_strarray(
+                            strings: optionBuffer.baseAddress, count: optionBuffer.count)
+                        return git_remote_push(remote, &arr, &opts)
+                    }
+                }
+            }
+        }
     }
 
     /// `refspecs` as git settles them before a push: the leases force

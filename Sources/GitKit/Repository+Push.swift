@@ -24,6 +24,8 @@ extension Repository {
     ///     `"refs/heads/main:refs/heads/main"`).
     ///   - setUpstream: When `true`, configure the pushed branch's upstream
     ///     afterwards — the `git push -u` semantics libgit2 doesn't bundle.
+    ///   - pushOptions: Options sent to the server, as `git push -o`
+    ///     does (e.g. `"ci.skip"`); none by default.
     ///   - credentials: Invoked by the transport on auth challenges.
     ///   - progress: Sink for real-git-style progress lines (defaults to
     ///     the process's stderr).
@@ -31,12 +33,13 @@ extension Repository {
         remote: String,
         refspec: String,
         setUpstream: Bool,
+        pushOptions: [String] = [],
         credentials: CredentialProvider? = nil,
         progress: @escaping @Sendable (String) -> Void = GitProgress.standardError
     ) throws {
         try pushImpl(
             remote: remote, refspecs: [refspec], setUpstream: setUpstream,
-            location: nil, forceWithLease: nil, credentials: credentials, progress: progress)
+            location: nil, forceWithLease: nil, pushOptions: pushOptions, credentials: credentials, progress: progress)
     }
 
     /// Push `refspecs` to `remote` in one operation — one connection, one
@@ -72,6 +75,8 @@ extension Repository {
     ///     ``PushRefusedError/url`` — still shows its URL as configured, or
     ///     `remote` as given. `nil` (the default) connects where libgit2
     ///     reads `remote` to be.
+    ///   - pushOptions: Options sent to the server, as `git push -o`
+    ///     does (e.g. `"ci.skip"`); none by default.
     ///   - credentials: Invoked by the transport on auth challenges.
     ///   - progress: Sink for real-git-style progress lines (defaults to
     ///     the process's stderr).
@@ -84,12 +89,14 @@ extension Repository {
         refspecs: [String],
         setUpstream: Bool,
         connectingTo location: String? = nil,
+        pushOptions: [String] = [],
         credentials: CredentialProvider? = nil,
         progress: @escaping @Sendable (String) -> Void = GitProgress.standardError
     ) throws -> [String] {
         try pushImpl(
             remote: remote, refspecs: refspecs, setUpstream: setUpstream,
-            location: location, forceWithLease: nil, credentials: credentials, progress: progress)
+            location: location, forceWithLease: nil, pushOptions: pushOptions,
+            credentials: credentials, progress: progress)
     }
 
     /// Push `refspec` to `remote` with `--force-with-lease` semantics.
@@ -116,6 +123,8 @@ extension Repository {
     ///     ``PushRefusedError/url`` — still shows its URL as configured, or
     ///     `remote` as given. `nil` (the default) connects where libgit2
     ///     reads `remote` to be.
+    ///   - pushOptions: Options sent to the server, as `git push -o`
+    ///     does (e.g. `"ci.skip"`); none by default.
     ///   - credentials: Invoked by the transport on auth challenges.
     ///   - progress: Sink for real-git-style progress lines (defaults to
     ///     the process's stderr).
@@ -125,12 +134,14 @@ extension Repository {
         setUpstream: Bool,
         forceWithLease lease: PushLease,
         connectingTo location: String? = nil,
+        pushOptions: [String] = [],
         credentials: CredentialProvider? = nil,
         progress: @escaping @Sendable (String) -> Void = GitProgress.standardError
     ) throws {
         try pushImpl(
             remote: remote, refspecs: [refspec], setUpstream: setUpstream,
-            location: location, forceWithLease: lease, credentials: credentials, progress: progress)
+            location: location, forceWithLease: lease, pushOptions: pushOptions,
+            credentials: credentials, progress: progress)
     }
 
     /// What a push came to: refs sent, or nothing to send.
@@ -155,6 +166,7 @@ extension Repository {
         location: String?,
         forceWithLease lease: PushLease?,
         leases: PushLeases? = nil,
+        pushOptions: [String] = [],
         credentials: CredentialProvider?,
         progress: @escaping @Sendable (String) -> Void
     ) throws -> [String] {
@@ -240,16 +252,12 @@ extension Repository {
                     git_remote_disconnect(remoteHandle)
                     return .pushed(accepted: [], rejected: rejected, remoteRefs: remoteRefs)
                 }
-                try withCStringArray(accepted) { copies in
-                    try copies.withUnsafeMutableBufferPointer { buffer in
-                        var arr = git_strarray(strings: buffer.baseAddress, count: buffer.count)
-                        let rc = git_remote_push(remoteHandle, &arr, &opts)
-                        if rc < 0, let failure = pushLease?.failure {
-                            throw failure
-                        }
-                        try check(rc)
-                    }
+                let rc = sendPush(
+                    remoteHandle, refspecs: accepted, pushOptions: pushOptions, options: &opts)
+                if rc < 0, let failure = pushLease?.failure {
+                    throw failure
                 }
+                try check(rc)
                 return .pushed(accepted: accepted, rejected: rejected, remoteRefs: remoteRefs)
             },
             outReporter: { reporter = $0 })
