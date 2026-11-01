@@ -142,4 +142,49 @@ GIT_EXTERN(int) gitkit_reencode(
 #define GITKIT_WM_PATHNAME 2
 GIT_EXTERN(int) gitkit_wildmatch(const char *pattern, const char *text, unsigned int flags);
 
+/*
+ * GitKit addition, implemented in Sources/Clibgit2Patches/config_file_patched.c:
+ * authorise the `[include]` / `[includeIf]` files libgit2 reads. The callback
+ * is called, before the file is stat'd or read, for every include file —
+ * including one named by an included file — with its path, the path of the
+ * file that named it (NULL if unknown) and its depth (1 for a file the main
+ * config includes). Return 0 to allow it; any other value refuses it and the
+ * config load fails with GIT_ERROR_CONFIG. It runs each time the include is
+ * read, so again when a config is reloaded.
+ *
+ * The policy in force is the one set for the repository the config belongs
+ * to, else the one set for the calling thread, else the process default. With
+ * none, includes are read as before. `repo` NULL sets the process default; a
+ * NULL `cb` removes the policy. A repository's policy must be removed before
+ * the repository is freed. The thread policy covers a config read while the
+ * repository is being opened, before there is a `git_repository *` to set it
+ * for.
+ */
+typedef int (*gitkit_config_include_cb)(
+	const char *path, const char *including_path, int depth, void *payload);
+GIT_EXTERN(int) gitkit_config_set_include_callback(
+	git_repository *repo, gitkit_config_include_cb cb, void *payload);
+
+/*
+ * The same, with the registration owning its payload: `retain` is called
+ * for each callback in flight and `release` after it, and `release` once
+ * more for the registration's own reference when the policy is replaced or
+ * removed, so replacing it on another thread can't free a payload a
+ * callback is using. (The payload arrives with that reference already
+ * taken.)
+ */
+typedef void (*gitkit_config_payload_fn)(void *payload);
+GIT_EXTERN(int) gitkit_config_set_include_policy(
+	git_repository *repo, gitkit_config_include_cb cb, void *payload,
+	gitkit_config_payload_fn retain, gitkit_config_payload_fn release);
+
+/*
+ * Sets the calling thread's policy (not retained: the caller keeps the
+ * payload alive while it is set) and hands back the one it replaces, so a
+ * nested scope can restore it. Either out pointer may be NULL.
+ */
+GIT_EXTERN(void) gitkit_config_set_thread_include_callback(
+	gitkit_config_include_cb cb, void *payload,
+	gitkit_config_include_cb *previous_cb, void **previous_payload);
+
 #endif /* GITKIT_LIBGIT2_H */

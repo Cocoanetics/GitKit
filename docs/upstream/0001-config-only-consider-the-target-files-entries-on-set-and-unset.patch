@@ -1,0 +1,136 @@
+Subject: [PATCH] config: only consider the target file's entries when setting or unsetting a key
+
+git_config_set_*() and git_config_delete_entry() on a file backend refuse
+a key that "is not unique due to being included", because the check looks
+the key up in the merged list, which holds the entries of `[include]`d
+files too. The write itself only ever rewrites the backend's own file
+(config_file_write() never follows an include), and git counts the
+entries of the file it writes.
+
+So a key that an included file repeats can't be set or unset, though that
+file wouldn't be touched. Check uniqueness among the entries of the file
+itself (those read at include depth 0): a key it doesn't have is added by
+set and is missing for delete, one it has more than once is still a
+multivar error, and the "value already matches" shortcut in set compares
+with the file's own entry rather than the included one.
+---
+diff --git a/src/libgit2/config_file.c b/src/libgit2/config_file.c
+--- a/src/libgit2/config_file.c
++++ b/src/libgit2/config_file.c
+@@ -305,8 +305,8 @@
+ 	if ((error = config_file_take_list(&config_list, b)) < 0)
+ 		return error;
+ 
+-	/* Check whether we'd be modifying an included or multivar key */
+-	if ((error = git_config_list_get_unique(&existing, config_list, key)) < 0) {
++	/* Check whether we'd be modifying a multivar key of this file */
++	if ((error = git_config_list_get_unique_own(&existing, config_list, key)) < 0) {
+ 		if (error != GIT_ENOTFOUND)
+ 			goto out;
+ 		error = 0;
+@@ -403,8 +403,8 @@
+ 	if ((error = config_file_take_list(&config_list, b)) < 0)
+ 		goto out;
+ 
+-	/* Check whether we'd be modifying an included or multivar key */
+-	if ((error = git_config_list_get_unique(&entry, config_list, key)) < 0) {
++	/* Check whether we'd be modifying a multivar key of this file */
++	if ((error = git_config_list_get_unique_own(&entry, config_list, key)) < 0) {
+ 		if (error == GIT_ENOTFOUND)
+ 			git_error_set(GIT_ERROR_CONFIG, "could not find key '%s' to delete", name);
+ 		goto out;
+diff --git a/src/libgit2/config_list.c b/src/libgit2/config_list.c
+--- a/src/libgit2/config_list.c
++++ b/src/libgit2/config_list.c
+@@ -222,6 +222,31 @@
+ 	return 0;
+ }
+ 
++int git_config_list_get_unique_own(git_config_list_entry **out, git_config_list *config_list, const char *key)
++{
++	config_entry_list *head;
++	git_config_list_entry *found = NULL;
++
++	for (head = config_list->entries; head; head = head->next) {
++		if (head->entry->base.entry.include_depth ||
++		    strcmp(head->entry->base.entry.name, key) != 0)
++			continue;
++
++		if (found) {
++			git_error_set(GIT_ERROR_CONFIG, "entry is not unique due to being a multivar");
++			return -1;
++		}
++
++		found = head->entry;
++	}
++
++	if (!found)
++		return GIT_ENOTFOUND;
++
++	*out = found;
++	return 0;
++}
++
+ static void config_iterator_free(git_config_iterator *iter)
+ {
+ 	config_list_iterator *it = (config_list_iterator *) iter;
+diff --git a/src/libgit2/config_list.h b/src/libgit2/config_list.h
+--- a/src/libgit2/config_list.h
++++ b/src/libgit2/config_list.h
+@@ -26,6 +26,11 @@
+ int git_config_list_append(git_config_list *list, git_config_list_entry *entry);
+ int git_config_list_get(git_config_list_entry **out, git_config_list *list, const char *key);
+ int git_config_list_get_unique(git_config_list_entry **out, git_config_list *list, const char *key);
++/*
++ * Like `get_unique`, but considers only the entries read from the config
++ * file itself: those of `[include]`d files are ignored.
++ */
++int git_config_list_get_unique_own(git_config_list_entry **out, git_config_list *list, const char *key);
+ int git_config_list_iterator_new(git_config_iterator **out, git_config_list *list);
+ const char *git_config_list_add_string(git_config_list *list, const char *str);
+ 
+diff --git a/tests/libgit2/config/include.c b/tests/libgit2/config/include.c
+--- a/tests/libgit2/config/include.c
++++ b/tests/libgit2/config/include.c
+@@ -265,3 +265,41 @@
+ 	cl_git_pass(p_unlink("top-level"));
+ 	cl_git_pass(p_unlink("included"));
+ }
++
++void test_config_include__set_and_delete_a_key_the_include_repeats(void)
++{
++	git_str contents = GIT_STR_INIT;
++
++	cl_git_mkfile("config-included-repeat", "[foo \"bar\"]\n\tbaz = included\n\tonly = included\n");
++	cl_git_mkfile("config-include-repeat",
++		"[foo \"bar\"]\n\tbaz = main\n[include]\n\tpath = config-included-repeat\n");
++
++	cl_git_pass(git_config_open_ondisk(&cfg, "config-include-repeat"));
++
++	/* the main file has the key once, and the include repeats it */
++	cl_git_pass(git_config_set_string(cfg, "foo.bar.baz", "changed"));
++	/* a key only the include has is added to the main file */
++	cl_git_pass(git_config_set_string(cfg, "foo.bar.only", "main"));
++
++	cl_git_pass(git_futils_readbuffer(&contents, "config-include-repeat"));
++	cl_assert(strstr(contents.ptr, "baz = changed") != NULL);
++	cl_assert(strstr(contents.ptr, "only = main") != NULL);
++	git_str_dispose(&contents);
++
++	/* the include is left alone */
++	cl_git_pass(git_futils_readbuffer(&contents, "config-included-repeat"));
++	cl_assert_equal_s("[foo \"bar\"]\n\tbaz = included\n\tonly = included\n", contents.ptr);
++	git_str_dispose(&contents);
++
++	cl_git_pass(git_config_delete_entry(cfg, "foo.bar.baz"));
++	cl_git_pass(git_futils_readbuffer(&contents, "config-include-repeat"));
++	cl_assert(strstr(contents.ptr, "baz") == NULL);
++	git_str_dispose(&contents);
++
++	/* a key the main file doesn't have isn't there to delete */
++	cl_git_pass(git_config_delete_entry(cfg, "foo.bar.only"));
++	cl_git_fail_with(GIT_ENOTFOUND, git_config_delete_entry(cfg, "foo.bar.only"));
++
++	cl_git_pass(p_unlink("config-include-repeat"));
++	cl_git_pass(p_unlink("config-included-repeat"));
++}
