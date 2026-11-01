@@ -66,7 +66,10 @@ Operations are synchronous, `throws` (typed ``Libgit2Error``), and return
   `index.lock` throws ``Libgit2Error/isLocked`` and leaves the index as it was).
 - **History** — `log` (rich `LogQuery`/`LogEntry` incl. `format(_:)`
   placeholders), `blame`, `describe`, `reflog`, `grep`.
-- **Branches & refs** — `localBranches`, `branchDelete`/`branchRename`,
+- **Branches & refs** — `localBranches`, `remoteBranches(remote:)` (remote-qualified
+  names and target SHAs, including symbolic remote HEADs), `references(matching:)`
+  (full ref names and target SHAs across namespaces, filtered by an optional glob),
+  `branchDelete`/`branchRename`,
   `tagList`/`tagCreate`/`tagCreateAnnotated`/`tagDelete`, `resolveOID`,
   `revParse` helpers, `lsTree`, `catFileBlob`/`objectMetadata`.
 - **Integration** — `merge` (fast-forward modes), octopus merges (`mergeHeads(reducing:)`, `octopusMerge`), `rebase`
