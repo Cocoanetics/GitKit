@@ -8,6 +8,9 @@ import Testing
 @Suite("Config include policy")
 struct ConfigIncludePolicyTests {
 
+    /// The process default is global: tests that set it run one at a time.
+    private static let defaultPolicyLock = NSLock()
+
     /// Records what a policy was asked.
     final class Recorder: @unchecked Sendable {
         private let lock = NSLock()
@@ -173,6 +176,8 @@ struct ConfigIncludePolicyTests {
         // only this test's own repository.
         let marker = dir.lastPathComponent
         let recorder = Recorder()
+        Self.defaultPolicyLock.lock()
+        defer { Self.defaultPolicyLock.unlock() }
 
         ConfigIncludePolicy.setDefault(ConfigIncludePolicy {
             guard $0.path.contains(marker) else { return true }
@@ -210,23 +215,26 @@ struct ConfigIncludePolicyTests {
     }
 
     @Test("replacing the process default while configs load doesn't free a policy in use")
-    func replacingDefaultWhileLoading() async throws {
+    func replacingDefaultWhileLoading() throws {
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         let marker = dir.lastPathComponent
+        Self.defaultPolicyLock.lock()
+        defer { Self.defaultPolicyLock.unlock() }
         defer { ConfigIncludePolicy.setDefault(nil) }
 
         // Refuse only this test's repository, whichever policy is current.
         let make = { ConfigIncludePolicy { !$0.path.contains(marker) } }
         ConfigIncludePolicy.setDefault(make())
 
-        let swapper = Task.detached {
+        let swapper = DispatchGroup()
+        DispatchQueue.global().async(group: swapper) {
             for _ in 0..<2000 { ConfigIncludePolicy.setDefault(make()) }
         }
         for _ in 0..<300 {
             #expect(throws: Libgit2Error.self) { try Repository.open(at: dir) }
         }
-        await swapper.value
+        swapper.wait()
     }
 }
 #endif
