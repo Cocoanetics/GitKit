@@ -22,9 +22,10 @@ private final class FetchLog: @unchecked Sendable {
 @Suite("Fetch summary")
 struct FetchSummaryTests {
 
+    private let fixtures = TemporaryRepositories()
+
     private func tmp(_ label: String) -> URL {
-        FileManager.default.temporaryDirectory
-            .appendingPathComponent("FetchSummaryTests-\(label)-\(UUID().uuidString)")
+        fixtures.url("FetchSummaryTests-\(label)-\(UUID().uuidString)")
     }
 
     /// Runs the system `git`; returns stdout and stderr together.
@@ -102,6 +103,7 @@ struct FetchSummaryTests {
 
     @Test("refspecs given together list in their order, a branch can go into a tag")
     func severalRefspecs() throws {
+        defer { fixtures.removeAll() }
         let fixture = try makeFixture()
         defer { fixture.remove() }
         let (work, git, kit) = (fixture.work, fixture.git, fixture.kit)
@@ -120,6 +122,7 @@ struct FetchSummaryTests {
 
     @Test("a source-only refspec given twice lists its ref twice, as git does")
     func repeatedSourceOnlyRefspecs() throws {
+        defer { fixtures.removeAll() }
         let fixture = try makeFixture()
         defer { fixture.remove() }
         let (git, kit) = (fixture.git, fixture.kit)
@@ -131,6 +134,7 @@ struct FetchSummaryTests {
 
     @Test("the ref column is sized in terminal columns but padded in bytes, as git does")
     func wideRefNames() throws {
+        defer { fixtures.removeAll() }
         let fixture = try makeFixture()
         defer { fixture.remove() }
         let (work, git, kit) = (fixture.work, fixture.git, fixture.kit)
@@ -152,6 +156,7 @@ struct FetchSummaryTests {
 
     @Test("the ref to merge is told from a canonically equal one by its bytes")
     func mergeRefComparedAsBytes() throws {
+        defer { fixtures.removeAll() }
         // Two branches only canonically equal can't both live in one
         // directory on APFS, so FETCH_HEAD is written by hand.
         let repo = tmp("bytes")
@@ -178,6 +183,7 @@ struct FetchSummaryTests {
 
     @Test("fetch.showForcedUpdates takes every boolean spelling git takes")
     func showForcedUpdatesSpellings() throws {
+        defer { fixtures.removeAll() }
         let fixture = try makeFixture()
         defer { fixture.remove() }
         let kit = fixture.kit
@@ -206,6 +212,7 @@ struct FetchSummaryTests {
 
     @Test("pruned refs list by their full names, across namespaces")
     func prunedAcrossNamespaces() throws {
+        defer { fixtures.removeAll() }
         let fixture = try makeFixture()
         defer { fixture.remove() }
         let (work, git, kit) = (fixture.work, fixture.git, fixture.kit)
@@ -223,6 +230,7 @@ struct FetchSummaryTests {
 
     @Test("core.abbrev is read as git reads it, and refused as git refuses it")
     func coreAbbrev() throws {
+        defer { fixtures.removeAll() }
         let fixture = try makeFixture()
         defer { fixture.remove() }
         let (work, git, kit) = (fixture.work, fixture.git, fixture.kit)
@@ -253,6 +261,7 @@ struct FetchSummaryTests {
 
     @Test("display widths count as git's utf8_strwidth does")
     func displayWidths() {
+        defer { fixtures.removeAll() }
         #expect(DisplayWidth.of("main") == 4)
         #expect(DisplayWidth.of("中文") == 4)
         // Per code point: a combining accent adds nothing, a zero-width
@@ -265,6 +274,7 @@ struct FetchSummaryTests {
 
     @Test("an annotated tag moved forward is a fast-forward, peeled to its commit")
     func annotatedTagFastForward() throws {
+        defer { fixtures.removeAll() }
         let fixture = try makeFixture()
         defer { fixture.remove() }
         let (work, git, kit) = (fixture.work, fixture.git, fixture.kit)
@@ -284,6 +294,7 @@ struct FetchSummaryTests {
 
     @Test("headers show remotes as git does: without credentials, and fetch without .git")
     func displayURLs() {
+        defer { fixtures.removeAll() }
         let cases: [(url: String, shown: String, from: String)] = [
             ("https://user:token@github.com/o/r.git", "https://github.com/o/r.git", "https://github.com/o/r"),
             ("git@github.com:o/r.git", "github.com:o/r.git", "github.com:o/r"),
@@ -300,6 +311,7 @@ struct FetchSummaryTests {
 
     @Test("new branches and tags, fast-forwards, forced updates and pruned refs")
     func updates() throws {
+        defer { fixtures.removeAll() }
         let fixture = try makeFixture()
         defer { fixture.remove() }
         let (remote, work, git, kit) = (fixture.remote, fixture.work, fixture.git, fixture.kit)
@@ -350,6 +362,7 @@ struct FetchSummaryTests {
 
     @Test("a ref fetched to FETCH_HEAD alone, with its tracking ref updated")
     func fetchHeadOnly() throws {
+        defer { fixtures.removeAll() }
         let fixture = try makeFixture()
         defer { fixture.remove() }
         let (remote, work, git, kit) = (fixture.remote, fixture.work, fixture.git, fixture.kit)

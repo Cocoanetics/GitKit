@@ -11,11 +11,11 @@ import Testing
 @Suite("Repository.cherry-pick")
 struct RepositoryCherryPickTests {
 
+    private let fixtures = TemporaryRepositories()
+
     private func makeRepoForCherryPick() throws -> URL {
         // Two divergent branches: main (just init), feature (init + b.txt).
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("CherryPickTests-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dir = try fixtures.directory("CherryPickTests-\(UUID().uuidString)")
         try runGit(["init", "-b", "main"], in: dir)
         try runGit(["config", "user.email", "t@e.com"], in: dir)
         try runGit(["config", "user.name", "T"], in: dir)
@@ -57,6 +57,7 @@ struct RepositoryCherryPickTests {
 
     @Test("clean cherry-pick brings the commit's tree to HEAD")
     func cleanCherryPick() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepoForCherryPick()
         defer { try? FileManager.default.removeItem(at: dir) }
 
@@ -78,6 +79,7 @@ struct RepositoryCherryPickTests {
 
     @Test("conflict surfaces commit info + paths and persists CHERRY_PICK_HEAD")
     func conflictPath() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepoForCherryPick()
         defer { try? FileManager.default.removeItem(at: dir) }
         // Make feature and main both modify a.txt to create a conflict
@@ -111,6 +113,7 @@ struct RepositoryCherryPickTests {
 
     @Test("abort wipes the in-progress cherry-pick")
     func abortRestoresState() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepoForCherryPick()
         defer { try? FileManager.default.removeItem(at: dir) }
         // Set up the same conflict as above.
@@ -138,6 +141,7 @@ struct RepositoryCherryPickTests {
 
     @Test("abort throws when no cherry-pick is in progress")
     func abortWithoutInProgress() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepoForCherryPick()
         defer { try? FileManager.default.removeItem(at: dir) }
         let repo = try Repository.open(at: dir)
@@ -148,6 +152,7 @@ struct RepositoryCherryPickTests {
 
     @Test("continue after manual conflict resolution writes the commit")
     func continueAfterResolution() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepoForCherryPick()
         defer { try? FileManager.default.removeItem(at: dir) }
         try runGit(["checkout", "feature"], in: dir)

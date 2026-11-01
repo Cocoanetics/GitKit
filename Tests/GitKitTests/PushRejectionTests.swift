@@ -21,9 +21,10 @@ private final class PushLog: @unchecked Sendable {
 @Suite("Push rejections")
 struct PushRejectionTests {
 
+    private let fixtures = TemporaryRepositories()
+
     private func tmp(_ label: String) -> URL {
-        FileManager.default.temporaryDirectory
-            .appendingPathComponent("PushRejectionTests-\(label)-\(UUID().uuidString)")
+        fixtures.url("PushRejectionTests-\(label)-\(UUID().uuidString)")
     }
 
     @discardableResult
@@ -83,6 +84,7 @@ struct PushRejectionTests {
 
     @Test("a push names the remote's push URL, when it has one")
     func pushURL() throws {
+        defer { fixtures.removeAll() }
         let (remote, mine, theirs) = try makeRemoteAndClones()
         let elsewhere = tmp("pushurl")
         defer { [remote, mine, theirs, elsewhere].forEach { try? FileManager.default.removeItem(at: $0) } }
@@ -96,6 +98,7 @@ struct PushRejectionTests {
 
     @Test("work the remote has and this repository doesn't: fetch first")
     func fetchFirst() throws {
+        defer { fixtures.removeAll() }
         let (remote, mine, theirs) = try makeRemoteAndClones()
         defer { [remote, mine, theirs].forEach { try? FileManager.default.removeItem(at: $0) } }
         try runGit(["commit", "-q", "--allow-empty", "-m", "theirs"], in: theirs)
@@ -120,6 +123,7 @@ struct PushRejectionTests {
 
     @Test("refused refs are listed by destination, as git lists them")
     func rejectionOrder() throws {
+        defer { fixtures.removeAll() }
         let (remote, mine, theirs) = try makeRemoteAndClones()
         defer { [remote, mine, theirs].forEach { try? FileManager.default.removeItem(at: $0) } }
         for branch in ["zzz", "aaa"] {
@@ -145,6 +149,7 @@ struct PushRejectionTests {
 
     @Test("a known remote tip the push would drop: non-fast-forward")
     func nonFastForward() throws {
+        defer { fixtures.removeAll() }
         let (remote, mine, theirs) = try makeRemoteAndClones()
         defer { [remote, mine, theirs].forEach { try? FileManager.default.removeItem(at: $0) } }
         try runGit(["commit", "-q", "--allow-empty", "-m", "theirs"], in: theirs)
@@ -165,6 +170,7 @@ struct PushRejectionTests {
 
     @Test("a tag the remote has: already exists")
     func tagAlreadyExists() throws {
+        defer { fixtures.removeAll() }
         let (remote, mine, theirs) = try makeRemoteAndClones()
         defer { [remote, mine, theirs].forEach { try? FileManager.default.removeItem(at: $0) } }
         try runGit(["tag", "v1"], in: theirs)
@@ -180,6 +186,7 @@ struct PushRejectionTests {
 
     @Test("two refspecs to one ref are refused before sending, new or not")
     func duplicateDestination() throws {
+        defer { fixtures.removeAll() }
         let (remote, mine, theirs) = try makeRemoteAndClones()
         defer { [remote, mine, theirs].forEach { try? FileManager.default.removeItem(at: $0) } }
         try runGit(["branch", "dev"], in: mine)
@@ -214,6 +221,7 @@ struct PushRejectionTests {
 
     @Test("every refspec git refuses up front is listed, as git lists them")
     func everyRefusalListed() throws {
+        defer { fixtures.removeAll() }
         let (remote, mine, theirs) = try makeRemoteAndClones()
         defer { [remote, mine, theirs].forEach { try? FileManager.default.removeItem(at: $0) } }
         try runGit(["branch", "dev"], in: mine)
@@ -243,6 +251,7 @@ struct PushRejectionTests {
 
     @Test("a deletion names the remote ref as git finds it")
     func shortDeletions() throws {
+        defer { fixtures.removeAll() }
         let (remote, mine, theirs) = try makeRemoteAndClones()
         defer { [remote, mine, theirs].forEach { try? FileManager.default.removeItem(at: $0) } }
         try runGit(["push", "-q", "origin", "main:dev", "main:keep"], in: mine)
@@ -265,6 +274,7 @@ struct PushRejectionTests {
 
     @Test("a short destination is the remote ref it abbreviates, else the source's kind")
     func shortDestinations() throws {
+        defer { fixtures.removeAll() }
         let (remote, mine, theirs) = try makeRemoteAndClones()
         defer { [remote, mine, theirs].forEach { try? FileManager.default.removeItem(at: $0) } }
         try runGit(["tag", "x"], in: mine)
@@ -305,6 +315,7 @@ struct PushRejectionTests {
 
     @Test("a lease checks the destination the remote's refs complete")
     func leaseShortDestination() throws {
+        defer { fixtures.removeAll() }
         let (remote, mine, theirs) = try makeRemoteAndClones()
         defer { [remote, mine, theirs].forEach { try? FileManager.default.removeItem(at: $0) } }
         let remoteSHA = try runGit(["rev-parse", "main"], in: remote)
@@ -321,6 +332,7 @@ struct PushRejectionTests {
 
     @Test("the refs git accepts still go, and get their upstream")
     func partialPush() throws {
+        defer { fixtures.removeAll() }
         let (remote, mine, theirs) = try makeRemoteAndClones()
         defer { [remote, mine, theirs].forEach { try? FileManager.default.removeItem(at: $0) } }
         try runGit(["commit", "-q", "--allow-empty", "-m", "theirs"], in: theirs)

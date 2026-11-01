@@ -10,6 +10,8 @@ import Testing
 @Suite("Repository.octopusMerge")
 struct RepositoryOctopusMergeTests {
 
+    let fixtures = TemporaryRepositories()
+
     struct Failure: Error, CustomStringConvertible {
         let description: String
     }
@@ -52,9 +54,7 @@ struct RepositoryOctopusMergeTests {
     /// `b` change the first and last line of `f`, `x` the first line as
     /// `a` does, but differently, `c` adds `c`.
     func makeRepository() throws -> URL {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("OctopusMergeTests-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dir = try fixtures.directory("OctopusMergeTests-\(UUID().uuidString)")
         try git(["init", "-q", "-b", "main"], in: dir)
         // No background gc or maintenance racing the copies of the repo.
         try git(["config", "gc.auto", "0"], in: dir)
@@ -102,8 +102,7 @@ struct RepositoryOctopusMergeTests {
     }
 
     func twin(of dir: URL) throws -> URL {
-        let copy = FileManager.default.temporaryDirectory
-            .appendingPathComponent("OctopusMergeTwin-\(UUID().uuidString)")
+        let copy = fixtures.url("OctopusMergeTwin-\(UUID().uuidString)")
         try FileManager.default.copyItem(at: dir, to: copy)
         return copy
     }
@@ -133,6 +132,7 @@ struct RepositoryOctopusMergeTests {
 
     @Test("merges each head into a commit with HEAD and them as parents")
     func mergesAllHeads() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         let other = try twin(of: dir)
         let result = try merge(["a", "b", "c"], in: dir)
@@ -154,6 +154,7 @@ struct RepositoryOctopusMergeTests {
 
     @Test("fast-forwards to the first head when HEAD is behind it, leaving HEAD out")
     func fastForwardsFirst() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         try git(["reset", "-q", "--hard", "base"], in: dir)
         let other = try twin(of: dir)
@@ -168,6 +169,7 @@ struct RepositoryOctopusMergeTests {
 
     @Test("--no-ff keeps HEAD among the parents")
     func noFastForward() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         try git(["reset", "-q", "--hard", "base"], in: dir)
         let other = try twin(of: dir)
@@ -178,6 +180,7 @@ struct RepositoryOctopusMergeTests {
 
     @Test("leaves the last head's conflicts for the user")
     func conflictsInLastHead() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         let other = try twin(of: dir)
         let result = try merge(["a", "b", "x"], in: dir)
@@ -194,6 +197,7 @@ struct RepositoryOctopusMergeTests {
     @Test("comments every line of a conflicted path in MERGE_MSG, with git's comment character",
           arguments: [nil, ";"])
     func mergeMessageComments(commentChar: String?) throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         let name = "we\nird"
         try git(["checkout", "-q", "-b", "n1", "base"], in: dir)
@@ -218,6 +222,7 @@ struct RepositoryOctopusMergeTests {
 
     @Test("gives up, changing nothing, when an earlier head conflicts")
     func conflictsBeforeLastHead() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         let other = try twin(of: dir)
         let before = try state(of: dir)
@@ -231,6 +236,7 @@ struct RepositoryOctopusMergeTests {
 
     @Test("refuses an index that differs from HEAD")
     func refusesLocalChanges() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         try write("changed\n", to: "m", in: dir)
         try git(["add", "m"], in: dir)
@@ -246,6 +252,7 @@ struct RepositoryOctopusMergeTests {
 
     @Test("refuses to overwrite a change in the working tree, keeping it")
     func refusesDirtyWorkingTree() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         try write("1\n2\n3\n4\n5\n6\n7\ndirty\n", to: "f", in: dir)
         let other = try twin(of: dir)
@@ -260,6 +267,7 @@ struct RepositoryOctopusMergeTests {
 
     @Test("refuses untracked files a head's file or directory would replace")
     func refusesDirectoryFileCollisions() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         try git(["checkout", "-q", "-b", "d", "base"], in: dir)
         try write("d\n", to: "d", in: dir)
@@ -325,6 +333,7 @@ struct RepositoryOctopusMergeTests {
 
     @Test("leaves symbolic links and submodules both sides changed unmerged, ours in place")
     func symlinksAndSubmodules() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         let a = try git(["rev-parse", "a"], in: dir).stdout, b = try git(["rev-parse", "b"], in: dir).stdout
         for (branch, link, gitlink) in [("l1", "x", a), ("l2", "y", b)] {
@@ -350,6 +359,7 @@ struct RepositoryOctopusMergeTests {
 
     @Test("refuses to start while a merge or cherry-pick waits, as git does")
     func refusesWhileAnotherOperationWaits() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         try git(["merge", "-q", "--no-commit", "--no-ff", "c"], in: dir)
         #expect(throws: Libgit2Error.self) { try merge(["a", "b"], in: dir) }
@@ -388,6 +398,7 @@ struct RepositoryOctopusMergeTests {
 
     @Test("a path each side has as a different base has it is unmerged, as git leaves it")
     func eachSideAsADifferentBase() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeEachSideAsABase()
         // The last head: an add/add conflict, our content kept.
         var other = try twin(of: dir)
@@ -421,6 +432,7 @@ struct RepositoryOctopusMergeTests {
 
     @Test("takes a criss-cross history's every best common ancestor, as git does", arguments: [false, true])
     func crissCrossBases(sideFirst: Bool) throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         // `changed` and `side` each merged the other's first commit, so
         // they have two best common ancestors: one with `f` changed, one
@@ -455,6 +467,7 @@ struct RepositoryOctopusMergeTests {
 
     @Test("keeps a change in the working tree the merge doesn't touch")
     func keepsUntouchedChange() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         try write("dirty\n", to: "m", in: dir)
         let other = try twin(of: dir)
@@ -465,6 +478,7 @@ struct RepositoryOctopusMergeTests {
 
     @Test("reduces heads as git does")
     func reducesHeads() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         let repository = try Repository.open(at: dir)
         // `base` is in HEAD's history; `a` twice is one head.
@@ -489,6 +503,7 @@ struct RepositoryOctopusMergeTests {
 
     @Test("names heads as git's merge message does")
     func mergeNames() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         try git(["tag", "t", "b"], in: dir)
         try git(["update-ref", "refs/remotes/origin/a", "a"], in: dir)
@@ -508,6 +523,7 @@ struct RepositoryOctopusMergeTests {
 
     @Test("refuses what names no commit, as git does")
     func refusesUnknownHead() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         #expect(throws: Libgit2Error.self) {
             try Repository.open(at: dir).mergeHeads(reducing: ["a", "nope"])

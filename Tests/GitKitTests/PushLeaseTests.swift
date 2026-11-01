@@ -19,9 +19,10 @@ private final class LeaseLog: @unchecked Sendable {
 @Suite("Push leases")
 struct PushLeaseTests {
 
+    private let fixtures = TemporaryRepositories()
+
     private func tmp(_ label: String) -> URL {
-        FileManager.default.temporaryDirectory
-            .appendingPathComponent("PushLeaseTests-\(label)-\(UUID().uuidString)")
+        fixtures.url("PushLeaseTests-\(label)-\(UUID().uuidString)")
     }
 
     @discardableResult
@@ -99,6 +100,7 @@ struct PushLeaseTests {
 
     @Test("a lease the remote still matches forces the update")
     func leaseHolds() throws {
+        defer { fixtures.removeAll() }
         let (remote, mine, theirs) = try makeRemoteAndClones()
         defer { [remote, mine, theirs].forEach { try? FileManager.default.removeItem(at: $0) } }
         try runGit(["reset", "-q", "--hard", "HEAD~1"], in: mine)
@@ -113,6 +115,7 @@ struct PushLeaseTests {
 
     @Test("a lease the remote no longer matches is refused as stale info")
     func staleLease() throws {
+        defer { fixtures.removeAll() }
         let (remote, mine, theirs) = try makeRemoteAndClones()
         defer { [remote, mine, theirs].forEach { try? FileManager.default.removeItem(at: $0) } }
         try diverge(mine: mine, theirs: theirs)
@@ -132,6 +135,7 @@ struct PushLeaseTests {
 
     @Test("--force overrides a lease, and a ref no lease covers isn't forced")
     func forceAndUncovered() throws {
+        defer { fixtures.removeAll() }
         let (remote, mine, theirs) = try makeRemoteAndClones()
         defer { [remote, mine, theirs].forEach { try? FileManager.default.removeItem(at: $0) } }
         try diverge(mine: mine, theirs: theirs)
@@ -147,6 +151,7 @@ struct PushLeaseTests {
 
     @Test("each ref of a push settles by its own lease")
     func mixedLeases() throws {
+        defer { fixtures.removeAll() }
         let (remote, mine, theirs) = try makeRemoteAndClones()
         defer { [remote, mine, theirs].forEach { try? FileManager.default.removeItem(at: $0) } }
         try diverge(mine: mine, theirs: theirs)
@@ -170,6 +175,7 @@ struct PushLeaseTests {
 
     @Test("a stale deletion is shown as git shows it")
     func staleDeletion() throws {
+        defer { fixtures.removeAll() }
         let (remote, mine, theirs) = try makeRemoteAndClones()
         defer { [remote, mine, theirs].forEach { try? FileManager.default.removeItem(at: $0) } }
         try diverge(mine: mine, theirs: theirs)
@@ -180,6 +186,7 @@ struct PushLeaseTests {
 
     @Test("a tag has no remote-tracking ref: its lease expects it absent")
     func tagLease() throws {
+        defer { fixtures.removeAll() }
         let (remote, mine, theirs) = try makeRemoteAndClones()
         defer { [remote, mine, theirs].forEach { try? FileManager.default.removeItem(at: $0) } }
         try runGit(["tag", "-f", "v1", "main"], in: mine)
@@ -196,6 +203,7 @@ struct PushLeaseTests {
 
     @Test("a forced push lists its updates in the remote's ref order")
     func forcedOrder() throws {
+        defer { fixtures.removeAll() }
         let (remote, mine, theirs) = try makeRemoteAndClones()
         defer { [remote, mine, theirs].forEach { try? FileManager.default.removeItem(at: $0) } }
         try runGit(["reset", "-q", "--hard", "HEAD~1"], in: mine)
@@ -216,6 +224,7 @@ struct PushLeaseTests {
 
     @Test("a forced tag that moves forward is still a forced update")
     func forcedTagMove() throws {
+        defer { fixtures.removeAll() }
         let (remote, mine, theirs) = try makeRemoteAndClones()
         defer { [remote, mine, theirs].forEach { try? FileManager.default.removeItem(at: $0) } }
         try runGit(["tag", "-f", "v1", "main"], in: mine)
@@ -228,6 +237,7 @@ struct PushLeaseTests {
 
     @Test("every expected object ID is read before anything is sent")
     func badExpectation() throws {
+        defer { fixtures.removeAll() }
         let (remote, mine, theirs) = try makeRemoteAndClones()
         defer { [remote, mine, theirs].forEach { try? FileManager.default.removeItem(at: $0) } }
         try runGit(["commit", "-q", "--allow-empty", "-m", "ahead"], in: mine)
@@ -244,6 +254,7 @@ struct PushLeaseTests {
 
     @Test("lease matching follows git's spelling of refs")
     func leaseRefMatching() {
+        defer { fixtures.removeAll() }
         let leases = PushLeases([.init(ref: "main", expectation: .absent)])
         #expect(leases.expectation(for: "refs/heads/main") == .absent)
         #expect(leases.expectation(for: "refs/tags/main") == .absent)

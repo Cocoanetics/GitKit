@@ -15,11 +15,10 @@ import Testing
 @Suite("Repository.archive")
 struct RepositoryArchiveTests {
 
+    private let fixtures = TemporaryRepositories()
+
     private func makeRepo() throws -> URL {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("GitArchiveTests-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(
-            at: dir, withIntermediateDirectories: true)
+        let dir = try fixtures.directory("GitArchiveTests-\(UUID().uuidString)")
         try run(["git", "init", "-b", "main"], in: dir)
         try run(["git", "config", "user.email", "test@example.com"], in: dir)
         try run(["git", "config", "user.name", "Test"], in: dir)
@@ -72,6 +71,7 @@ struct RepositoryArchiveTests {
 
     @Test("plain tar round-trips through system tar")
     func plainTar() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         let repo = try Repository.open(at: dir)
@@ -93,6 +93,7 @@ struct RepositoryArchiveTests {
 
     @Test("tar.gz format produces a valid gzip stream")
     func tarGzip() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         let repo = try Repository.open(at: dir)
@@ -104,6 +105,7 @@ struct RepositoryArchiveTests {
 
     @Test("tar.zst format produces a valid zstd frame")
     func tarZstd() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         let repo = try Repository.open(at: dir)
@@ -115,6 +117,7 @@ struct RepositoryArchiveTests {
 
     @Test("zip format carries the PKZIP magic")
     func zipFormat() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         let repo = try Repository.open(at: dir)
@@ -127,6 +130,7 @@ struct RepositoryArchiveTests {
 
     @Test("entry mtimes track the commit timestamp, not wall clock")
     func reproducibleMtime() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         // Force the commit's author/commit date to a known value via
@@ -166,6 +170,7 @@ struct RepositoryArchiveTests {
 
     @Test("--prefix prepends every entry path")
     func prefix() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         let repo = try Repository.open(at: dir)

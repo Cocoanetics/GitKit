@@ -10,6 +10,7 @@ extension RepositoryAmendTests {
 
     @Test("renames are found for the summary, as git finds them, even with diff.renames=false")
     func renamesInSummary() throws {
+        defer { fixtures.removeAll() }
         let details = try AmendFixture.expectParity(
             setup: { dir in
                 try AmendFixture.twoCommits(dir)
@@ -43,7 +44,8 @@ extension RepositoryAmendTests {
 
     @Test("a plain commit's summary finds renames too")
     func commitSummaryRenames() throws {
-        let dir = try AmendFixture.makeRepo()
+        defer { fixtures.removeAll() }
+        let dir = try AmendFixture.makeRepo(in: fixtures)
         defer { try? FileManager.default.removeItem(at: dir) }
         try AmendFixture.twoCommits(dir)
         try AmendFixture.git(["mv", "g", "h"], in: dir)
@@ -56,6 +58,7 @@ extension RepositoryAmendTests {
 
     @Test("rename percentages and the 50% threshold are git's, for small, CRLF and long-line files")
     func renameSimilarity() throws {
+        defer { fixtures.removeAll() }
         let long = String(repeating: "abcdefghij", count: 30)
         struct Move {
             let old: String, new: String, before: String, after: String
@@ -87,6 +90,7 @@ extension RepositoryAmendTests {
 
     @Test("extra headers like mergetag are kept, the old signature dropped, as git does")
     func extraHeaders() throws {
+        defer { fixtures.removeAll() }
         try AmendFixture.expectParity(
             setup: { dir in
                 try AmendFixture.twoCommits(dir)
@@ -131,6 +135,7 @@ extension RepositoryAmendTests {
 
     @Test("with no identity configured, the committer from env moves the ref and is logged")
     func identityFromEnvOnly() throws {
+        defer { fixtures.removeAll() }
         try AmendFixture.expectSameRepos(
             setup: { dir in
                 try AmendFixture.twoCommits(dir)

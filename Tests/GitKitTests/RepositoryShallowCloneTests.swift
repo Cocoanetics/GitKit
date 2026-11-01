@@ -20,11 +20,12 @@ import Testing
 @Suite("Repository.clone shallow & single-branch")
 struct RepositoryShallowCloneTests {
 
+    private let fixtures = TemporaryRepositories()
+
     // MARK: Fixtures
 
     private func tmp(_ label: String) -> URL {
-        FileManager.default.temporaryDirectory
-            .appendingPathComponent("\(label)-\(UUID().uuidString)")
+        fixtures.url("\(label)-\(UUID().uuidString)")
     }
 
     /// A source repo with three commits on `main` and one extra branch
@@ -95,6 +96,7 @@ struct RepositoryShallowCloneTests {
 
     @Test("clone depth reaches libgit2's shallow path")
     func shallowClonePlumbedThrough() throws {
+        defer { fixtures.removeAll() }
         let (srcDir, url) = try makeSource()
         let dest = tmp("ShallowClone")
         defer {
@@ -108,6 +110,7 @@ struct RepositoryShallowCloneTests {
 
     @Test("fetch depth reaches libgit2's shallow path")
     func shallowFetchPlumbedThrough() throws {
+        defer { fixtures.removeAll() }
         let (srcDir, url) = try makeSource()
         let dest = tmp("ShallowFetch")
         defer {
@@ -125,6 +128,7 @@ struct RepositoryShallowCloneTests {
 
     @Test("unshallow reaches libgit2's shallow path")
     func unshallowPlumbedThrough() throws {
+        defer { fixtures.removeAll() }
         let (srcDir, url) = try makeSource()
         let dest = tmp("Unshallow")
         defer {
@@ -141,6 +145,7 @@ struct RepositoryShallowCloneTests {
 
     @Test("fetch prunes deleted remote-tracking branches only when requested")
     func fetchPrune() throws {
+        defer { fixtures.removeAll() }
         let (srcDir, url) = try makeSource()
         let dest = tmp("FetchPrune")
         defer {
@@ -170,6 +175,7 @@ struct RepositoryShallowCloneTests {
 
     @Test("no depth clones the full history")
     func fullCloneHasFullHistory() throws {
+        defer { fixtures.removeAll() }
         let (srcDir, url) = try makeSource()
         let dest = tmp("FullClone")
         defer {
@@ -185,6 +191,7 @@ struct RepositoryShallowCloneTests {
 
     @Test("a non-positive depth is treated as full history")
     func zeroDepthIsFull() throws {
+        defer { fixtures.removeAll() }
         let (srcDir, url) = try makeSource()
         let dest = tmp("ZeroDepthClone")
         defer {
@@ -199,6 +206,7 @@ struct RepositoryShallowCloneTests {
 
     @Test("singleBranch with an explicit branch transfers only that branch")
     func singleBranchExplicit() throws {
+        defer { fixtures.removeAll() }
         let (srcDir, url) = try makeSource()
         let dest = tmp("SingleBranchClone")
         defer {
@@ -218,6 +226,7 @@ struct RepositoryShallowCloneTests {
 
     @Test("singleBranch without a branch uses the remote's default branch")
     func singleBranchDefault() throws {
+        defer { fixtures.removeAll() }
         let (srcDir, url) = try makeSource()
         let dest = tmp("SingleBranchDefaultClone")
         defer {

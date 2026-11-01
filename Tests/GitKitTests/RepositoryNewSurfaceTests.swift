@@ -14,6 +14,8 @@ import Testing
 @Suite("Repository new surface")
 struct RepositoryNewSurfaceTests {
 
+    private let fixtures = TemporaryRepositories()
+
     @discardableResult
     private func runGit(_ args: [String], in dir: URL) throws -> String {
         let p = Process()
@@ -38,9 +40,7 @@ struct RepositoryNewSurfaceTests {
     }
 
     private func makeRepo() throws -> URL {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("NewSurface-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dir = try fixtures.directory("NewSurface-\(UUID().uuidString)")
         try runGit(["init", "-b", "main"], in: dir)
         try runGit(["config", "user.email", "t@e.com"], in: dir)
         try runGit(["config", "user.name", "T"], in: dir)
@@ -52,6 +52,7 @@ struct RepositoryNewSurfaceTests {
 
     @Test("branchDelete removes a fully-merged branch")
     func deleteFullyMerged() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         let repo = try Repository.open(at: dir)
@@ -64,6 +65,7 @@ struct RepositoryNewSurfaceTests {
 
     @Test("branchDelete refuses an unmerged branch without force")
     func deleteUnmergedRefused() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         let repo = try Repository.open(at: dir)
@@ -84,6 +86,7 @@ struct RepositoryNewSurfaceTests {
 
     @Test("branchRename moves the ref")
     func rename() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         let repo = try Repository.open(at: dir)
@@ -95,6 +98,7 @@ struct RepositoryNewSurfaceTests {
 
     @Test("resolveOID resolves HEAD")
     func resolveOIDHead() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         let sha = try Repository.open(at: dir)
@@ -107,13 +111,12 @@ struct RepositoryNewSurfaceTests {
 
     @Test("isInsideWorkTree true inside repo, false outside")
     func insideWorkTree() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         #expect(try Repository.open(at: dir).isInsideWorkTree() == true)
 
-        let outsideDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("not-a-repo-\(UUID())")
-        try FileManager.default.createDirectory(at: outsideDir, withIntermediateDirectories: true)
+        let outsideDir = try fixtures.directory("not-a-repo-\(UUID())")
         defer { try? FileManager.default.removeItem(at: outsideDir) }
         // Outside a repo it's `Repository.open` itself that fails — the
         // old GitClient mapped that failure to `false`; do the same here.
@@ -128,6 +131,7 @@ struct RepositoryNewSurfaceTests {
 
     @Test("move stages the rename in the index and on disk")
     func moveStages() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         try Repository.open(at: dir).move(from: "a.txt", to: "renamed.txt")
@@ -139,6 +143,7 @@ struct RepositoryNewSurfaceTests {
 
     @Test("remove with keepWorktree=false deletes file + index entry")
     func removeAlsoDeletesFile() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         try Repository.open(at: dir).remove(paths: ["a.txt"])
@@ -150,6 +155,7 @@ struct RepositoryNewSurfaceTests {
 
     @Test("remove keepWorktree=true leaves file but stages deletion")
     func removeKeepsFile() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         try Repository.open(at: dir)

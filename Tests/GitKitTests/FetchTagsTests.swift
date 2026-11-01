@@ -18,9 +18,10 @@ private final class TagsLog: @unchecked Sendable {
 @Suite("Fetch tags")
 struct FetchTagsTests {
 
+    private let fixtures = TemporaryRepositories()
+
     private func tmp(_ label: String) -> URL {
-        FileManager.default.temporaryDirectory
-            .appendingPathComponent("FetchTagsTests-\(label)-\(UUID().uuidString)")
+        fixtures.url("FetchTagsTests-\(label)-\(UUID().uuidString)")
     }
 
     @discardableResult
@@ -106,6 +107,7 @@ struct FetchTagsTests {
 
     @Test("--tags fetches every tag, after what the refspecs fetched")
     func allTags() throws {
+        defer { fixtures.removeAll() }
         let (upstream, clone) = try makeUpstreamAndClone()
         defer { [upstream, clone].forEach { try? FileManager.default.removeItem(at: $0) } }
         let (output, error) = try fetch(clone, tags: .all)
@@ -125,6 +127,7 @@ struct FetchTagsTests {
 
     @Test("by default only the tags pointing into what was fetched come along")
     func followedTags() throws {
+        defer { fixtures.removeAll() }
         let (upstream, clone) = try makeUpstreamAndClone()
         defer { [upstream, clone].forEach { try? FileManager.default.removeItem(at: $0) } }
         _ = try fetch(clone, tags: nil)
@@ -139,6 +142,7 @@ struct FetchTagsTests {
 
     @Test("a tag on nothing fetched isn't followed, lightweight or annotated")
     func unreachableTagsStayBehind() throws {
+        defer { fixtures.removeAll() }
         let (upstream, clone) = try makeUpstreamAndClone()
         defer { [upstream, clone].forEach { try? FileManager.default.removeItem(at: $0) } }
         // Tags on a branch the clone doesn't fetch.
@@ -157,6 +161,7 @@ struct FetchTagsTests {
 
     @Test("a tag of a tree or blob is followed only when what's fetched holds it")
     func treeAndBlobTags() throws {
+        defer { fixtures.removeAll() }
         let (upstream, clone) = try makeUpstreamAndClone()
         defer { [upstream, clone].forEach { try? FileManager.default.removeItem(at: $0) } }
         let blob = try runGit(["hash-object", "-w", "--stdin"], in: upstream, input: "unrelated\n")
@@ -178,6 +183,7 @@ struct FetchTagsTests {
 
     @Test("a tag of an object here already, reachable or not, is followed")
     func danglingTarget() throws {
+        defer { fixtures.removeAll() }
         let (upstream, clone) = try makeUpstreamAndClone()
         defer { [upstream, clone].forEach { try? FileManager.default.removeItem(at: $0) } }
         let blob = try runGit(["hash-object", "-w", "--stdin"], in: upstream, input: "dangling\n")
@@ -189,6 +195,7 @@ struct FetchTagsTests {
 
     @Test("a fetched ref that is a blob itself vouches for a tag of it")
     func blobTip() throws {
+        defer { fixtures.removeAll() }
         let (upstream, clone) = try makeUpstreamAndClone()
         defer { [upstream, clone].forEach { try? FileManager.default.removeItem(at: $0) } }
         let blob = try runGit(["hash-object", "-w", "--stdin"], in: upstream, input: "meta\n")
@@ -203,6 +210,7 @@ struct FetchTagsTests {
 
     @Test("an object an alternate holds counts as here already")
     func alternateTarget() throws {
+        defer { fixtures.removeAll() }
         let (upstream, clone) = try makeUpstreamAndClone()
         let borrower = tmp("borrower")
         defer { [upstream, clone, borrower].forEach { try? FileManager.default.removeItem(at: $0) } }
@@ -218,6 +226,7 @@ struct FetchTagsTests {
 
     @Test("a tag fetched by a short source is the refspec's, not a followed one")
     func shortSourceTag() throws {
+        defer { fixtures.removeAll() }
         let (upstream, clone) = try makeUpstreamAndClone()
         defer { [upstream, clone].forEach { try? FileManager.default.removeItem(at: $0) } }
         // vside2 is on `side`, which this fetch doesn't bring.
@@ -229,6 +238,7 @@ struct FetchTagsTests {
 
     @Test("--no-tags follows none, and overrides tagOpt")
     func noTags() throws {
+        defer { fixtures.removeAll() }
         let (upstream, clone) = try makeUpstreamAndClone()
         defer { [upstream, clone].forEach { try? FileManager.default.removeItem(at: $0) } }
         try runGit(["config", "remote.origin.tagOpt", "--tags"], in: clone)
@@ -238,6 +248,7 @@ struct FetchTagsTests {
 
     @Test("tagOpt --tags fetches every tag even for an explicit refspec")
     func tagOpt() throws {
+        defer { fixtures.removeAll() }
         let (upstream, clone) = try makeUpstreamAndClone()
         defer { [upstream, clone].forEach { try? FileManager.default.removeItem(at: $0) } }
         try runGit(["config", "remote.origin.tagOpt", "--tags"], in: clone)
@@ -249,6 +260,7 @@ struct FetchTagsTests {
 
     @Test("a tag that moved on the remote isn't clobbered")
     func clobber() throws {
+        defer { fixtures.removeAll() }
         let (upstream, clone) = try makeUpstreamAndClone()
         defer { [upstream, clone].forEach { try? FileManager.default.removeItem(at: $0) } }
         let before = try runGit(["rev-parse", "v1"], in: clone)
@@ -269,6 +281,7 @@ struct FetchTagsTests {
 
     @Test("a branch fetched into tags clobbers none of them, by a short source or into two")
     func branchIntoTags() throws {
+        defer { fixtures.removeAll() }
         let (upstream, clone) = try makeUpstreamAndClone()
         defer { [upstream, clone].forEach { try? FileManager.default.removeItem(at: $0) } }
         let specs = ["main:refs/tags/x", "refs/heads/main:refs/tags/a", "refs/heads/main:refs/tags/b"]
@@ -290,6 +303,7 @@ struct FetchTagsTests {
 
     @Test("a negative refspec keeps --tags off a tag an explicit refspec still stores")
     func excludedButExplicit() throws {
+        defer { fixtures.removeAll() }
         let (upstream, clone) = try makeUpstreamAndClone()
         defer { [upstream, clone].forEach { try? FileManager.default.removeItem(at: $0) } }
         let (output, error) = try fetch(
@@ -301,6 +315,7 @@ struct FetchTagsTests {
 
     @Test("an object ID fetched into a tag doesn't clobber it")
     func objectIDIntoTag() throws {
+        defer { fixtures.removeAll() }
         let (upstream, clone) = try makeUpstreamAndClone()
         defer { [upstream, clone].forEach { try? FileManager.default.removeItem(at: $0) } }
         _ = try fetch(clone, ["main:refs/tags/x"], tags: .off)
@@ -315,6 +330,7 @@ struct FetchTagsTests {
 
     @Test("an object ID fetched into a tag --tags excludes still lands there")
     func objectIDIntoExcludedTag() throws {
+        defer { fixtures.removeAll() }
         let (upstream, clone) = try makeUpstreamAndClone()
         defer { [upstream, clone].forEach { try? FileManager.default.removeItem(at: $0) } }
         try runGit(["tag", "-d", "v1"], in: clone)
@@ -333,6 +349,7 @@ struct FetchTagsTests {
 
     @Test("the remote's HEAD fetched into a tag doesn't clobber it")
     func headIntoTag() throws {
+        defer { fixtures.removeAll() }
         let (upstream, clone) = try makeUpstreamAndClone()
         defer { [upstream, clone].forEach { try? FileManager.default.removeItem(at: $0) } }
         _ = try fetch(clone, ["HEAD:refs/tags/x"], tags: .off)
@@ -346,6 +363,7 @@ struct FetchTagsTests {
 
     @Test("a negative refspec excludes a tag from an explicit refspec too")
     func excludedExplicitSource() throws {
+        defer { fixtures.removeAll() }
         let (upstream, clone) = try makeUpstreamAndClone()
         defer { [upstream, clone].forEach { try? FileManager.default.removeItem(at: $0) } }
         let before = try runGit(["rev-parse", "v1"], in: clone)
@@ -357,6 +375,7 @@ struct FetchTagsTests {
 
     @Test("a short source is the ref git picks for it: a tag before a branch")
     func shortSourcePrefersTag() throws {
+        defer { fixtures.removeAll() }
         let (upstream, clone) = try makeUpstreamAndClone()
         defer { [upstream, clone].forEach { try? FileManager.default.removeItem(at: $0) } }
         try runGit(["tag", "foo", "main"], in: upstream)
@@ -372,6 +391,7 @@ struct FetchTagsTests {
 
     @Test("a symbolic tag a negative refspec excludes stays as it was")
     func symbolicExcludedTag() throws {
+        defer { fixtures.removeAll() }
         let (upstream, clone) = try makeUpstreamAndClone()
         defer { [upstream, clone].forEach { try? FileManager.default.removeItem(at: $0) } }
         try runGit(["tag", "x", "main"], in: upstream)
@@ -382,6 +402,7 @@ struct FetchTagsTests {
 
     @Test("--tags leaves a symbolic tag alone, as git does")
     func symbolicTagUntouched() throws {
+        defer { fixtures.removeAll() }
         let (upstream, clone) = try makeUpstreamAndClone()
         defer { [upstream, clone].forEach { try? FileManager.default.removeItem(at: $0) } }
         try runGit(["tag", "x", "side"], in: upstream)
@@ -395,6 +416,7 @@ struct FetchTagsTests {
 
     @Test("an explicit refspec into a symbolic tag is refused, as git refuses it")
     func symbolicTagExplicit() throws {
+        defer { fixtures.removeAll() }
         let (upstream, clone) = try makeUpstreamAndClone()
         defer { [upstream, clone].forEach { try? FileManager.default.removeItem(at: $0) } }
         try runGit(["tag", "x", "side"], in: upstream)
@@ -409,6 +431,7 @@ struct FetchTagsTests {
 
     @Test("a fetched ref that is an annotated tag vouches for what it points at")
     func annotatedTagTip() throws {
+        defer { fixtures.removeAll() }
         let (upstream, clone) = try makeUpstreamAndClone()
         defer { [upstream, clone].forEach { try? FileManager.default.removeItem(at: $0) } }
         try runGit(["checkout", "-q", "-b", "hidden"], in: upstream)
@@ -423,6 +446,7 @@ struct FetchTagsTests {
 
     @Test("a negative refspec keeps a tag out of --tags")
     func negativeRefspec() throws {
+        defer { fixtures.removeAll() }
         let (upstream, clone) = try makeUpstreamAndClone()
         defer { [upstream, clone].forEach { try? FileManager.default.removeItem(at: $0) } }
         _ = try fetch(clone, ["refs/heads/*:refs/remotes/origin/*", "^refs/tags/v3"], tags: .all)

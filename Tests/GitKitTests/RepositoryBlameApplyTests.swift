@@ -11,6 +11,8 @@ import Testing
 @Suite("Repository.blame + apply")
 struct RepositoryBlameApplyTests {
 
+    private let fixtures = TemporaryRepositories()
+
     @discardableResult
     private func runGit(_ args: [String], in dir: URL) throws -> String {
         let p = Process()
@@ -35,9 +37,7 @@ struct RepositoryBlameApplyTests {
     }
 
     private func makeRepo() throws -> URL {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("BlameApply-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dir = try fixtures.directory("BlameApply-\(UUID().uuidString)")
         try runGit(["init", "-b", "main"], in: dir)
         try runGit(["config", "user.email", "t@e.com"], in: dir)
         try runGit(["config", "user.name", "T"], in: dir)
@@ -46,6 +46,7 @@ struct RepositoryBlameApplyTests {
 
     @Test("blame surfaces hunks per change")
     func blameHunks() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         try Data("line1\nline2\nline3\n".utf8)
@@ -69,6 +70,7 @@ struct RepositoryBlameApplyTests {
 
     @Test("apply against workdir mutates files")
     func applyToWorkdir() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         try Data("1\n2\n3\n".utf8).write(to: dir.appendingPathComponent("a.txt"))
@@ -90,6 +92,7 @@ struct RepositoryBlameApplyTests {
 
     @Test("apply --cached lands in the index without touching the workdir")
     func applyToIndex() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         try Data("1\n2\n3\n".utf8).write(to: dir.appendingPathComponent("a.txt"))

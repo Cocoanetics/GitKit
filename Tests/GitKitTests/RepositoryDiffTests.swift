@@ -11,10 +11,10 @@ import Testing
 @Suite("Repository.diff")
 struct RepositoryDiffTests {
 
+    private let fixtures = TemporaryRepositories()
+
     private func makeRepo() throws -> URL {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("DiffTests-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dir = try fixtures.directory("DiffTests-\(UUID().uuidString)")
         try runGit(["init", "-b", "main"], in: dir)
         try runGit(["config", "user.email", "t@e.com"], in: dir)
         try runGit(["config", "user.name", "T"], in: dir)
@@ -53,6 +53,7 @@ struct RepositoryDiffTests {
 
     @Test("workdir vs index includes unstaged change")
     func workdirVsIndex() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         try Data("line1\nLINE TWO\nline3\n".utf8)
@@ -67,6 +68,7 @@ struct RepositoryDiffTests {
 
     @Test("workdir vs index is empty when working tree is clean")
     func workdirVsIndexClean() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
 
@@ -77,6 +79,7 @@ struct RepositoryDiffTests {
 
     @Test("index vs HEAD shows staged changes only")
     func indexVsHead() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         try Data("v2\n".utf8).write(to: dir.appendingPathComponent("a.txt"))
@@ -91,6 +94,7 @@ struct RepositoryDiffTests {
 
     @Test("--stat format produces summary line")
     func statFormat() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         try Data("line1\nLINE TWO\nline3\nline4\n".utf8)
@@ -105,6 +109,7 @@ struct RepositoryDiffTests {
 
     @Test("--name-only format prints just the path")
     func nameOnlyFormat() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         try Data("v2\n".utf8).write(to: dir.appendingPathComponent("a.txt"))
@@ -116,6 +121,7 @@ struct RepositoryDiffTests {
 
     @Test("--name-status format prefixes with M")
     func nameStatusFormat() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         try Data("v2\n".utf8).write(to: dir.appendingPathComponent("a.txt"))
@@ -127,6 +133,7 @@ struct RepositoryDiffTests {
 
     @Test("commit-vs-commit diff between HEAD and a previous commit")
     func commitVsCommit() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         try Data("v2\nv3\n".utf8).write(to: dir.appendingPathComponent("a.txt"))
@@ -142,6 +149,7 @@ struct RepositoryDiffTests {
 
     @Test("empty-vs-commit renders the root commit as additions (patch)")
     func emptyVsCommitPatch() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
 
@@ -156,6 +164,7 @@ struct RepositoryDiffTests {
 
     @Test("empty-vs-commit --stat produces per-file bar plus summary (root commit)")
     func emptyVsCommitStat() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
 
@@ -168,6 +177,7 @@ struct RepositoryDiffTests {
 
     @Test("contextLines = 0 produces zero-context unified diff")
     func contextLinesZero() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         try Data("line1\nLINE TWO\nline3\n".utf8)
@@ -189,6 +199,7 @@ struct RepositoryDiffTests {
 
     @Test("--shortstat produces just the summary line")
     func shortStatFormat() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         try Data("line1\nLINE TWO\nline3\nline4\n".utf8)
@@ -203,6 +214,7 @@ struct RepositoryDiffTests {
 
     @Test("--numstat is tab-separated, real-git compatible")
     func numStatFormat() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         try Data("line1\nLINE TWO\nline3\nline4\n".utf8)
@@ -216,6 +228,7 @@ struct RepositoryDiffTests {
 
     @Test("--raw matches real git format (no SHA ellipsis)")
     func rawFormat() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         try Data("v2\n".utf8).write(to: dir.appendingPathComponent("a.txt"))
@@ -233,6 +246,7 @@ struct RepositoryDiffTests {
 
     @Test("mergeBase resolves to the common ancestor")
     func mergeBaseLookup() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         // Two commits already exist (init), need a divergent branch.
@@ -254,6 +268,7 @@ struct RepositoryDiffTests {
 
     @Test("canResolveRef returns true for HEAD, false for non-ref")
     func canResolveRefBasic() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         let repo = try Repository.open(at: dir)
@@ -264,6 +279,7 @@ struct RepositoryDiffTests {
 
     @Test("pathspec filter restricts the diff to one file")
     func pathspecFilter() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         try Data("a-edit\n".utf8).write(to: dir.appendingPathComponent("a.txt"))

@@ -11,13 +11,13 @@ import Testing
 @Suite("Repository.merge")
 struct RepositoryMergeTests {
 
+    private let fixtures = TemporaryRepositories()
+
     /// Build a repo with two divergent branches: `main` ahead by one
     /// commit (trunk.txt), `feature` ahead by another (feat.txt). Both
     /// rooted at the same initial commit.
     private func makeDivergentRepo() throws -> URL {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("MergeTests-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dir = try fixtures.directory("MergeTests-\(UUID().uuidString)")
         try runGit(["init", "-b", "main"], in: dir)
         try runGit(["config", "user.email", "t@e.com"], in: dir)
         try runGit(["config", "user.name", "T"], in: dir)
@@ -38,9 +38,7 @@ struct RepositoryMergeTests {
     /// Linear repo: `feature` is one commit ahead of `main` from the
     /// same root. Used for fast-forward tests.
     private func makeLinearRepo() throws -> URL {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("MergeTests-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dir = try fixtures.directory("MergeTests-\(UUID().uuidString)")
         try runGit(["init", "-b", "main"], in: dir)
         try runGit(["config", "user.email", "t@e.com"], in: dir)
         try runGit(["config", "user.name", "T"], in: dir)
@@ -57,9 +55,7 @@ struct RepositoryMergeTests {
 
     /// Conflict scenario: both branches modify the same line in `a.txt`.
     private func makeConflictingRepo() throws -> URL {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("MergeTests-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dir = try fixtures.directory("MergeTests-\(UUID().uuidString)")
         try runGit(["init", "-b", "main"], in: dir)
         try runGit(["config", "user.email", "t@e.com"], in: dir)
         try runGit(["config", "user.name", "T"], in: dir)
@@ -103,6 +99,7 @@ struct RepositoryMergeTests {
 
     @Test("fast-forward when ahead is achievable")
     func fastForward() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeLinearRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
 
@@ -123,6 +120,7 @@ struct RepositoryMergeTests {
 
     @Test("alreadyUpToDate when target is already merged")
     func alreadyUpToDate() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeLinearRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         let repo = try Repository.open(at: dir)
@@ -137,6 +135,7 @@ struct RepositoryMergeTests {
 
     @Test("--ff-only refuses to merge when branches diverge")
     func ffOnlyRefuses() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeDivergentRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         let repo = try Repository.open(at: dir)
@@ -147,6 +146,7 @@ struct RepositoryMergeTests {
 
     @Test("3-way merge produces a merge commit with two parents")
     func threeWayMergeCommit() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeDivergentRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         let outcome = try Repository.open(at: dir)
@@ -167,6 +167,7 @@ struct RepositoryMergeTests {
 
     @Test("conflict surfaces conflicted paths and leaves index conflicted")
     func conflictPath() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeConflictingRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
 
@@ -187,6 +188,7 @@ struct RepositoryMergeTests {
 
     @Test("mergeContinue commits resolved MERGE_HEAD and clears state")
     func mergeContinueAfterConflict() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeConflictingRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
 
@@ -227,6 +229,7 @@ struct RepositoryMergeTests {
 
     @Test("mergeContinue allows resolved tree identical to HEAD")
     func mergeContinueAllowsEmptyTreeChange() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeConflictingRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
 
@@ -252,6 +255,7 @@ struct RepositoryMergeTests {
 
     @Test("unknown ref throws Libgit2Error")
     func unknownRef() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeLinearRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         let repo = try Repository.open(at: dir)

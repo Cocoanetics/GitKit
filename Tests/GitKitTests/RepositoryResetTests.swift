@@ -12,10 +12,10 @@ import Testing
 @Suite("Repository.reset")
 struct RepositoryResetTests {
 
+    private let fixtures = TemporaryRepositories()
+
     private func makeRepoTwoCommits() throws -> URL {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("ResetTests-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dir = try fixtures.directory("ResetTests-\(UUID().uuidString)")
         try runGit(["init", "-b", "main"], in: dir)
         try runGit(["config", "user.email", "t@e.com"], in: dir)
         try runGit(["config", "user.name", "T"], in: dir)
@@ -55,6 +55,7 @@ struct RepositoryResetTests {
 
     @Test("--soft moves HEAD only; index keeps the rolled-back files staged")
     func resetSoftKeepsIndex() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepoTwoCommits()
         defer { try? FileManager.default.removeItem(at: dir) }
         let initialHEAD = try runGit(["rev-parse", "HEAD"], in: dir)
@@ -76,6 +77,7 @@ struct RepositoryResetTests {
 
     @Test("--mixed (default) moves HEAD + clears index but keeps workdir")
     func resetMixedClearsIndex() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepoTwoCommits()
         defer { try? FileManager.default.removeItem(at: dir) }
         _ = try Repository.open(at: dir)
@@ -91,6 +93,7 @@ struct RepositoryResetTests {
 
     @Test("--hard resets workdir too")
     func resetHardClearsWorkdir() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepoTwoCommits()
         defer { try? FileManager.default.removeItem(at: dir) }
         let outcome = try Repository.open(at: dir)
@@ -109,6 +112,7 @@ struct RepositoryResetTests {
 
     @Test("per-path reset unstages without moving HEAD")
     func resetPathUnstages() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepoTwoCommits()
         defer { try? FileManager.default.removeItem(at: dir) }
         try Data("modified\n".utf8).write(to: dir.appendingPathComponent("a.txt"))

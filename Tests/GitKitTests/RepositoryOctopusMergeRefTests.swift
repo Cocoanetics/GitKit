@@ -11,6 +11,7 @@ extension RepositoryOctopusMergeTests {
 
     @Test("a branch moved on while the merge was made stays, the merge staged, as git's update_ref leaves it")
     func branchMovedMeanwhile() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         func oid(_ name: String) throws -> git_oid {
             var oid = git_oid()
@@ -31,6 +32,7 @@ extension RepositoryOctopusMergeTests {
 
     @Test("a branch deleted while the merge was made leaves the merge staged, as git's update_ref leaves it")
     func branchDeletedMeanwhile() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         func oid(_ name: String) throws -> git_oid {
             var oid = git_oid()
@@ -48,6 +50,7 @@ extension RepositoryOctopusMergeTests {
 
     @Test("a merge left staged whose merge state can't be written is taken back, index and work tree")
     func stagedMergeStateUnwritable() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         func oid(_ name: String) throws -> git_oid {
             var oid = git_oid()
@@ -73,6 +76,7 @@ extension RepositoryOctopusMergeTests {
 
     @Test("a merge taken back also takes back what sparsity settled outside the merge's paths")
     func stagedMergeStateUnwritableAfterSparsity() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         try FileManager.default.createDirectory(at: dir.appendingPathComponent("s"), withIntermediateDirectories: true)
         try write("old\n", to: "s/old", in: dir)
@@ -105,6 +109,7 @@ extension RepositoryOctopusMergeTests {
 
     @Test("a core.ignorecase that isn't a boolean stops the merge before anything changes, as git dies on it")
     func ignoreCaseNotBoolean() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         try git(["config", "core.ignorecase", "maybe"], in: dir)
         let files = ["index", "refs/heads/main"].map { dir.appendingPathComponent(".git/" + $0) }
@@ -115,5 +120,39 @@ extension RepositoryOctopusMergeTests {
             #expect(throws: (any Error).self) { try git(["merge", "-q", "a", "b"], in: dir) }
         }
     }
+}
+
+// Repository preconditions and ref-write failures.
+extension RepositoryOctopusMergeTests {
+    @Test("a ref that can't be written leaves the merge staged too, with git's reason")
+    func unwritableRefs() throws {
+        defer { fixtures.removeAll() }
+        let dir = try makeRepository()
+        let heads = dir.appendingPathComponent(".git/refs/heads").path
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: heads)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: heads) }
+        // Where permissions don't hold (root), there's nothing to see.
+        guard !FileManager.default.isWritableFile(atPath: heads) else { return }
+        let result = try merge(["a", "b"], in: dir)
+        guard case .headNotUpdated(let lockFile, let reason) = result.outcome else {
+            Issue.record("expected HEAD not to move, got \(result.outcome)"); return
+        }
+        #expect(lockFile.hasSuffix("/.git/refs/heads/main.lock") && reason == "Permission denied")
+        #expect(FileManager.default.fileExists(atPath: dir.appendingPathComponent(".git/MERGE_HEAD").path))
+    }
+
+    @Test("refuses a bare repository before anything changes")
+    func refusesBare() throws {
+        defer { fixtures.removeAll() }
+        let dir = try makeRepository()
+        let bare = fixtures.url("OctopusBare-\(UUID().uuidString)")
+        try git(["clone", "-q", "--bare", dir.path, bare.path], in: dir)
+        let repository = try Repository.open(at: bare)
+        #expect(throws: Libgit2Error.self) {
+            try repository.octopusMerge(heads: ["a", "b"], message: "Merge", env: Self.identity)
+        }
+        #expect(!FileManager.default.fileExists(atPath: bare.appendingPathComponent("ORIG_HEAD").path))
+    }
+
 }
 #endif

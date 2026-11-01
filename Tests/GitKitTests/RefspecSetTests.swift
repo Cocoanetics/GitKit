@@ -21,11 +21,12 @@ private final class OutputLog: @unchecked Sendable {
 @Suite("Refspec sets")
 struct RefspecSetTests {
 
+    private let fixtures = TemporaryRepositories()
+
     // MARK: Fixtures
 
     private func tmp(_ label: String) -> URL {
-        FileManager.default.temporaryDirectory
-            .appendingPathComponent("RefspecSetTests-\(label)-\(UUID().uuidString)")
+        fixtures.url("RefspecSetTests-\(label)-\(UUID().uuidString)")
     }
 
     /// A repository on `main` with one commit and the branches `names`
@@ -92,6 +93,7 @@ struct RefspecSetTests {
 
     @Test("a remote's negative fetch refspec excludes what its wildcard matches")
     func negativeFetchRefspec() throws {
+        defer { fixtures.removeAll() }
         let source = try makeRepo(branches: ["dev", "private"])
         let dest = try makeRepo()
         defer { removing(source, dest)() }
@@ -120,6 +122,7 @@ struct RefspecSetTests {
 
     @Test("pruning leaves alone what a negative refspec excludes, as in git")
     func pruneWithNegativeRefspec() throws {
+        defer { fixtures.removeAll() }
         let source = try makeRepo(branches: ["private", "gone"])
         let dest = try makeRepo()
         defer { removing(source, dest)() }
@@ -137,6 +140,7 @@ struct RefspecSetTests {
 
     @Test("a negative refspec doesn't stop a tag from being followed, as in git")
     func negativeRefspecAndFollowedTags() throws {
+        defer { fixtures.removeAll() }
         let source = try makeRepo()
         let dest = try makeRepo()
         defer { removing(source, dest)() }
@@ -151,6 +155,7 @@ struct RefspecSetTests {
 
     @Test("a remote without a fetch refspec fetches only HEAD, into FETCH_HEAD")
     func fetchWithoutMapping() throws {
+        defer { fixtures.removeAll() }
         let source = try makeRepo(branches: ["dev"])
         let dest = try makeRepo()
         defer { removing(source, dest)() }
@@ -167,6 +172,7 @@ struct RefspecSetTests {
 
     @Test("several refspecs go out in one push, with one summary")
     func severalRefspecsInOnePush() throws {
+        defer { fixtures.removeAll() }
         let work = try makeRepo(branches: ["dev"])
         let bare = try makeBare()
         defer { removing(work, bare)() }
@@ -187,6 +193,7 @@ struct RefspecSetTests {
 
     @Test("the matching refspec pushes the branches both sides have")
     func matchingRefspec() throws {
+        defer { fixtures.removeAll() }
         let work = try makeRepo(branches: ["dev", "local-only"])
         let bare = try makeBare()
         defer { removing(work, bare)() }
@@ -214,6 +221,7 @@ struct RefspecSetTests {
 
     @Test("matching against a remote without refs refuses, as git does")
     func matchingAgainstAnEmptyRemote() throws {
+        defer { fixtures.removeAll() }
         let work = try makeRepo()
         let bare = try makeBare()
         defer { removing(work, bare)() }
@@ -233,6 +241,7 @@ struct RefspecSetTests {
 
     @Test("negatives that leave none of the remote's refs refuse, as in git")
     func negativesExcludingEverything() throws {
+        defer { fixtures.removeAll() }
         let work = try makeRepo(branches: ["dev"])
         let bare = try makeBare()
         defer { removing(work, bare)() }
@@ -267,6 +276,7 @@ struct RefspecSetTests {
 
     @Test("patterns push each local ref they match; negatives drop destinations")
     func patternsAndNegatives() throws {
+        defer { fixtures.removeAll() }
         let work = try makeRepo(branches: ["dev", "wip/a", "private"])
         let mirror = try makeBare()
         let mapped = try makeBare()
@@ -358,6 +368,7 @@ struct RefspecSetTests {
 
     @Test("no refspecs push what the remote is configured to push")
     func configuredPushRefspecs() throws {
+        defer { fixtures.removeAll() }
         let work = try makeRepo(branches: ["dev"])
         let bare = try makeBare()
         defer { removing(work, bare)() }

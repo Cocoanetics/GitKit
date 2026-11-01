@@ -12,6 +12,8 @@ import Testing
 @Suite("Repository.reflog")
 struct RepositoryReflogTests {
 
+    private let fixtures = TemporaryRepositories()
+
     @discardableResult
     private func runGit(_ args: [String], in dir: URL) throws -> String {
         let p = Process()
@@ -36,9 +38,7 @@ struct RepositoryReflogTests {
     }
 
     private func makeRepo() throws -> URL {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("Reflog-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dir = try fixtures.directory("Reflog-\(UUID().uuidString)")
         try runGit(["init", "-b", "main"], in: dir)
         try runGit(["config", "user.email", "t@e.com"], in: dir)
         try runGit(["config", "user.name", "T"], in: dir)
@@ -47,6 +47,7 @@ struct RepositoryReflogTests {
 
     @Test("reflog returns one entry per commit, newest first")
     func reflogEntries() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         try Data("a\n".utf8).write(to: dir.appendingPathComponent("a.txt"))
@@ -71,6 +72,7 @@ struct RepositoryReflogTests {
 
     @Test("reflog records HEAD's old → new SHA progression")
     func reflogShaProgression() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         try Data("a\n".utf8).write(to: dir.appendingPathComponent("a.txt"))
@@ -91,6 +93,7 @@ struct RepositoryReflogTests {
 
     @Test("reflog of an unknown ref returns empty (libgit2 auto-creates the log)")
     func reflogUnknownRef() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         try Data("a\n".utf8).write(to: dir.appendingPathComponent("a.txt"))

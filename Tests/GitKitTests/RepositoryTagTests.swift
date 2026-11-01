@@ -11,6 +11,8 @@ import Testing
 @Suite("Repository.tag")
 struct RepositoryTagTests {
 
+    private let fixtures = TemporaryRepositories()
+
     @discardableResult
     private func runGit(_ args: [String], in dir: URL) throws -> String {
         let p = Process()
@@ -35,9 +37,7 @@ struct RepositoryTagTests {
     }
 
     private func makeRepo() throws -> URL {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("TagTests-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dir = try fixtures.directory("TagTests-\(UUID().uuidString)")
         try runGit(["init", "-b", "main"], in: dir)
         try runGit(["config", "user.email", "t@e.com"], in: dir)
         try runGit(["config", "user.name", "T"], in: dir)
@@ -49,6 +49,7 @@ struct RepositoryTagTests {
 
     @Test("create lightweight + list")
     func lightweightAndList() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         let repo = try Repository.open(at: dir)
@@ -60,6 +61,7 @@ struct RepositoryTagTests {
 
     @Test("create annotated has tagger + message")
     func annotated() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         let repo = try Repository.open(at: dir)
@@ -75,6 +77,7 @@ struct RepositoryTagTests {
 
     @Test("pattern filter")
     func patternFilter() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         let repo = try Repository.open(at: dir)
@@ -87,6 +90,7 @@ struct RepositoryTagTests {
 
     @Test("dup without force throws; force replaces")
     func dupAndForce() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         let repo = try Repository.open(at: dir)
@@ -100,6 +104,7 @@ struct RepositoryTagTests {
 
     @Test("delete removes tag, returns prior SHA")
     func delete() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         let repo = try Repository.open(at: dir)
@@ -112,6 +117,7 @@ struct RepositoryTagTests {
 
     @Test("tagExists tracks creation/deletion")
     func existsTracks() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         let repo = try Repository.open(at: dir)

@@ -12,9 +12,10 @@ import Testing
 @Suite("Repository ssh_exec transport")
 struct RepositorySSHExecTests {
 
+    private let fixtures = TemporaryRepositories()
+
     private func tmp(_ label: String) -> URL {
-        FileManager.default.temporaryDirectory
-            .appendingPathComponent("\(label)-\(UUID().uuidString)")
+        fixtures.url("\(label)-\(UUID().uuidString)")
     }
 
     @discardableResult
@@ -100,6 +101,7 @@ struct RepositorySSHExecTests {
 
     @Test("fetch over ssh_exec leaves no zombie children")
     func fetchLeavesNoZombies() throws {
+        defer { fixtures.removeAll() }
         // Serialized with GitSSHTransportTests: both mutate libgit2's
         // process-wide ssh:// transport dispatch, and a `.serialized`
         // suite trait alone wouldn't stop the two suites racing — see

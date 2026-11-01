@@ -11,10 +11,10 @@ import Testing
 @Suite("Repository.checkout (-b / -- paths)")
 struct RepositoryCheckoutTests {
 
+    private let fixtures = TemporaryRepositories()
+
     private func makeRepo() throws -> URL {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("CheckoutTests-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dir = try fixtures.directory("CheckoutTests-\(UUID().uuidString)")
         try runGit(["init", "-b", "main"], in: dir)
         try runGit(["config", "user.email", "t@e.com"], in: dir)
         try runGit(["config", "user.name", "T"], in: dir)
@@ -51,6 +51,7 @@ struct RepositoryCheckoutTests {
 
     @Test("-b creates a new branch and switches HEAD to it")
     func newBranch() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
 
@@ -69,6 +70,7 @@ struct RepositoryCheckoutTests {
 
     @Test("-b on an existing branch errors")
     func newBranchDuplicateRejected() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         let repo = try Repository.open(at: dir)
@@ -81,6 +83,7 @@ struct RepositoryCheckoutTests {
 
     @Test("-B force-resets an existing branch")
     func forceResetExisting() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         let repo = try Repository.open(at: dir)
@@ -94,6 +97,7 @@ struct RepositoryCheckoutTests {
 
     @Test("checkoutPaths restores working tree from index")
     func restoreFromIndex() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         try Data("modified\n".utf8).write(to: dir.appendingPathComponent("a.txt"))
@@ -104,6 +108,7 @@ struct RepositoryCheckoutTests {
 
     @Test("checkoutPaths(from:) restores working tree from a ref's tree")
     func restoreFromRef() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         // Commit v2 so we have a ref to pull v2 back from later.

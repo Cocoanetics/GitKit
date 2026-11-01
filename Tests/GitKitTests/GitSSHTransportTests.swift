@@ -139,9 +139,10 @@ final class FakeSSHProvider: GitSSHTransportProvider, @unchecked Sendable {
 @Suite("GitSSHTransport")
 struct GitSSHTransportTests {
 
+    private let fixtures = TemporaryRepositories()
+
     private func tmp(_ label: String) -> URL {
-        FileManager.default.temporaryDirectory
-            .appendingPathComponent("\(label)-\(UUID().uuidString)")
+        fixtures.url("\(label)-\(UUID().uuidString)")
     }
 
     private struct Failure: Error, CustomStringConvertible {
@@ -225,6 +226,7 @@ struct GitSSHTransportTests {
 
     @Test("fetch over the registered transport is carried by the provider")
     func fetchUsesRegisteredProvider() throws {
+        defer { fixtures.removeAll() }
         try SSHTransportTestLock.shared.withLock {
             let provider = FakeSSHProvider()
             try GitSSHTransport.register(provider)
@@ -251,6 +253,7 @@ struct GitSSHTransportTests {
 
     @Test("push over the registered transport is carried by the provider")
     func pushUsesRegisteredProvider() throws {
+        defer { fixtures.removeAll() }
         try SSHTransportTestLock.shared.withLock {
             let provider = FakeSSHProvider()
             try GitSSHTransport.register(provider)
@@ -277,6 +280,7 @@ struct GitSSHTransportTests {
 
     @Test("over receive-pack, refusals read as git's")
     func pushRefusalsOverTheSmartProtocol() throws {
+        defer { fixtures.removeAll() }
         try SSHTransportTestLock.shared.withLock {
             let provider = FakeSSHProvider()
             try GitSSHTransport.register(provider)
@@ -325,6 +329,7 @@ struct GitSSHTransportTests {
 
     @Test("a scp-style IPv6 remote reaches the provider unmangled")
     func scpStyleIPv6RemoteReachesTheProvider() throws {
+        defer { fixtures.removeAll() }
         try SSHTransportTestLock.shared.withLock {
             let provider = FakeSSHProvider()
             try GitSSHTransport.register(provider)
@@ -368,6 +373,7 @@ struct GitSSHTransportTests {
 
     @Test("a provider error surfaces as a GitKit error")
     func providerErrorSurfacesAsGitKitError() throws {
+        defer { fixtures.removeAll() }
         try SSHTransportTestLock.shared.withLock {
             let provider = FakeSSHProvider()
             provider.failureMessage = "fake provider refused the connection"
@@ -392,6 +398,7 @@ struct GitSSHTransportTests {
 
     @Test("unregister restores ssh_exec")
     func unregisterRestoresSSHExec() throws {
+        defer { fixtures.removeAll() }
         try SSHTransportTestLock.shared.withLock {
             let provider = FakeSSHProvider()
             try GitSSHTransport.register(provider)

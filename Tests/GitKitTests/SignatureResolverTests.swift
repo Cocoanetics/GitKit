@@ -11,10 +11,10 @@ import Testing
 @Suite("SignatureResolver env-var precedence")
 struct SignatureResolverTests {
 
+    private let fixtures = TemporaryRepositories()
+
     private func makeRepo() throws -> URL {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("SignatureResolverTests-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dir = try fixtures.directory("SignatureResolverTests-\(UUID().uuidString)")
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         p.arguments = ["git", "init", "-b", "main"]
@@ -39,6 +39,7 @@ struct SignatureResolverTests {
 
     @Test("env GIT_AUTHOR_NAME + EMAIL overrides config for author role")
     func envOverridesAuthor() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
 
@@ -57,6 +58,7 @@ struct SignatureResolverTests {
 
     @Test("partial env override fills missing field from config")
     func partialEnvFallsBackToConfig() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         let repo = try Repository.open(at: dir)
@@ -71,6 +73,7 @@ struct SignatureResolverTests {
 
     @Test("EMAIL env var fills email when neither GIT_AUTHOR_EMAIL nor config has one")
     func emailVarFallback() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
 
@@ -97,6 +100,7 @@ struct SignatureResolverTests {
 
     @Test("GIT_COMMITTER_DATE in unix-secs form uses that timestamp")
     func committerDateFromUnixSecs() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         let repo = try Repository.open(at: dir)
@@ -110,6 +114,7 @@ struct SignatureResolverTests {
 
     @Test("GIT_COMMITTER_DATE in ISO 8601 form parses correctly")
     func committerDateFromISO() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         let repo = try Repository.open(at: dir)
@@ -124,6 +129,7 @@ struct SignatureResolverTests {
 
     @Test("commit honours GIT_AUTHOR_* and GIT_COMMITTER_* end-to-end")
     func commitHonoursEnvVars() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         try Data("v1\n".utf8).write(to: dir.appendingPathComponent("file.txt"))

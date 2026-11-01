@@ -10,6 +10,8 @@ import Testing
 @Suite("Repository submodule sync")
 struct RepositorySubmoduleTests {
 
+    private let fixtures = TemporaryRepositories()
+
     @discardableResult
     private func runGit(_ args: [String], in dir: URL) throws -> String {
         let p = Process()
@@ -37,9 +39,7 @@ struct RepositorySubmoduleTests {
     }
 
     private func makeRepo(name: String) throws -> URL {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("\(name)-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dir = try fixtures.directory("\(name)-\(UUID().uuidString)")
         try runGit(["init", "-b", "main"], in: dir)
         try runGit(["config", "user.email", "t@e.com"], in: dir)
         try runGit(["config", "user.name", "T"], in: dir)
@@ -84,6 +84,7 @@ struct RepositorySubmoduleTests {
 
     @Test("non-recursive sync updates only the direct submodule's URL")
     func nonRecursiveSyncUpdatesDirectSubmoduleOnly() throws {
+        defer { fixtures.removeAll() }
         let (outer, _, cleanup) = try makeNestedFixture()
         defer { cleanup() }
 
@@ -122,6 +123,7 @@ struct RepositorySubmoduleTests {
 
     @Test("recursive sync propagates into nested checked-out submodules")
     func recursiveSyncPropagatesIntoNestedSubmodules() throws {
+        defer { fixtures.removeAll() }
         let (outer, innermostSource, cleanup) = try makeNestedFixture()
         defer { cleanup() }
 
@@ -153,6 +155,7 @@ struct RepositorySubmoduleTests {
 
     @Test("recursive sync skips submodules that aren't checked out")
     func recursiveSyncSkipsUncheckedOutSubmodules() throws {
+        defer { fixtures.removeAll() }
         let (outer, _, cleanup) = try makeNestedFixture()
         defer { cleanup() }
 
@@ -166,6 +169,7 @@ struct RepositorySubmoduleTests {
 
     @Test("recursive sync propagates errors opening a corrupt checked-out submodule")
     func recursiveSyncPropagatesCorruptSubmoduleErrors() throws {
+        defer { fixtures.removeAll() }
         let (outer, _, cleanup) = try makeNestedFixture()
         defer { cleanup() }
 

@@ -11,6 +11,8 @@ import Testing
 @Suite("Repository.rebase")
 struct RepositoryRebaseTests {
 
+    private let fixtures = TemporaryRepositories()
+
     @discardableResult
     private func runGit(_ args: [String], in dir: URL) throws -> String {
         let p = Process()
@@ -41,9 +43,7 @@ struct RepositoryRebaseTests {
     /// advanced by `feat1`+`feat2`. Both branched off the same root.
     /// Working dir left checked-out to feature.
     private func makeDivergentRepo() throws -> URL {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("RebaseTests-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dir = try fixtures.directory("RebaseTests-\(UUID().uuidString)")
         try runGit(["init", "-b", "main"], in: dir)
         try runGit(["config", "user.email", "t@e.com"], in: dir)
         try runGit(["config", "user.name", "T"], in: dir)
@@ -69,6 +69,7 @@ struct RepositoryRebaseTests {
 
     @Test("clean rebase replays both commits onto upstream")
     func cleanRebase() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeDivergentRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
         let originalFeatureSHA = try runGit(["rev-parse", "feature"], in: dir)
@@ -95,9 +96,8 @@ struct RepositoryRebaseTests {
 
     @Test("alreadyUpToDate when feature has no commits past upstream")
     func alreadyUpToDate() throws {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("RebaseTests-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { fixtures.removeAll() }
+        let dir = try fixtures.directory("RebaseTests-\(UUID().uuidString)")
         try runGit(["init", "-b", "main"], in: dir)
         try runGit(["config", "user.email", "t@e.com"], in: dir)
         try runGit(["config", "user.name", "T"], in: dir)
@@ -118,9 +118,8 @@ struct RepositoryRebaseTests {
 
     @Test("conflict surfaces commit info, paths, and persists rebase state")
     func conflictPath() throws {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("RebaseTests-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { fixtures.removeAll() }
+        let dir = try fixtures.directory("RebaseTests-\(UUID().uuidString)")
         try runGit(["init", "-b", "main"], in: dir)
         try runGit(["config", "user.email", "t@e.com"], in: dir)
         try runGit(["config", "user.name", "T"], in: dir)
@@ -153,10 +152,9 @@ struct RepositoryRebaseTests {
 
     @Test("rebaseAbort wipes an in-progress conflicting rebase")
     func abortAfterConflict() throws {
+        defer { fixtures.removeAll() }
         // Re-use the conflict scenario, then abort and verify state.
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("RebaseTests-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dir = try fixtures.directory("RebaseTests-\(UUID().uuidString)")
         try runGit(["init", "-b", "main"], in: dir)
         try runGit(["config", "user.email", "t@e.com"], in: dir)
         try runGit(["config", "user.name", "T"], in: dir)
@@ -190,11 +188,10 @@ struct RepositoryRebaseTests {
 
     @Test("rebaseSkip drops the conflicting commit and continues")
     func skipDropsCommit() throws {
+        defer { fixtures.removeAll() }
         // Conflict on commit #1, clean commit #2 follows. Skip should
         // discard #1 and apply #2.
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("RebaseTests-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dir = try fixtures.directory("RebaseTests-\(UUID().uuidString)")
         try runGit(["init", "-b", "main"], in: dir)
         try runGit(["config", "user.email", "t@e.com"], in: dir)
         try runGit(["config", "user.name", "T"], in: dir)
@@ -233,6 +230,7 @@ struct RepositoryRebaseTests {
 
     @Test("rebaseAbort throws when no rebase is in progress")
     func abortWithoutRebase() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeDivergentRepo()
         defer { try? FileManager.default.removeItem(at: dir) }
 

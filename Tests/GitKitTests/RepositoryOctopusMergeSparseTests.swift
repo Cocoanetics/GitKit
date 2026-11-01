@@ -10,6 +10,7 @@ extension RepositoryOctopusMergeTests {
 
     @Test("in a cone-mode sparse checkout, what the merge brings outside the cone stays out, as git leaves it")
     func sparseCheckoutStaysSparse() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         let files = ["out/f", "inc/i", "inc/deep/d", "x/y/f", "x/f"]
         for file in files {
@@ -57,6 +58,7 @@ extension RepositoryOctopusMergeTests {
 
     @Test("cone-mode sparse-checkout patterns take what git takes")
     func sparseCone() throws {
+        defer { fixtures.removeAll() }
         let cone = try #require(Repository.SparseCone("/*\n!/*/\n/x/\n!/x/*/\n/inc/\n/x/y/\n"))
         #expect(cone.includes("top") && cone.includes("x/f") && cone.includes("x/y/z/f") && cone.includes("inc/a/b"))
         #expect(!cone.includes("x/q/f") && !cone.includes("out/f"))
@@ -74,6 +76,7 @@ extension RepositoryOctopusMergeTests {
 
     @Test("non-cone sparse-checkout patterns keep what the merge brings outside them out, as git does")
     func nonConeSparseCheckout() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         func put(_ files: [String], _ text: String) throws {
             for file in files {
@@ -115,6 +118,7 @@ extension RepositoryOctopusMergeTests {
 
     @Test("non-cone sparse-checkout patterns: the last match decides, directories pass theirs on")
     func sparsePatterns() {
+        defer { fixtures.removeAll() }
         let patterns = SparsePatterns("# comment\n/*\n!/out/\n/out/keep/\n!*.log\n!docs/*.txt\n")
         #expect(patterns.includes("top") && patterns.includes("docs/a.md") && patterns.includes("deep/out/n"))
         #expect(patterns.includes("out/keep/x/y"))
@@ -125,6 +129,7 @@ extension RepositoryOctopusMergeTests {
 
     @Test("the merge works skip-worktree out again for paths it doesn't touch, as git does")
     func staleSparseBitsReapplied() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         for file in ["inc/i", "out/o"] {
             let folder = dir.appendingPathComponent(file).deletingLastPathComponent()
@@ -158,6 +163,7 @@ extension RepositoryOctopusMergeTests {
 
     @Test("a changed file outside the sparse patterns stays, assume-unchanged or not, as git leaves it")
     func sparseKeepsChangedFile() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         for file in ["inc/i", "out/o"] {
             let folder = dir.appendingPathComponent(file).deletingLastPathComponent()
@@ -188,6 +194,7 @@ extension RepositoryOctopusMergeTests {
 
     @Test("a clean file outside the cone that the merge updates goes, its entry skip-worktree, as git leaves it")
     func sparseMaterializedFileUpdated() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         for file in ["inc/i", "out/o"] {
             let folder = dir.appendingPathComponent(file).deletingLastPathComponent()
@@ -220,6 +227,7 @@ extension RepositoryOctopusMergeTests {
 
     @Test("submodules get skip-worktree worked out again too, as git's merge does")
     func sparseGitlinksReapplied() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         let inc = dir.appendingPathComponent("inc")
         try FileManager.default.createDirectory(at: inc, withIntermediateDirectories: true)
@@ -255,6 +263,7 @@ extension RepositoryOctopusMergeTests {
     @Test("an excluded file that can't be removed, or looked at, stops the merge before HEAD moves",
           arguments: [0o555, 0o644])
     func sparseRemovalFailureStops(mode: Int) throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         for file in ["inc/i", "out/o"] {
             let folder = dir.appendingPathComponent(file).deletingLastPathComponent()
@@ -295,6 +304,7 @@ extension RepositoryOctopusMergeTests {
 
     @Test("a submodule outside the cone that the merge makes a file keeps its directory with files")
     func sparseKeepsSubmoduleFiles() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         let inc = dir.appendingPathComponent("inc")
         try FileManager.default.createDirectory(at: inc, withIntermediateDirectories: true)
@@ -324,6 +334,7 @@ extension RepositoryOctopusMergeTests {
 
     @Test("a file standing where a submodule outside the cone is recorded stays, unmarked")
     func sparseKeepsFileAtGitlink() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         let inc = dir.appendingPathComponent("inc")
         try FileManager.default.createDirectory(at: inc, withIntermediateDirectories: true)
@@ -347,6 +358,7 @@ extension RepositoryOctopusMergeTests {
 
     @Test("a sparse rule that isn't UTF-8 stops the merge before anything changes")
     func sparseRuleNotUTF8() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         try git(["config", "core.sparseCheckout", "true"], in: dir)
         try git(["config", "core.sparseCheckoutCone", "false"], in: dir)
@@ -361,6 +373,7 @@ extension RepositoryOctopusMergeTests {
 
     @Test("with core.sparseCheckoutCone unset, the patterns are read as non-cone, as git reads them")
     func sparseConeUnsetIsNonCone() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         let foo = dir.appendingPathComponent("foo")
         try FileManager.default.createDirectory(at: foo, withIntermediateDirectories: true)
@@ -389,6 +402,7 @@ extension RepositoryOctopusMergeTests {
 
     @Test("an untracked name canonically equivalent to one the merge adds isn't in its way")
     func untrackedEquivalentNameDistinct() throws {
+        defer { fixtures.removeAll() }
         let repository = try Repository.open(at: try makeRepository())
         let added = ["\u{E9}": Repository.Change(oid: String(repeating: "1", count: 40), mode: 0o100644)]
         let untracked = [Array("e\u{301}".utf8): true]
@@ -399,6 +413,7 @@ extension RepositoryOctopusMergeTests {
 
     @Test("a sparse-checkout setting that isn't a boolean stops the merge before anything changes")
     func sparseSettingNotBoolean() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         try git(["config", "core.sparseCheckout", "maybe"], in: dir)
         // git itself won't run now (`bad boolean config value`): read the
@@ -411,6 +426,7 @@ extension RepositoryOctopusMergeTests {
 
     @Test("a sparse-checkout file that can't be read stops the merge before anything changes")
     func sparseFileUnreadable() throws {
+        defer { fixtures.removeAll() }
         let dir = try makeRepository()
         try git(["config", "core.sparseCheckout", "true"], in: dir)
         // A directory where the file should be.

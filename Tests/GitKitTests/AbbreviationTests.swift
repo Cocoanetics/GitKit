@@ -8,10 +8,12 @@ import CGitKit
 @Suite("Abbreviated IDs")
 struct AbbreviationTests {
 
+    private let fixtures = TemporaryRepositories()
+
     @Test("an ID lengthens while another object shares its prefix")
     func abbreviationsStayUnambiguous() throws {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("AbbreviationTests-\(UUID().uuidString)")
+        defer { fixtures.removeAll() }
+        let dir = fixtures.url("AbbreviationTests-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: dir) }
         let repo = try Repository.initialize(at: dir, initialBranch: "main")
         try repo.configSet("core.abbrev", "4")
