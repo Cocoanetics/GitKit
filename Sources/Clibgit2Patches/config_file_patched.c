@@ -67,6 +67,7 @@ typedef struct {
 	const git_repository *repo;	/* NULL for the process default */
 	gitkit_config_include_cb cb;
 	void *payload;
+	gitkit_config_payload_fn retain, release;
 } gitkit_include_policy;
 
 static GITKIT_THREAD_LOCAL int gitkit_include_refused;
@@ -97,6 +98,12 @@ static git_mutex *gitkit_policy_lock(void)
 	return created;
 }
 
+/*
+ * The policy to ask, its payload retained (when the registration brought
+ * a retain function) so that a replace or removal on another thread can't
+ * free it while the callback runs; the caller releases it with
+ * gitkit_policy_done().
+ */
 static gitkit_include_policy gitkit_policy_for(const git_repository *repo)
 {
 	git_mutex *lock = gitkit_policy_lock();
@@ -116,14 +123,25 @@ static gitkit_include_policy gitkit_policy_for(const git_repository *repo)
 	if (!found.cb)
 		found = gitkit_default_policy;
 done:
+	if (found.retain)
+		found.retain(found.payload);
 	git_mutex_unlock(lock);
 	return found;
 }
 
-int gitkit_config_set_include_callback(
-	git_repository *repo, gitkit_config_include_cb cb, void *payload)
+static void gitkit_policy_done(const gitkit_include_policy *policy)
+{
+	if (policy->release)
+		policy->release(policy->payload);
+}
+
+int gitkit_config_set_include_policy(
+	git_repository *repo, gitkit_config_include_cb cb, void *payload,
+	gitkit_config_payload_fn retain, gitkit_config_payload_fn release)
 {
 	git_mutex *lock = gitkit_policy_lock();
+	gitkit_include_policy replaced = {0};
+	gitkit_include_policy *slot = NULL;
 	size_t i;
 	int error = 0;
 
@@ -133,45 +151,67 @@ int gitkit_config_set_include_callback(
 	git_mutex_lock(lock);
 
 	if (!repo) {
-		gitkit_default_policy.cb = cb;
-		gitkit_default_policy.payload = payload;
-		goto done;
-	}
-
-	for (i = 0; i < gitkit_policies_len; i++) {
-		if (gitkit_policies[i].repo != repo)
-			continue;
-		if (cb) {
-			gitkit_policies[i].cb = cb;
-			gitkit_policies[i].payload = payload;
-		} else {
-			gitkit_policies[i] = gitkit_policies[--gitkit_policies_len];
+		slot = &gitkit_default_policy;
+	} else {
+		for (i = 0; i < gitkit_policies_len; i++) {
+			if (gitkit_policies[i].repo == repo) {
+				slot = &gitkit_policies[i];
+				break;
+			}
 		}
-		goto done;
 	}
 
-	if (cb) {
+	if (slot) {
+		replaced = *slot;
+		if (cb) {
+			slot->cb = cb;
+			slot->payload = payload;
+			slot->retain = retain;
+			slot->release = release;
+		} else if (repo) {
+			*slot = gitkit_policies[--gitkit_policies_len];
+		} else {
+			memset(slot, 0, sizeof(*slot));
+		}
+	} else if (cb) {
 		gitkit_include_policy *grown = git__reallocarray(
 			gitkit_policies, gitkit_policies_len + 1, sizeof(*grown));
 
 		if (!grown) {
 			error = -1;
-			goto done;
+		} else {
+			gitkit_policies = grown;
+			slot = &gitkit_policies[gitkit_policies_len++];
+			slot->repo = repo;
+			slot->cb = cb;
+			slot->payload = payload;
+			slot->retain = retain;
+			slot->release = release;
 		}
-		gitkit_policies = grown;
-		gitkit_policies[gitkit_policies_len].repo = repo;
-		gitkit_policies[gitkit_policies_len].cb = cb;
-		gitkit_policies[gitkit_policies_len].payload = payload;
-		gitkit_policies_len++;
 	}
 
-done:
 	git_mutex_unlock(lock);
+
+	/* the registration's own reference to what it replaced */
+	if (error == 0 && replaced.cb)
+		gitkit_policy_done(&replaced);
 	return error;
 }
 
-void gitkit_config_set_thread_include_callback(gitkit_config_include_cb cb, void *payload)
+int gitkit_config_set_include_callback(
+	git_repository *repo, gitkit_config_include_cb cb, void *payload)
 {
+	return gitkit_config_set_include_policy(repo, cb, payload, NULL, NULL);
+}
+
+void gitkit_config_set_thread_include_callback(
+	gitkit_config_include_cb cb, void *payload,
+	gitkit_config_include_cb *previous_cb, void **previous_payload)
+{
+	if (previous_cb)
+		*previous_cb = gitkit_thread_policy.cb;
+	if (previous_payload)
+		*previous_payload = gitkit_thread_policy.payload;
 	gitkit_thread_policy.cb = cb;
 	gitkit_thread_policy.payload = payload;
 }
@@ -187,7 +227,11 @@ static int gitkit_include_stat(
 		const char *including = depth - 1 < GITKIT_INCLUDE_DEPTHS ?
 			gitkit_include_paths[depth - 1] : NULL;
 
-		if (policy.cb && policy.cb(path, including, depth, policy.payload) != 0) {
+		int refused = policy.cb &&
+			policy.cb(path, including, depth, policy.payload) != 0;
+
+		gitkit_policy_done(&policy);
+		if (refused) {
 			git_error_set(GIT_ERROR_CONFIG, "include of '%s' is not authorised", path);
 			gitkit_include_refused = 1;
 			return -1;

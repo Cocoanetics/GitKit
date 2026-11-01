@@ -45,21 +45,9 @@ public struct ConfigIncludePolicy: Sendable {
     /// global: prefer a per-repository policy when sandboxes coexist.
     public static func setDefault(_ policy: ConfigIncludePolicy?) {
         Libgit2.ensureInitialized()
-        defaultLock.lock()
-        defer { defaultLock.unlock() }
-        guard let policy else {
-            gitkit_config_set_include_callback(nil, nil, nil)
-            defaultBox = nil
-            return
-        }
-        let box = ConfigIncludePolicyBox(policy)
-        gitkit_config_set_include_callback(nil, configIncludeTrampoline, box.payload)
-        defaultBox = box
+        // Ignoring the status: only an allocation failure can fail it.
+        _ = ConfigIncludePolicyBox.register(policy, forRepository: nil)
     }
-
-    // Kept alive for as long as it is the registered default.
-    nonisolated(unsafe) private static var defaultBox: ConfigIncludePolicyBox?
-    private static let defaultLock = NSLock()
 }
 
 /// Owns a policy for the C callback's `payload`.
@@ -74,8 +62,32 @@ final class ConfigIncludePolicyBox {
         Unmanaged.passUnretained(self).toOpaque()
     }
 
-    func setForCurrentThread() {
-        gitkit_config_set_thread_include_callback(configIncludeTrampoline, payload)
+    /// Registers `policy` (or removes the registration for `nil`) with C
+    /// owning a reference to the box, which keeps it alive for callbacks
+    /// still running when the registration is replaced.
+    static func register(_ policy: ConfigIncludePolicy?, forRepository repo: OpaquePointer?) -> Int32 {
+        guard let policy else {
+            return gitkit_config_set_include_policy(repo, nil, nil, nil, nil)
+        }
+        let owned = Unmanaged.passRetained(ConfigIncludePolicyBox(policy))
+        let status = gitkit_config_set_include_policy(
+            repo, configIncludeTrampoline, owned.toOpaque(),
+            { Unmanaged<ConfigIncludePolicyBox>.fromOpaque($0!).retain() },
+            { Unmanaged<ConfigIncludePolicyBox>.fromOpaque($0!).release() })
+        if status != 0 { owned.release() }
+        return status
+    }
+
+    /// Makes the box the calling thread's policy; returns what restores the
+    /// previous one, for a nested open.
+    func setForCurrentThread() -> () -> Void {
+        var previousCallback: gitkit_config_include_cb?
+        var previousPayload: UnsafeMutableRawPointer?
+        gitkit_config_set_thread_include_callback(
+            configIncludeTrampoline, payload, &previousCallback, &previousPayload)
+        return {
+            gitkit_config_set_thread_include_callback(previousCallback, previousPayload, nil, nil)
+        }
     }
 }
 
@@ -96,16 +108,7 @@ extension Repository {
     /// config is read; to cover the reads while opening, pass the policy to
     /// ``Repository/open(at:includePolicy:)`` instead.
     public func setIncludePolicy(_ policy: ConfigIncludePolicy?) throws {
-        guard let policy else {
-            try check(gitkit_config_set_include_callback(pointer, nil, nil))
-            includePolicyBox = nil
-            return
-        }
-        try register(ConfigIncludePolicyBox(policy))
-    }
-
-    func register(_ box: ConfigIncludePolicyBox) throws {
-        try check(gitkit_config_set_include_callback(pointer, configIncludeTrampoline, box.payload))
-        includePolicyBox = box
+        try check(ConfigIncludePolicyBox.register(policy, forRepository: pointer))
+        hasIncludePolicy = policy != nil
     }
 }

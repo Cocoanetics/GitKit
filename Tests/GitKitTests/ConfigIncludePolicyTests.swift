@@ -188,5 +188,45 @@ struct ConfigIncludePolicyTests {
         let repo = try Repository.open(at: dir, includePolicy: ConfigIncludePolicy { _ in true })
         #expect(try repo.configGet("test.nested") == "2")
     }
+
+    @Test("a nested open from a policy callback leaves the outer thread policy in force")
+    func nestedOpenRestoresThreadPolicy() throws {
+        let outer = try makeRepo(), inner = try makeRepo()
+        defer { for dir in [outer, inner] { try? FileManager.default.removeItem(at: dir) } }
+        let recorder = Recorder()
+
+        let error = #expect(throws: Libgit2Error.self) {
+            try Repository.open(at: outer, includePolicy: ConfigIncludePolicy {
+                recorder.record($0)
+                if $0.path.hasSuffix("/one") {
+                    _ = try? Repository.open(at: inner, includePolicy: ConfigIncludePolicy { _ in true })
+                }
+                return !$0.path.hasSuffix("/matching")
+            })
+        }
+
+        // `matching` is read after the nested open and is still refused.
+        #expect(error?.message.contains("/matching' is not authorised") == true)
+    }
+
+    @Test("replacing the process default while configs load doesn't free a policy in use")
+    func replacingDefaultWhileLoading() async throws {
+        let dir = try makeRepo()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let marker = dir.lastPathComponent
+        defer { ConfigIncludePolicy.setDefault(nil) }
+
+        // Refuse only this test's repository, whichever policy is current.
+        let make = { ConfigIncludePolicy { !$0.path.contains(marker) } }
+        ConfigIncludePolicy.setDefault(make())
+
+        let swapper = Task.detached {
+            for _ in 0..<2000 { ConfigIncludePolicy.setDefault(make()) }
+        }
+        for _ in 0..<300 {
+            #expect(throws: Libgit2Error.self) { try Repository.open(at: dir) }
+        }
+        await swapper.value
+    }
 }
 #endif

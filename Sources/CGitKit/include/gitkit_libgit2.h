@@ -164,7 +164,27 @@ typedef int (*gitkit_config_include_cb)(
 	const char *path, const char *including_path, int depth, void *payload);
 GIT_EXTERN(int) gitkit_config_set_include_callback(
 	git_repository *repo, gitkit_config_include_cb cb, void *payload);
+
+/*
+ * The same, with the registration owning its payload: `retain` is called
+ * for each callback in flight and `release` after it, and `release` once
+ * more for the registration's own reference when the policy is replaced or
+ * removed, so replacing it on another thread can't free a payload a
+ * callback is using. (The payload arrives with that reference already
+ * taken.)
+ */
+typedef void (*gitkit_config_payload_fn)(void *payload);
+GIT_EXTERN(int) gitkit_config_set_include_policy(
+	git_repository *repo, gitkit_config_include_cb cb, void *payload,
+	gitkit_config_payload_fn retain, gitkit_config_payload_fn release);
+
+/*
+ * Sets the calling thread's policy (not retained: the caller keeps the
+ * payload alive while it is set) and hands back the one it replaces, so a
+ * nested scope can restore it. Either out pointer may be NULL.
+ */
 GIT_EXTERN(void) gitkit_config_set_thread_include_callback(
-	gitkit_config_include_cb cb, void *payload);
+	gitkit_config_include_cb cb, void *payload,
+	gitkit_config_include_cb *previous_cb, void **previous_payload);
 
 #endif /* GITKIT_LIBGIT2_H */

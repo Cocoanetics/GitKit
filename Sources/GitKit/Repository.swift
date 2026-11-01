@@ -25,16 +25,16 @@ public final class Repository {
     /// call sites.
     var repo: OpaquePointer { pointer }
 
-    /// Keeps the registered include policy's payload alive; see
-    /// ``setIncludePolicy(_:)``.
-    var includePolicyBox: ConfigIncludePolicyBox?
+    /// Whether an include policy is registered for this repository (C
+    /// holds its payload); see ``setIncludePolicy(_:)``.
+    var hasIncludePolicy = false
 
     init(pointer: OpaquePointer) {
         self.pointer = pointer
     }
 
     deinit {
-        if includePolicyBox != nil {
+        if hasIncludePolicy {
             gitkit_config_set_include_callback(pointer, nil, nil)
         }
         git_repository_free(pointer)
@@ -69,9 +69,11 @@ public final class Repository {
         at url: URL, includePolicy: ConfigIncludePolicy? = nil
     ) throws -> Repository {
         Libgit2.ensureInitialized()
+        // The thread policy covers the reads of the open itself; a nested
+        // open from a callback restores the outer one when it is done.
         let box = includePolicy.map(ConfigIncludePolicyBox.init)
-        if let box { box.setForCurrentThread() }
-        defer { if box != nil { gitkit_config_set_thread_include_callback(nil, nil) } }
+        let restoreThreadPolicy = box?.setForCurrentThread()
+        defer { restoreThreadPolicy?() }
 
         var repo: OpaquePointer?
         try check(git_repository_open_ext(&repo, url.path, 0, nil))
@@ -79,7 +81,7 @@ public final class Repository {
             throw Libgit2Error(code: -1, klass: 0, message: "git_repository_open_ext returned no repository")
         }
         let opened = Repository(pointer: repo)
-        if let box { try opened.register(box) }
+        if includePolicy != nil { try opened.setIncludePolicy(includePolicy) }
         return opened
     }
 
