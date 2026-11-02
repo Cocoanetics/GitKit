@@ -196,7 +196,7 @@ release notes (and in this table).
 | Windows | WinHTTP | Win32 BCrypt | ✅ |
 | Android | OpenSSL (dynamic, Bionic) | builtin (SHA1DC) | ✅ |
 
-Every supported platform builds in CI on each push: macOS, Linux, and Windows
+Every supported platform builds in CI on each push, all with Swift 6.4: macOS, Linux, and Windows
 also run the test suite; iOS is cross-compiled (`xcodebuild`); Android
 cross-compiles and runs its tests on the emulator. The `Package.swift`
 re-expresses libgit2's CMake feature detection as a per-platform `-D` matrix
