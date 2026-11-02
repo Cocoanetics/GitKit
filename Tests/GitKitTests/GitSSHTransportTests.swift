@@ -12,6 +12,17 @@ import Glibc
 import Testing
 @testable import GitKit
 
+/// `git@<host>:<path>` as a `URL`, the way a CLI ends up with one from argv.
+/// Foundation percent-encodes the brackets and colons; newer Foundations
+/// reject the unescaped spelling outright, so the escaped form is built
+/// here (`URL.gitRemote` undoes it).
+func scpURL(host: String, path: String) throws -> URL {
+    var allowed = CharacterSet.urlPathAllowed
+    allowed.remove(charactersIn: ":[]")
+    let escapedHost = try #require(host.addingPercentEncoding(withAllowedCharacters: allowed))
+    return try #require(URL(string: "git@\(escapedHost)%3A\(path)"))
+}
+
 /// Runs `git upload-pack`/`git receive-pack` as a local child process and
 /// exposes its stdin/stdout as a ``GitSSHChannel``. Stands in for a real
 /// SSH connection: libgit2 only ever sees bytes flow through `read`/
@@ -338,7 +349,7 @@ struct GitSSHTransportTests {
             let bare = try makeBareSource()
             // Built the way a CLI builds it from argv: Foundation
             // percent-encodes the brackets and colons.
-            let remote = URL(string: "git@[::1]:\(bare.path)")!
+            let remote = try scpURL(host: "[::1]", path: bare.path)
 
             let dest = tmp("GitSSHScpCloneDest")
             _ = try Repository.clone(from: remote, to: dest, progress: { _ in })
@@ -351,7 +362,7 @@ struct GitSSHTransportTests {
             try repo.addRemote(name: "origin", url: remote)
             let configured = try runGit(["config", "--get", "remote.origin.url"], in: work)
             #expect(configured == "git@[::1]:\(bare.path)\n")
-            try repo.remoteSetURL(name: "origin", url: URL(string: "git@[::2]:r.git")!)
+            try repo.remoteSetURL(name: "origin", url: try scpURL(host: "[::2]", path: "r.git"))
             let updated = try runGit(["config", "--get", "remote.origin.url"], in: work)
             #expect(updated == "git@[::2]:r.git\n")
 
