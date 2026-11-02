@@ -2,6 +2,16 @@ import Foundation
 import Testing
 @testable import GitKit
 
+/// The remote as Foundation hands it back from `URL(string:)`. Newer
+/// Foundations return nil for the unescaped scp spelling, so fall back to
+/// the escaped form older ones produce (what `gitRemote` undoes).
+func scpRemoteURL(_ remote: String) -> URL? {
+    if let url = URL(string: remote) { return url }
+    var allowed = CharacterSet.urlPathAllowed
+    allowed.remove(charactersIn: ":")
+    return remote.addingPercentEncoding(withAllowedCharacters: allowed).flatMap { URL(string: $0) }
+}
+
 /// How a remote reaches libgit2 and the SSH bridge. Foundation
 /// percent-encodes scp-style remotes it parses without a scheme, which
 /// turned `git@[::1]:r.git` into a remote libgit2 couldn't read.
@@ -20,7 +30,7 @@ struct GitRemoteSpellingTests {
             "../relative/repo"
         ]
         for remote in remotes {
-            #expect(URL(string: remote)?.gitRemote == remote)
+            #expect(scpRemoteURL(remote)?.gitRemote == remote)
         }
     }
 
