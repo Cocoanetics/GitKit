@@ -88,12 +88,16 @@ struct ExternalProgramSignerTests {
             keyfile="$6"
             if [ "$7" = '-U' ]; then cat "$keyfile" > literal; fi
             for last do :; done
+            case "$(uname -s)" in
+              Darwin) stat -f '%Lp' "$(dirname "$last")" ;;
+              *) stat -c '%a' "$(dirname "$last")" ;;
+            esac > scratch-mode
             cat "$last" > input
             printf 'ssh armor\\n' > "$last.sig"
             """, in: dir)
         let request = SigningRequest(
             format: .ssh, key: key, identity: "T <t@e.com>", program: program.path,
-            defaultKeyCommand: "printf 'ignored\\nkey::ssh-ed25519 AAAA fallback\\n'", workingDirectory: dir)
+            defaultKeyCommand: "printf 'ssh-ed25519 AAAA fallback\\nignored\\n'", workingDirectory: dir)
         #expect(try ExternalProgramSigner().sign(Array("payload".utf8), request: request) == "ssh armor\n")
         let args = try String(contentsOf: dir.appendingPathComponent("args"), encoding: .utf8)
             .split(separator: "\n").map(String.init)
@@ -111,6 +115,7 @@ struct ExternalProgramSignerTests {
             #expect(try String(contentsOf: dir.appendingPathComponent("literal"), encoding: .utf8) == expected + "\n")
         }
         #expect(try String(contentsOf: dir.appendingPathComponent("input"), encoding: .utf8) == "payload")
+        #expect(try String(contentsOf: dir.appendingPathComponent("scratch-mode"), encoding: .utf8) == "700\n")
         // All key/payload temporaries are removed before returning.
         #expect(!FileManager.default.fileExists(atPath: args[5]) || key == "~/key" || key == "relative key")
     }

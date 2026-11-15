@@ -142,18 +142,30 @@ struct SigningConfig {
             try check(rc)
             return buffer.ptr.map { String(cString: $0) }
         }
-        func path(_ name: String) throws -> String? {
+        func path(_ value: String) throws -> String {
             var buffer = git_buf()
             defer { git_buf_dispose(&buffer) }
-            let rc = git_config_get_path(&buffer, config, name)
-            if rc == GIT_ENOTFOUND.rawValue { return nil }
-            try check(rc)
-            return buffer.ptr.map { String(cString: $0) }
+            try check(git_config_parse_path(&buffer, value))
+            return buffer.ptr.map { String(cString: $0) } ?? ""
         }
         let value = try string("gpg.format") ?? "openpgp"
         guard let format = SigningFormat(rawValue: value) else { throw SigningError.unsupportedFormat(value) }
-        let program = try path("gpg.\(format.rawValue).program")
-            ?? (format == .openpgp ? path("gpg.program") : nil)
+        let programNames = format == .openpgp
+            ? ["gpg.program", "gpg.openpgp.program"] : ["gpg.\(format.rawValue).program"]
+        var program: String?
+        var iterator: UnsafeMutablePointer<git_config_iterator>?
+        try check(git_config_iterator_new(&iterator, config))
+        defer { git_config_iterator_free(iterator) }
+        while true {
+            var entry: UnsafeMutablePointer<git_config_entry>?
+            let rc = git_config_next(&entry, iterator)
+            if rc == GIT_ITEROVER.rawValue { break }
+            try check(rc)
+            if let entry, let name = entry.pointee.name, let rawValue = entry.pointee.value,
+               programNames.contains(String(cString: name)) {
+                program = try path(String(cString: rawValue))
+            }
+        }
         return try SigningConfig(format: format, key: string("user.signingkey"), program: program,
                                  defaultKeyCommand: string("gpg.ssh.defaultKeyCommand"))
     }
@@ -186,7 +198,7 @@ extension Repository {
         let selectedSigner = config != nil ? (signer ?? GitSigning.defaultSigner()) : nil
         if let config, selectedSigner == nil { throw SigningError.noSigner(config.format) }
         let reference = try commitReference(updateRef, parents: parents)
-        defer { git_reference_free(reference) }
+        defer { git_reference_free(reference.resolved) }
 
         var buffer = git_buf()
         defer { git_buf_dispose(&buffer) }
@@ -212,10 +224,13 @@ extension Repository {
         // Recheck after a possibly blocking signer, before writing the object.
         // The C export also uses libgit2's compare-and-swap ref update.
         let current = try commitReference(updateRef, parents: parents)
-        defer { git_reference_free(current) }
-        if (reference == nil) != (current == nil)
-            || (reference != nil && current != nil && (git_reference_cmp(reference, current) != 0
-                || String(cString: git_reference_name(reference)) != String(cString: git_reference_name(current)))) {
+        defer { git_reference_free(current.resolved) }
+        if reference.symbolicTarget != current.symbolicTarget
+            || (reference.resolved == nil) != (current.resolved == nil)
+            || (reference.resolved != nil && current.resolved != nil
+                && (git_reference_cmp(reference.resolved, current.resolved) != 0
+                    || String(cString: git_reference_name(reference.resolved))
+                        != String(cString: git_reference_name(current.resolved)))) {
             throw Libgit2Error(code: GIT_EMODIFIED.rawValue, klass: 0,
                               message: "failed to create commit: reference changed while signing")
         }
@@ -224,21 +239,29 @@ extension Repository {
             try check(git_commit_create_with_signature(&oid, repo, text.baseAddress, signature, "gpgsig"))
         }
         if let updateRef {
-            try check(gitkit_reference_update_for_commit(repo, reference, updateRef, &oid, "commit"))
+            try check(gitkit_reference_update_for_commit(repo, reference.resolved, updateRef, &oid, "commit"))
         }
         return oid
     }
 
-    private func commitReference(_ name: String?, parents: [OpaquePointer?]) throws -> OpaquePointer? {
-        guard let name else { return nil }
+    private struct CommitReference {
+        let resolved: OpaquePointer?
+        let symbolicTarget: String?
+    }
+
+    private func commitReference(_ name: String?, parents: [OpaquePointer?]) throws -> CommitReference {
+        guard let name else { return CommitReference(resolved: nil, symbolicTarget: nil) }
         var unresolved: OpaquePointer?
         let rc = git_reference_lookup(&unresolved, repo, name)
-        if rc == GIT_ENOTFOUND.rawValue { return nil }
+        if rc == GIT_ENOTFOUND.rawValue { return CommitReference(resolved: nil, symbolicTarget: nil) }
         try check(rc)
         defer { git_reference_free(unresolved) }
+        let symbolicTarget = git_reference_symbolic_target(unresolved).map { String(cString: $0) }
         var reference: OpaquePointer?
         let resolveRC = git_reference_resolve(&reference, unresolved)
-        if resolveRC == GIT_ENOTFOUND.rawValue { return nil }
+        if resolveRC == GIT_ENOTFOUND.rawValue {
+            return CommitReference(resolved: nil, symbolicTarget: symbolicTarget)
+        }
         try check(resolveRC)
         if let tip = git_reference_target(reference) {
             guard let parent = parents.first, let first = git_commit_id(parent), git_oid_cmp(tip, first) == 0 else {
@@ -247,6 +270,6 @@ extension Repository {
                                   message: "failed to create commit: current tip is not the first parent")
             }
         }
-        return reference
+        return CommitReference(resolved: reference, symbolicTarget: symbolicTarget)
     }
 }

@@ -9,7 +9,12 @@ public struct ExternalProgramSigner: GitSigner {
     public func sign(_ payload: [UInt8], request: SigningRequest) throws -> String {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("GitKit-sign-\(UUID().uuidString)", isDirectory: true)
+        #if os(Windows)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        #else
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        #endif
         defer { try? FileManager.default.removeItem(at: directory) }
         switch request.format {
         case .ssh:
@@ -38,13 +43,12 @@ public struct ExternalProgramSigner: GitSigner {
             let result = try run(shell, arguments: arguments, input: [], directory: directory,
                                  workingDirectory: request.workingDirectory)
             guard result.status == 0 else { throw SigningError.failed(program: shell, stderr: result.err) }
-            key = result.out.split(separator: "\n").first { $0.hasPrefix("key::") }.map(String.init)
+            let newline = result.out.firstIndex(of: "\n") ?? result.out.endIndex
+            let firstLine = String(result.out[..<newline])
+            if literalSSHKey(firstLine) != nil { key = firstLine }
         }
         guard let key, !key.isEmpty else { throw SigningError.missingKey }
-        let literal: String?
-        if key.hasPrefix("key::") { literal = String(key.dropFirst(5)) }
-        else if key.hasPrefix("ssh-") { literal = key }
-        else { literal = nil }
+        let literal = literalSSHKey(key)
 
         let keyPath: String
         if let literal {
@@ -76,6 +80,12 @@ public struct ExternalProgramSigner: GitSigner {
     /// external signer. Preserve standalone carriage returns verbatim.
     private func normalizeSignature(_ signature: String) -> String {
         signature.replacingOccurrences(of: "\r\n", with: "\n")
+    }
+
+    private func literalSSHKey(_ key: String) -> String? {
+        if key.hasPrefix("key::") { return String(key.dropFirst(5)) }
+        if key.hasPrefix("ssh-") { return key }
+        return nil
     }
 
     // File-backed streams avoid deadlocks when a program writes a large

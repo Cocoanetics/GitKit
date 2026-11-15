@@ -146,6 +146,27 @@ struct CommitSigningTests {
         }
     }
 
+    @Test("OpenPGP program aliases follow config precedence")
+    func programAliasPrecedence() throws {
+        defer { fixtures.removeAll() }
+        let repo = try repository()
+        try repo.configSet("commit.gpgsign", "true")
+        try repo.configSet("gpg.openpgp.program", "~/bin/lower-specific")
+        let higherURL = fixtures.url("higher-config")
+        try Data("[gpg]\n program = ~/bin/higher-generic\n".utf8).write(to: higherURL)
+        var config: OpaquePointer?
+        try check(git_repository_config(&config, repo.pointer))
+        defer { git_config_free(config) }
+        try check(git_config_add_file_ondisk(config, higherURL.path, GIT_CONFIG_LEVEL_APP, repo.pointer, 0))
+        let signer = Signer()
+        repo.setSigner(signer)
+
+        _ = try commit(repo)
+
+        #expect(signer.requests.last?.program?.replacingOccurrences(of: "\\", with: "/")
+            .hasSuffix("/bin/higher-generic") == true)
+    }
+
     @Test("config uses a level added to the open repository, and resolves tag defaults separately")
     func addedConfigLevel() throws {
         defer { fixtures.removeAll() }
@@ -239,6 +260,29 @@ struct CommitSigningTests {
         let error = #expect(throws: Libgit2Error.self) { try commit(repo, sign: .sign(keyID: nil)) }
         #expect(error?.code == GIT_EMODIFIED.rawValue)
         #expect(try repo.objectMetadata(of: "HEAD").sha != initial.sha)
+        #expect(signer.requests.count == 1)
+    }
+
+    @Test("an unborn HEAD retargeted while the signer blocks is not updated")
+    func concurrentUnbornHeadChange() throws {
+        defer { fixtures.removeAll() }
+        let repo = try repository()
+        let signer = Signer()
+        signer.callback = { _, _ in
+            let other = try Repository.open(at: #require(repo.workdirURL))
+            try check(git_repository_set_head(other.pointer, "refs/heads/other"))
+            return "opaque\n"
+        }
+        repo.setSigner(signer)
+
+        let error = #expect(throws: Libgit2Error.self) { try commit(repo, sign: .sign(keyID: nil)) }
+
+        #expect(error?.code == GIT_EMODIFIED.rawValue)
+        var head: OpaquePointer?
+        try check(git_reference_lookup(&head, repo.pointer, "HEAD"))
+        defer { git_reference_free(head) }
+        #expect(git_reference_symbolic_target(head).map { String(cString: $0) } == "refs/heads/other")
+        #expect(throws: Libgit2Error.self) { try repo.objectMetadata(of: "HEAD") }
         #expect(signer.requests.count == 1)
     }
 
