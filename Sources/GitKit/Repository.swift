@@ -29,6 +29,9 @@ public final class Repository {
     /// holds its payload); see ``setIncludePolicy(_:)``.
     var hasIncludePolicy = false
 
+    /// Per-repository signer; process defaults are consulted only when nil.
+    var signer: (any GitSigner)?
+
     init(pointer: OpaquePointer) {
         self.pointer = pointer
     }
@@ -292,11 +295,15 @@ public final class Repository {
     ///
     /// `env` feeds the real-git identity precedence chain
     /// (`GIT_AUTHOR_*` / `GIT_COMMITTER_*`); see ``SignatureResolver``.
+    /// `sign` follows `commit.gpgsign` by default. Explicit `.sign` and
+    /// `.noSign` bypass all signing config; `.sign` passes its key verbatim
+    /// and uses OpenPGP as a best-effort format hint for the installed signer.
     public func commitDetailed(
         message: String,
         author: Signature?,
         allowEmpty: Bool,
-        env: [String: String] = ProcessInfo.processInfo.environment
+        env: [String: String] = ProcessInfo.processInfo.environment,
+        sign: SignMode = .config
     ) throws -> Libgit2CommitDetails {
         // Commit exactly what's staged in the index — DO NOT
         // implicitly stage working-tree changes first. Callers that want
@@ -367,24 +374,9 @@ public final class Repository {
             role: .committer, override: nil, repo: repo, env: env)
         defer { git_signature_free(committerSig) }
 
-        // Create the commit, updating HEAD in one shot.
-        var commitOID = git_oid()
-        var parentArray: [OpaquePointer?] = hasParent ? [parent] : []
-        _ = try parentArray.withUnsafeMutableBufferPointer { parents in
-            try message.withCString { msg in
-                try check(git_commit_create(
-                    &commitOID,
-                    repo,
-                    "HEAD",
-                    authorSig,
-                    committerSig,
-                    nil,        // message_encoding (UTF-8 default)
-                    msg,
-                    newTree,
-                    parents.count,
-                    parents.baseAddress))
-            }
-        }
+        var commitOID = try createCommit(
+            updateRef: "HEAD", author: authorSig, committer: committerSig,
+            message: message, tree: newTree, parents: hasParent ? [parent] : [], sign: sign)
 
         // Resolve current branch shorthand for the [branch sha] line.
         var branchName: String?

@@ -33,6 +33,11 @@ typedef ptrdiff_t ssize_t;       /* used by git2/sys/stream.h callback types */
 
 #include "git2.h"
 
+/* The same compare-and-swap ref update and reflog as git_commit_create. */
+GIT_EXTERN(int) gitkit_reference_update_for_commit(
+    git_repository *repo, git_reference *ref, const char *ref_name,
+    const git_oid *id, const char *operation);
+
 /*
  * git2/cred_helpers.h is a deprecated top-level forwarding header — its
  * git_credential_userpass helper now lives in git2/credential_helpers.h (which
