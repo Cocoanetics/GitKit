@@ -540,8 +540,8 @@ extension Repository {
     /// if it can't, the checkout is taken back too.
     func commitMerge(
         tree: git_oid, from headTree: git_oid, start: git_oid, parents: [git_oid], message: String,
-        author: Signature?, env: [String: String], settle: () throws -> () -> Void = { {} },
-        staged: () throws -> Void = {}
+        author: Signature?, env: [String: String], sign: SignMode,
+        settle: () throws -> () -> Void = { {} }, staged: () throws -> Void = {}
     ) throws -> String {
         // A path the merge deletes that the work tree no longer has is
         // only the index's business; libgit2 can't "recreate" it.
@@ -592,14 +592,10 @@ extension Repository {
                 }
                 // The commit object first: it needs no work tree, so failing
                 // leaves nothing of `settle` to take back, and `settle`
-                // takes back its own work where it fails.
-                _ = try commits.withUnsafeMutableBufferPointer { buffer in
-                    try message.withCString { text in
-                        try check(git_commit_create(
-                            &commitOID, repo, nil, authorSig, committerSig, nil,
-                            text, tree, buffer.count, buffer.baseAddress))
-                    }
-                }
+                // takes back its own work where it fails, as does a signer.
+                commitOID = try createCommit(
+                    updateRef: nil, author: authorSig, committer: committerSig,
+                    message: message, tree: tree, parents: commits, sign: sign)
                 unsettle = try settle()
             } catch {
                 // Only a ref that won't move leaves the merge staged.

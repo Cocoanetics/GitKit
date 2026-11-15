@@ -53,12 +53,14 @@ extension Repository {
     /// The author/message are only used when this turns into a 3-way
     /// merge (FF doesn't create a commit). When `message` is nil we
     /// fall back to `Merge branch '<short-shorthand>'`, matching real
-    /// git's default subject line.
+    /// git's default subject line. `sign` chooses whether that merge
+    /// commit is signed (`git merge -S` / `--no-gpg-sign`).
     public func merge(
         ref theirRef: String,
         fastForward: FastForwardMode = .auto,
         message: String? = nil,
-        author: Signature? = nil
+        author: Signature? = nil,
+        sign: SignMode = .config
     ) throws -> MergeOutcome {
         // Resolve the named ref into an annotated commit.
         var theirAC: OpaquePointer?
@@ -128,7 +130,7 @@ extension Repository {
             return try performMergeCommit(
                 repo: repo, theirAC: theirAC, theirRef: theirRef,
                 theirOID: &theirOID, oldTree: oldTree,
-                message: message, author: author)
+                message: message, author: author, sign: sign)
         }
     }
 
@@ -140,11 +142,13 @@ extension Repository {
     /// When `message` is nil, the prepared `.git/MERGE_MSG` text is used.
     /// `env` feeds the real-git identity precedence chain
     /// (`GIT_AUTHOR_*` / `GIT_COMMITTER_*`); see ``SignatureResolver``.
+    /// `sign` overrides `commit.gpgsign` for the merge commit.
     @discardableResult
     public func mergeContinue(
         message: String? = nil,
         author: Signature? = nil,
-        env: [String: String] = ProcessInfo.processInfo.environment
+        env: [String: String] = ProcessInfo.processInfo.environment,
+        sign: SignMode = .config
     ) throws -> Libgit2CommitDetails {
         let mergeHeadOIDs = try currentMergeHeadOIDs()
 
@@ -207,14 +211,9 @@ extension Repository {
             resolvedMessage = try preparedMergeMessage()
         }
 
-        var commitOID = git_oid()
-        _ = try parentCommits.withUnsafeMutableBufferPointer { pbuf in
-            try resolvedMessage.withCString { msg in
-                try check(git_commit_create(
-                    &commitOID, repo, "HEAD", authorSig, committerSig, nil,
-                    msg, newTree, pbuf.count, pbuf.baseAddress))
-            }
-        }
+        var commitOID = try createCommit(
+            updateRef: "HEAD", author: authorSig, committer: committerSig,
+            message: resolvedMessage, tree: newTree, parents: parentCommits, sign: sign)
 
         try check(git_repository_state_cleanup(repo))
 
@@ -296,7 +295,8 @@ extension Repository {
         theirOID: inout git_oid,
         oldTree: OpaquePointer?,
         message: String?,
-        author: Signature?
+        author: Signature?,
+        sign: SignMode
     ) throws -> MergeOutcome {
         var mergeOpts = git_merge_options()
         try check(git_merge_options_init(&mergeOpts, UInt32(GIT_MERGE_OPTIONS_VERSION)))
@@ -355,15 +355,9 @@ extension Repository {
         defer { git_signature_free(sig) }
 
         let resolvedMessage = message ?? defaultMergeMessage(refName: theirRef)
-        var commitOID = git_oid()
-        var parents: [OpaquePointer?] = [parentCommit, theirCommit]
-        _ = try parents.withUnsafeMutableBufferPointer { pbuf in
-            try resolvedMessage.withCString { msg in
-                try check(git_commit_create(
-                    &commitOID, repo, "HEAD", sig, sig, nil,
-                    msg, newTree, pbuf.count, pbuf.baseAddress))
-            }
-        }
+        var commitOID = try createCommit(
+            updateRef: "HEAD", author: sig, committer: sig, message: resolvedMessage,
+            tree: newTree, parents: [parentCommit, theirCommit], sign: sign)
 
         // Commit done — tell libgit2 we're not in a merging state anymore.
         try check(git_repository_state_cleanup(repo))

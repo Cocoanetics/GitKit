@@ -74,13 +74,15 @@ extension Repository {
     /// contains it and `noFastForward` is false, then the heads. HEAD,
     /// the index and the working tree change only once the merge
     /// succeeds or stops at the last head's conflicts; a working tree
-    /// change in a path the merge doesn't touch survives.
+    /// change in a path the merge doesn't touch survives. `sign`
+    /// overrides `commit.gpgsign` for the merge commit.
     public func octopusMerge(
         heads: [String],
         noFastForward: Bool = false,
         message: String,
         author: Signature? = nil,
-        env: [String: String] = ProcessInfo.processInfo.environment
+        env: [String: String] = ProcessInfo.processInfo.environment,
+        sign: SignMode = .config
     ) throws -> OctopusMergeResult {
         try refuseWhereGitWontMerge()
         guard let head = try headOID() else {
@@ -212,7 +214,8 @@ extension Repository {
 
         // The work tree is settled, sparse rules and all, before HEAD moves.
         let outcome = try conclude(head: head, headTree: headTree, mergedTree: mergedTree, oids: oids,
-                                   noFastForward: noFastForward, message: message, author: author, env: env) {
+                                   noFastForward: noFastForward, message: message, author: author, env: env,
+                                   sign: sign) {
             try keepSkipWorktree(skipWorktree)
             return try reapplySparsity()
         }
@@ -225,7 +228,8 @@ extension Repository {
     /// commit is made and HEAD moves; it returns what takes that back.
     func conclude(
         head: git_oid, headTree: git_oid, mergedTree: git_oid, oids: [git_oid], noFastForward: Bool,
-        message: String, author: Signature?, env: [String: String], settle: () throws -> () -> Void = { {} }
+        message: String, author: Signature?, env: [String: String], sign: SignMode = .config,
+        settle: () throws -> () -> Void = { {} }
     ) throws -> OctopusMergeOutcome {
         let headSubsumed = try oids.contains { try isDescendant($0, of: head) }
         let parents = (headSubsumed && !noFastForward ? [] : [head]) + oids
@@ -239,7 +243,7 @@ extension Repository {
             // A merge left staged gets its merge state while the checkout
             // can still be taken back, should that fail.
             sha = try commitMerge(tree: mergedTree, from: headTree, start: head, parents: parents, message: text,
-                                  author: author, env: env, settle: settle) {
+                                  author: author, env: env, sign: sign, settle: settle) {
                 try writeMergeState(oids: oids, message: message, conflicts: [], noFastForward: noFastForward)
             }
         } catch let failed as HeadNotUpdated {
