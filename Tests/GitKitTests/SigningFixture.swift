@@ -62,8 +62,7 @@ enum SigningFixture {
     /// without depending on a gpg keyring or an ssh-agent.
     static func script(_ body: String, name: String = "signer", in dir: URL) throws -> URL {
         let url = dir.appendingPathComponent(name)
-        try Data(("#!/bin/sh\n" + body + "\n").utf8).write(to: url)
-        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: url.path)
+        try ExecutableScript.write("#!/bin/sh\n" + body + "\n", to: url, permissions: 0o700)
         return url
     }
 }

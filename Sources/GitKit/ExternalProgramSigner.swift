@@ -125,10 +125,20 @@ public struct ExternalProgramSigner: GitSigner {
         process.standardOutput = stdout
         process.standardError = stderr
         do { try process.run() }
-        catch { throw SigningError.failed(program: program, stderr: error.localizedDescription) }
+        catch { throw SigningError.failed(program: program, stderr: Self.launchFailure(program, error)) }
         process.waitUntilExit()
         return (String(decoding: try Data(contentsOf: outputURL), as: UTF8.self),
                 String(decoding: try Data(contentsOf: errorURL), as: UTF8.self), process.terminationStatus)
+    }
+
+    /// Foundation reports errno values it has no Cocoa code for (ETXTBSY,
+    /// ENOEXEC, …) as a generic error 256; the reason is in the underlying error.
+    static func launchFailure(_ program: String, _ error: Error) -> String {
+        var message = "cannot run \(program): \(error.localizedDescription)"
+        if let underlying = (error as NSError).userInfo[NSUnderlyingErrorKey] as? NSError {
+            message += " (\(underlying.localizedDescription))"
+        }
+        return message
     }
 
     #if os(Windows)

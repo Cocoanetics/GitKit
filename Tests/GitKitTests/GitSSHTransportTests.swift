@@ -229,9 +229,7 @@ struct GitSSHTransportTests {
         echo "$$" >> "\(pidLog.path)"
         eval "$2"
         """
-        try Data(contents.utf8).write(to: script)
-        try FileManager.default.setAttributes(
-            [.posixPermissions: 0o755], ofItemAtPath: script.path)
+        try ExecutableScript.write(contents, to: script)
         return script
     }
 

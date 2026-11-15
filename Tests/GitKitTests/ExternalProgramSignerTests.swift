@@ -146,6 +146,16 @@ struct ExternalProgramSignerTests {
                                     program: dir.appendingPathComponent("absent").path)
         #expect(throws: SigningError.self) { try ExternalProgramSigner().sign([], request: absent) }
     }
+
+    @Test("a failed launch reports the underlying errno, not only Cocoa error 256")
+    func launchFailureReason() {
+        let busy = NSError(domain: NSCocoaErrorDomain, code: 256, userInfo: [
+            NSUnderlyingErrorKey: NSError(domain: NSPOSIXErrorDomain, code: Int(ETXTBSY))
+        ])
+        let message = ExternalProgramSigner.launchFailure("/tmp/signer", busy)
+        #expect(message.hasPrefix("cannot run /tmp/signer: "))
+        #expect(message.contains("Text file busy"), "\(message)")
+    }
 }
 
 @Suite("Signed commit git parity", .enabled(if: SigningFixture.sshKeygenAvailable))

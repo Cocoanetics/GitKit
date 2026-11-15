@@ -50,7 +50,7 @@ struct PushOptionsTests {
         let hook = remote.appendingPathComponent("hooks/pre-receive")
         try FileManager.default.createDirectory(
             at: hook.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try """
+        try ExecutableScript.write("""
             #!/bin/sh
             echo "count=${GIT_PUSH_OPTION_COUNT:-none}" > '\(record.path)'
             i=0
@@ -58,8 +58,7 @@ struct PushOptionsTests {
               eval "echo \\"\\$GIT_PUSH_OPTION_$i\\"" >> '\(record.path)'
               i=$((i + 1))
             done
-            """.write(to: hook, atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: hook.path)
+            """, to: hook)
 
         try runGit(["init", "-q", "-b", "main"], in: work)
         try runGit(["commit", "-q", "--allow-empty", "-m", "one"], in: work)
