@@ -25,11 +25,18 @@ extension Repository {
     /// Replay the current branch's commits since its merge-base with
     /// `upstream` on top of `upstream` (or `onto` when supplied).
     /// Equivalent to `git rebase <upstream> [--onto <onto>]`.
+    ///
+    /// `sign` overrides `commit.gpgsign` for every replayed commit
+    /// (`-S[<key>]` / `--no-gpg-sign`). An explicit choice is kept in
+    /// `rebase-merge/gpg_sign_opt`, as git keeps it, so a later
+    /// ``rebaseContinue(author:progress:sign:)`` or
+    /// ``rebaseSkip(author:progress:sign:)`` signs the same way.
     public func rebase(
         upstream upstreamSpec: String,
         onto ontoSpec: String? = nil,
         author: Signature? = nil,
-        progress: (@Sendable (Int, Int) -> Void)? = nil
+        progress: (@Sendable (Int, Int) -> Void)? = nil,
+        sign: SignMode = .config
     ) throws -> RebaseOutcome {
         // Resolve the three annotated commits libgit2 needs: branch
         // (the work being moved — current HEAD), upstream (its
@@ -60,16 +67,20 @@ extension Repository {
             return String(cString: cstr)
         }()
 
+        // Resolved before libgit2 writes any rebase state.
+        let signing = try RebaseSigning(repository: self, sign: sign)
         var rebase: OpaquePointer?
-        var opts = git_rebase_options()
-        try check(git_rebase_options_init(
-            &opts, UInt32(GIT_REBASE_OPTIONS_VERSION)))
+        var opts = try rebaseOptions(signing)
         try check(git_rebase_init(
             &rebase, repo, branchAC, upstreamAC, ontoAC, &opts))
         // Don't free until we know we're done — on conflict we leave
         // the rebase persisted on disk and free our handle (libgit2
-        // separates in-memory rebase from on-disk state).
-        defer { if rebase != nil { git_rebase_free(rebase) } }
+        // separates in-memory rebase from on-disk state). The handle
+        // holds the signing payload, so that lives as long.
+        defer {
+            if rebase != nil { git_rebase_free(rebase) }
+            withExtendedLifetime(signing) {}
+        }
 
         let total = Int(git_rebase_operation_entrycount(rebase))
         if total == 0 {
@@ -78,31 +89,36 @@ extension Repository {
             try check(git_rebase_abort(rebase))
             return .alreadyUpToDate(branchRefName: branchRefName)
         }
+        try persistSignMode(sign)
 
         return try runRebaseLoop(
             rebase: rebase, repo: repo, total: total,
             author: author, progress: progress,
-            branchRefName: branchRefName)
+            branchRefName: branchRefName, signing: signing)
     }
 
     /// Continue a rebase paused on a conflict. The caller is expected to
     /// have resolved every conflicted file and `add`-staged the result.
-    /// Throws if no rebase is in progress.
+    /// Throws if no rebase is in progress. `sign` other than `.config`
+    /// overrides the signing choice the rebase was started with.
     public func rebaseContinue(
         author: Signature? = nil,
-        progress: (@Sendable (Int, Int) -> Void)? = nil
+        progress: (@Sendable (Int, Int) -> Void)? = nil,
+        sign: SignMode = .config
     ) throws -> RebaseOutcome {
+        let signing = try RebaseSigning(repository: self, sign: persistedSignMode(overriddenBy: sign))
         var rebase: OpaquePointer?
-        var opts = git_rebase_options()
-        try check(git_rebase_options_init(
-            &opts, UInt32(GIT_REBASE_OPTIONS_VERSION)))
+        var opts = try rebaseOptions(signing)
         let openRC = git_rebase_open(&rebase, repo, &opts)
         if openRC == GIT_ENOTFOUND.rawValue {
             throw Libgit2Error(code: -1, klass: 0,
                 message: "no rebase in progress")
         }
         try check(openRC)
-        defer { if rebase != nil { git_rebase_free(rebase) } }
+        defer {
+            if rebase != nil { git_rebase_free(rebase) }
+            withExtendedLifetime(signing) {}
+        }
 
         // Commit the resolved conflict from the previous step before
         // resuming the loop. Skip when the index is empty (e.g. user
@@ -118,7 +134,7 @@ extension Repository {
         let currentRaw = git_rebase_operation_current(rebase)
         let total = Int(totalRaw)
         if currentRaw != size_t.max && currentRaw < totalRaw {
-            try commitCurrent(rebase: rebase, repo: repo, author: author)
+            try commitCurrent(rebase: rebase, repo: repo, author: author, signing: signing)
         }
 
         // Pick branch refname out of the rebase struct itself; HEAD
@@ -130,28 +146,32 @@ extension Repository {
         return try runRebaseLoop(
             rebase: rebase, repo: repo, total: total,
             author: author, progress: progress,
-            branchRefName: branchRefName)
+            branchRefName: branchRefName, signing: signing)
     }
 
     /// Skip the conflicting commit and resume the rebase. Resets the
     /// working tree + index to the rebase's last clean step, advances
     /// past the offending operation without committing it, and runs
-    /// the loop until done or another conflict.
+    /// the loop until done or another conflict. `sign` other than
+    /// `.config` overrides the signing choice the rebase was started with.
     public func rebaseSkip(
         author: Signature? = nil,
-        progress: (@Sendable (Int, Int) -> Void)? = nil
+        progress: (@Sendable (Int, Int) -> Void)? = nil,
+        sign: SignMode = .config
     ) throws -> RebaseOutcome {
+        let signing = try RebaseSigning(repository: self, sign: persistedSignMode(overriddenBy: sign))
         var rebase: OpaquePointer?
-        var opts = git_rebase_options()
-        try check(git_rebase_options_init(
-            &opts, UInt32(GIT_REBASE_OPTIONS_VERSION)))
+        var opts = try rebaseOptions(signing)
         let openRC = git_rebase_open(&rebase, repo, &opts)
         if openRC == GIT_ENOTFOUND.rawValue {
             throw Libgit2Error(code: -1, klass: 0,
                 message: "no rebase in progress")
         }
         try check(openRC)
-        defer { if rebase != nil { git_rebase_free(rebase) } }
+        defer {
+            if rebase != nil { git_rebase_free(rebase) }
+            withExtendedLifetime(signing) {}
+        }
 
         // Force-checkout HEAD to clear conflict markers + the
         // partially-applied index so git_rebase_next can advance.
@@ -168,7 +188,7 @@ extension Repository {
         return try runRebaseLoop(
             rebase: rebase, repo: repo, total: total,
             author: author, progress: progress,
-            branchRefName: branchRefName)
+            branchRefName: branchRefName, signing: signing)
     }
 
     /// Wipe an in-progress rebase, restoring the working tree + HEAD to
@@ -199,7 +219,8 @@ extension Repository {
         total: Int,
         author: Signature?,
         progress: ((Int, Int) -> Void)?,
-        branchRefName: String?
+        branchRefName: String?,
+        signing: RebaseSigning
     ) throws -> RebaseOutcome {
         var applied = 0
         while true {
@@ -228,7 +249,7 @@ extension Repository {
             }
             git_index_free(index)
 
-            try commitCurrent(rebase: rebase, repo: repo, author: author)
+            try commitCurrent(rebase: rebase, repo: repo, author: author, signing: signing)
             applied += 1
         }
 
@@ -257,7 +278,8 @@ extension Repository {
     private func commitCurrent(
         rebase: OpaquePointer?,
         repo: OpaquePointer?,
-        author: Signature?
+        author: Signature?,
+        signing: RebaseSigning
     ) throws {
         var sig: UnsafeMutablePointer<git_signature>?
         if let author {
@@ -274,7 +296,72 @@ extension Repository {
         var oid = git_oid()
         // Pass nil author/message_encoding/message → libgit2 reuses the
         // original commit's author and message verbatim.
-        try check(git_rebase_commit(&oid, rebase, nil, sig, nil, nil))
+        let rc = git_rebase_commit(&oid, rebase, nil, sig, nil, nil)
+        // The signer's own error, not libgit2's GIT_EUSER.
+        if let error = signing.error {
+            signing.error = nil
+            throw error
+        }
+        try check(rc)
+    }
+
+    // MARK: Signing
+
+    /// `git_rebase_options` whose commit callback signs through
+    /// `signing`, which must outlive the rebase handle.
+    private func rebaseOptions(_ signing: RebaseSigning) throws -> git_rebase_options {
+        var opts = git_rebase_options()
+        try check(git_rebase_options_init(
+            &opts, UInt32(GIT_REBASE_OPTIONS_VERSION)))
+        opts.payload = Unmanaged.passUnretained(signing).toOpaque()
+        opts.commit_create_cb = { out, author, committer, encoding, message, tree, count, parents, payload in
+            guard let out, let payload else { return GIT_PASSTHROUGH.rawValue }
+            let signing = Unmanaged<RebaseSigning>.fromOpaque(payload).takeUnretainedValue()
+            guard signing.enabled else { return GIT_PASSTHROUGH.rawValue }
+            do {
+                // Only the object: libgit2 moves HEAD and writes the reflog.
+                let parents = (0..<count).map { parents?[$0] }
+                out.pointee = try signing.repository.createCommit(
+                    updateRef: nil, author: author, committer: committer,
+                    encoding: encoding.map { String(cString: $0) }, message: message.map { String(cString: $0) } ?? "",
+                    tree: tree, parents: parents, sign: signing.sign)
+                return 0
+            } catch {
+                signing.error = error
+                return GIT_EUSER.rawValue
+            }
+        }
+        return opts
+    }
+
+    private var gpgSignOptURL: URL {
+        URL(fileURLWithPath: String(cString: git_repository_path(repo)))
+            .appendingPathComponent("rebase-merge/gpg_sign_opt")
+    }
+
+    /// Keep an explicit signing choice for a later continue or skip, as
+    /// git's `-S[<key>]` does. `.config` is read again when resuming.
+    private func persistSignMode(_ sign: SignMode) throws {
+        let option: String
+        switch sign {
+        case .config: return
+        case .sign(let key): option = "-S" + (key ?? "")
+        case .noSign: option = "--no-gpg-sign"
+        }
+        try Data((option + "\n").utf8).write(to: gpgSignOptURL)
+    }
+
+    /// The signing choice a rebase was started with, unless `sign` is
+    /// an explicit override.
+    private func persistedSignMode(overriddenBy sign: SignMode) -> SignMode {
+        guard sign == .config, let data = FileManager.default.contents(atPath: gpgSignOptURL.path) else {
+            return sign
+        }
+        let option = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .newlines)
+        if option == "--no-gpg-sign" { return .noSign }
+        guard option.hasPrefix("-S") else { return .config }
+        let key = String(option.dropFirst(2))
+        return .sign(keyID: key.isEmpty ? nil : key)
     }
 
     /// SHA + subject of the commit being cherry-picked in `operation` —
@@ -321,5 +408,21 @@ extension Repository {
             }
         }
         return paths
+    }
+}
+
+/// What a rebase's `commit_create_cb` needs, and the signer error it
+/// hands back across the C call.
+private final class RebaseSigning {
+    let repository: Repository
+    let sign: SignMode
+    /// Resolved once per operation; off leaves the commit to libgit2.
+    let enabled: Bool
+    var error: Error?
+
+    init(repository: Repository, sign: SignMode) throws {
+        self.repository = repository
+        self.sign = sign
+        enabled = try SigningConfig.resolve(sign, repository: repository) != nil
     }
 }
