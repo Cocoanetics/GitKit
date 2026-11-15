@@ -104,6 +104,8 @@ extension Repository {
     ///     that is empty after cleanup.
     ///   - cleanup: `--cleanup`, applied to the new or the kept message
     ///     alike; nil follows `commit.cleanup`, else ``CommitMessageCleanup/whitespace``.
+    ///   - sign: `-S[<key>]` / `--no-gpg-sign`; `.config` follows
+    ///     `commit.gpgsign`. The old commit's signature is never kept.
     /// - Throws: ``CommitAmendError`` where git refuses; ``Libgit2Error``
     ///   otherwise — ``Libgit2Error/isLocked`` when another process holds
     ///   `index.lock` (git's "Unable to create '…/index.lock'").
@@ -119,7 +121,8 @@ extension Repository {
         allowEmpty: Bool = false,
         allowEmptyMessage: Bool = false,
         cleanup: CommitMessageCleanup? = nil,
-        env: [String: String] = ProcessInfo.processInfo.environment
+        env: [String: String] = ProcessInfo.processInfo.environment,
+        sign: SignMode = .config
     ) throws -> Libgit2CommitDetails {
         // Git rejects a bad comment string as it reads its config, first.
         for key in ["core.commentString", "core.commentChar"] {
@@ -202,24 +205,16 @@ extension Repository {
         var text = try cleanedUp(rawText, cleanup, comment: comment, allowEmpty: allowEmptyMessage)
         text.append(0)
 
-        var created = git_buf()
-        defer { git_buf_dispose(&created) }
-        _ = try parents.withUnsafeMutableBufferPointer { buffer in
-            try text.withUnsafeBufferPointer { bytes in
-                try bytes.withMemoryRebound(to: CChar.self) { msg in
-                    try check(git_commit_create_buffer(
-                        &created, repo, authorSig, committerSig, encoding,
-                        msg.baseAddress, newTree, buffer.count, buffer.baseAddress))
-                }
+        // The old extra headers go in before the object is signed; its
+        // signatures stay dropped. HEAD moves below, as git moves it.
+        var commitOID = try text.withUnsafeBufferPointer { bytes in
+            try bytes.withMemoryRebound(to: CChar.self) { msg in
+                try createCommit(
+                    updateRef: nil, author: authorSig, committer: committerSig, encoding: encoding,
+                    message: msg.baseAddress!, tree: newTree, parents: parents, sign: sign,
+                    transform: { Self.withExtraHeaders($0, from: old) })
             }
         }
-        let object = Self.withExtraHeaders(
-            Array(UnsafeRawBufferPointer(start: created.ptr, count: created.size)), from: old)
-        var commitOID = git_oid()
-        var odb: OpaquePointer?
-        try check(git_repository_odb(&odb, repo))
-        defer { git_odb_free(odb) }
-        try check(git_odb_write(&commitOID, odb, object, object.count, GIT_OBJECT_COMMIT))
 
         // The subject's bytes as they are, in whatever encoding the
         // commit has: git logs them unconverted.
