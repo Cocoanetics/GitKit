@@ -202,6 +202,41 @@ struct OperationSigningTests {
         try Fixture.expectSigned(signed, "HEAD~1", in: dir)
     }
 
+    @Test("a signed rebase keeps a message in another encoding byte for byte")
+    func rebaseKeepsMessageBytes() throws {
+        CommitSigningTests.signerDefaultsLock.lock()
+        defer { CommitSigningTests.signerDefaultsLock.unlock() }
+        defer { fixtures.removeAll() }
+        // "café" in ISO-8859-1: 0xE9 is not valid UTF-8 on its own.
+        let message: [UInt8] = Array("caf".utf8) + [0xE9, 0x0A]
+        let (dir, repo, _) = try repository { dir in
+            try Fixture.forked(dir)
+            try AmendFixture.git(["checkout", "-q", "side"], in: dir)
+            try AmendFixture.write("latin\n", to: "l", in: dir)
+            try AmendFixture.git(["add", "l"], in: dir)
+            let file = dir.appendingPathComponent(".git/latin-message")
+            try Data(message).write(to: file)
+            try AmendFixture.git(["-c", "i18n.commitEncoding=ISO-8859-1", "commit", "-q", "--no-gpg-sign",
+                                  "-F", file.path], in: dir)
+        }
+        guard case .completed = try repo.rebase(upstream: "main") else {
+            Issue.record("expected a completed rebase"); return
+        }
+        var oid = git_oid()
+        try check(git_oid_fromstr(&oid, Fixture.rev("HEAD", in: dir)))
+        var odb: OpaquePointer?
+        try check(git_repository_odb(&odb, repo.pointer))
+        defer { git_odb_free(odb) }
+        var object: OpaquePointer?
+        try check(git_odb_read(&object, odb, &oid))
+        defer { git_odb_object_free(object) }
+        let raw = Array(UnsafeRawBufferPointer(start: git_odb_object_data(object), count: git_odb_object_size(object)))
+        let text = String(decoding: raw, as: UTF8.self)
+        #expect(text.contains("\nencoding ISO-8859-1\n"))
+        #expect(Array(raw.suffix(message.count + 1)) == [0x0A] + message)
+        try Fixture.expectSigned(true, "HEAD", in: dir)
+    }
+
     @Test("rebaseContinue and rebaseSkip sign the commits they replay, and keep --no-gpg-sign",
           arguments: [true, false], [false, true])
     func rebaseResume(signed: Bool, skip: Bool) throws {

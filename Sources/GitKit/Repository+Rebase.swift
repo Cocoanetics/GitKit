@@ -315,15 +315,16 @@ extension Repository {
             &opts, UInt32(GIT_REBASE_OPTIONS_VERSION)))
         opts.payload = Unmanaged.passUnretained(signing).toOpaque()
         opts.commit_create_cb = { out, author, committer, encoding, message, tree, count, parents, payload in
-            guard let out, let payload else { return GIT_PASSTHROUGH.rawValue }
+            guard let out, let message, let payload else { return GIT_PASSTHROUGH.rawValue }
             let signing = Unmanaged<RebaseSigning>.fromOpaque(payload).takeUnretainedValue()
             guard signing.enabled else { return GIT_PASSTHROUGH.rawValue }
             do {
                 // Only the object: libgit2 moves HEAD and writes the reflog.
+                // The message goes on as raw bytes, whatever its encoding.
                 let parents = (0..<count).map { parents?[$0] }
                 out.pointee = try signing.repository.createCommit(
                     updateRef: nil, author: author, committer: committer,
-                    encoding: encoding.map { String(cString: $0) }, message: message.map { String(cString: $0) } ?? "",
+                    encoding: encoding.map { String(cString: $0) }, message: message,
                     tree: tree, parents: parents, sign: signing.sign)
                 return 0
             } catch {
