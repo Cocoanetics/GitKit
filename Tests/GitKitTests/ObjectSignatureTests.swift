@@ -45,6 +45,17 @@ struct ObjectSignatureParserTests {
         #expect(result.signature == signature)
         #expect(result.format == .ssh)
     }
+
+    @Test("Compatibility headers and continuations are removed from a tag payload")
+    func compatibilityHeaders() throws {
+        let compatibility = "gpgsig first\n continuation\ngpgsig-sha256 second\n continuation\n"
+        let body = "message\ngpgsig body content\n"
+        let signature = "-----BEGIN SSH SIGNATURE-----\narmor\n"
+        let raw = String(headers.dropLast()) + compatibility + "\n" + body + signature
+        let result = try #require(parseTagSignature(Array(raw.utf8)))
+        #expect(result.signedPayload == Array((headers + body).utf8))
+        #expect(result.signature == signature)
+    }
 }
 
 // Integration tests invoke the system git and ssh-keygen, like AmendFixture.
@@ -95,8 +106,7 @@ struct ObjectSignatureTests {
         let result = try Repository.open(at: dir).commitSignatures(sha)
         #expect(result.map(\.field) == fields.map(Optional.some))
         for (index, signature) in result.enumerated() {
-            let otherBlocks = blocks.enumerated().filter { $0.offset != index }.map(\.element).joined()
-            #expect(signature.signedPayload == Array((headers + otherBlocks).utf8) + message)
+            #expect(signature.signedPayload == Array(headers.utf8) + message)
             #expect(signature.signature == signatures[fields[index]])
             #expect(signature.format == (fields[index] == "gpgsig" ? .ssh : nil))
         }
@@ -148,18 +158,37 @@ struct ObjectSignatureTests {
             try ObjectSignatureFixture.verify(signature, in: dir)
         }
 
-        // Use a real SSH signature in the alternate header, independently of SHA-256 object support.
+        // Use the real signature in both fields. Both sign the same payload,
+        // independently of SHA-256 object support.
         let payload = try #require(String(bytes: commit.signedPayload, encoding: .utf8))
         let separator = try #require(payload.range(of: "\n\n"))
         let armor = commit.signature.trimmingCharacters(in: .newlines)
-        let header = "gpgsig-sha256 " + armor.replacingOccurrences(of: "\n", with: "\n ") + "\n"
-        let raw = String(payload[..<separator.lowerBound]) + "\n" + header
+        let foldedArmor = armor.replacingOccurrences(of: "\n", with: "\n ")
+        let commitHeaders = "gpgsig \(foldedArmor)\ngpgsig-sha256 \(foldedArmor)\n"
+        let raw = String(payload[..<separator.lowerBound]) + "\n" + commitHeaders
             + "\n" + String(payload[separator.upperBound...])
         let sha = try ObjectSignatureFixture.writeObject(Array(raw.utf8), type: "commit", in: dir)
-        let alternate = try #require(try repo.commitSignatures(sha).first)
-        #expect(alternate.field == "gpgsig-sha256")
-        #expect(alternate.signedPayload == commit.signedPayload)
-        try ObjectSignatureFixture.verify(alternate, in: dir)
+        let dualCommit = try repo.commitSignatures(sha)
+        #expect(dualCommit.map(\.field) == ["gpgsig", "gpgsig-sha256"])
+        for signature in dualCommit {
+            #expect(signature.signedPayload == commit.signedPayload)
+            try ObjectSignatureFixture.verify(signature, in: dir)
+        }
+
+        // A dual-signed tag has a compatibility header plus trailing armor;
+        // both are signatures over the original unsigned tag payload.
+        let tagPayload = try #require(String(bytes: tag.signedPayload, encoding: .utf8))
+        let tagSeparator = try #require(tagPayload.range(of: "\n\n"))
+        let foldedTagArmor = tag.signature.trimmingCharacters(in: .newlines)
+            .replacingOccurrences(of: "\n", with: "\n ")
+        let tagHeader = "gpgsig \(foldedTagArmor)\ngpgsig-sha256 \(foldedTagArmor)\n"
+        let dualTagRaw = String(tagPayload[..<tagSeparator.lowerBound]) + "\n" + tagHeader
+            + "\n" + String(tagPayload[tagSeparator.upperBound...]) + tag.signature
+        let tagSHA = try ObjectSignatureFixture.writeObject(Array(dualTagRaw.utf8), type: "tag", in: dir)
+        let dualTag = try #require(try repo.tagSignature(tagSHA))
+        #expect(dualTag.signature == tag.signature)
+        #expect(dualTag.signedPayload == tag.signedPayload)
+        try ObjectSignatureFixture.verify(dualTag, in: dir)
     }
 }
 

@@ -7,7 +7,7 @@ public struct ObjectSignature: Sendable, Equatable {
     public let field: String?
     /// Armored signature text.
     public let signature: String
-    /// Serialized object bytes excluding this signature.
+    /// Serialized object bytes excluding all signature fields.
     public let signedPayload: [UInt8]
     /// Format recognized from the armor header, or nil if unknown.
     public let format: SigningFormat?
@@ -44,7 +44,8 @@ extension Repository {
                 Array(UnsafeRawBufferPointer(start: $0, count: payload.size))
             } ?? []
             result.append(ObjectSignature(
-                field: field, signature: text, signedPayload: bytes,
+                field: field, signature: text,
+                signedPayload: removingSignatureHeaders(from: bytes),
                 format: signatureFormat(text)))
         }
         return result
@@ -81,6 +82,10 @@ private let signatureHeaders: [(String, SigningFormat)] = [
     ("-----BEGIN SIGNED MESSAGE-----", .x509)
 ]
 
+private let signatureFieldPrefixes = [
+    Array("gpgsig ".utf8), Array("gpgsig-sha256 ".utf8)
+]
+
 private func signatureFormat(_ signature: String) -> SigningFormat? {
     signatureHeaders.first { signature.hasPrefix($0.0) }?.1
 }
@@ -100,6 +105,33 @@ func parseTagSignature(_ bytes: [UInt8]) -> ObjectSignature? {
     guard let start else { return nil }
     let signature = String(decoding: bytes[start...], as: UTF8.self)
     return ObjectSignature(
-        field: nil, signature: signature, signedPayload: Array(bytes[..<start]),
+        field: nil, signature: signature,
+        signedPayload: removingSignatureHeaders(from: Array(bytes[..<start])),
         format: signatureFormat(signature))
+}
+
+/// Remove compatibility signatures from an object's header section while
+/// preserving all other bytes, including the header/body separator.
+private func removingSignatureHeaders(from bytes: [UInt8]) -> [UInt8] {
+    var result: [UInt8] = []
+    result.reserveCapacity(bytes.count)
+    var lineStart = 0
+    var removing = false
+    while lineStart < bytes.count {
+        let lineEnd = bytes[lineStart...].firstIndex(of: 10) ?? bytes.endIndex
+        let nextLine = lineEnd < bytes.endIndex ? lineEnd + 1 : lineEnd
+        let line = bytes[lineStart..<lineEnd]
+        if line.isEmpty {
+            result.append(contentsOf: bytes[lineStart...])
+            break
+        }
+        if line.first != 32 {
+            removing = signatureFieldPrefixes.contains { line.starts(with: $0) }
+        }
+        if !removing {
+            result.append(contentsOf: bytes[lineStart..<nextLine])
+        }
+        lineStart = nextLine
+    }
+    return result
 }
