@@ -37,7 +37,9 @@ public struct SigningRequest: Sendable {
 ///
 /// Called synchronously on the operation's calling thread, once per object,
 /// before writing the commit object, without GitKit, index or reference
-/// locks held. A signer may block while bridging to an async host service.
+/// locks held — except for an amend, which like git holds `index.lock`
+/// until HEAD has moved. A signer may block while bridging to an async
+/// host service.
 public protocol GitSigner: Sendable {
     func sign(_ payload: [UInt8], request: SigningRequest) throws -> String
 }
@@ -179,9 +181,10 @@ extension Repository {
     }
 
     // The extra-header transform is shared with amend; it runs before signing.
+    // `message` takes a String or, for messages in another encoding, raw bytes.
     func createCommit(
         updateRef: String?, author: UnsafePointer<git_signature>?, committer: UnsafePointer<git_signature>?,
-        encoding: String? = nil, message: String, tree: OpaquePointer?, parents: [OpaquePointer?],
+        encoding: String? = nil, message: UnsafePointer<CChar>, tree: OpaquePointer?, parents: [OpaquePointer?],
         sign: SignMode, transform: (([UInt8]) -> [UInt8])? = nil
     ) throws -> git_oid {
         let config = try SigningConfig.resolve(sign, repository: self)

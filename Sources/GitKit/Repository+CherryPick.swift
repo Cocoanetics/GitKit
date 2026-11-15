@@ -26,12 +26,14 @@ extension Repository {
     /// `.git/CHERRY_PICK_HEAD` set so the caller can resume.
     ///
     /// `env` feeds the real-git committer identity precedence chain
-    /// (`GIT_COMMITTER_*`); see ``SignatureResolver``.
+    /// (`GIT_COMMITTER_*`); see ``SignatureResolver``. `sign` overrides
+    /// `commit.gpgsign` (`-S` / `--no-gpg-sign`).
     @discardableResult
     public func cherryPick(
         _ ref: String,
         author: Signature? = nil,
-        env: [String: String] = ProcessInfo.processInfo.environment
+        env: [String: String] = ProcessInfo.processInfo.environment,
+        sign: SignMode = .config
     ) throws -> CherryPickOutcome {
         // Resolve the ref to a commit.
         var commitObj: OpaquePointer?
@@ -71,7 +73,7 @@ extension Repository {
         // committer (matches real git behaviour).
         return try writeCherryPickCommit(
             repo: repo, sourceCommit: sourceCommit, sourceOID: &oid,
-            authorOverride: author, env: env)
+            authorOverride: author, env: env, sign: sign)
     }
 
     /// Resume a paused cherry-pick after the user resolved conflicts
@@ -83,7 +85,8 @@ extension Repository {
     @discardableResult
     public func cherryPickContinue(
         author: Signature? = nil,
-        env: [String: String] = ProcessInfo.processInfo.environment
+        env: [String: String] = ProcessInfo.processInfo.environment,
+        sign: SignMode = .config
     ) throws -> CherryPickOutcome {
         // CHERRY_PICK_HEAD points at the commit we were applying.
         var head: OpaquePointer?
@@ -115,7 +118,7 @@ extension Repository {
 
         return try writeCherryPickCommit(
             repo: repo, sourceCommit: sourceCommit, sourceOID: &oid,
-            authorOverride: author, env: env)
+            authorOverride: author, env: env, sign: sign)
     }
 
     /// `git cherry-pick --abort`: undo the in-progress cherry-pick
@@ -161,7 +164,8 @@ extension Repository {
         sourceCommit: OpaquePointer?,
         sourceOID: inout git_oid,
         authorOverride: Signature?,
-        env: [String: String]
+        env: [String: String],
+        sign: SignMode
     ) throws -> CherryPickOutcome {
         // Prior tree (HEAD) for stat output.
         var headRef: OpaquePointer?
@@ -217,15 +221,9 @@ extension Repository {
         let messagePtr = git_commit_message(sourceCommit)
         let message = messagePtr.map { String(cString: $0) } ?? ""
 
-        var commitOID = git_oid()
-        var parents: [OpaquePointer?] = [parentCommit]
-        _ = try parents.withUnsafeMutableBufferPointer { pbuf in
-            try message.withCString { msg in
-                try check(git_commit_create(
-                    &commitOID, repo, "HEAD", authorSig, committerSig, nil,
-                    msg, newTree, pbuf.count, pbuf.baseAddress))
-            }
-        }
+        var commitOID = try createCommit(
+            updateRef: "HEAD", author: authorSig, committer: committerSig,
+            message: message, tree: newTree, parents: [parentCommit], sign: sign)
 
         // Cleanup CHERRY_PICK_HEAD + state files.
         try check(git_repository_state_cleanup(repo))
