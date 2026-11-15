@@ -60,6 +60,8 @@ extension Repository {
 
     /// Create a lightweight tag pointing at `target` (default HEAD).
     /// Throws when a tag with the same name exists unless `force == true`.
+    /// Never signed: a lightweight tag is only a ref, and `tag.gpgsign`
+    /// applies to annotated tags.
     @discardableResult
     public func tagCreate(
         name: String, target: String = "HEAD", force: Bool = false
@@ -73,16 +75,22 @@ extension Repository {
         return formatOID(&oid)
     }
 
-    /// Create an annotated tag (signed object in `.git/objects` with
+    /// Create an annotated tag (a tag object in `.git/objects` with
     /// tagger + message). The `tagger` defaults to the committer-role
     /// signature resolved through env vars + config.
+    ///
+    /// `sign` mirrors `git tag -s` / `-u <key>` / `--no-sign`: `.config`
+    /// follows `tag.gpgsign`. A signed tag carries the armored signature
+    /// after its message, as git writes it.
     @discardableResult
     public func tagCreateAnnotated(
         name: String, target: String = "HEAD",
         message: String, tagger: Signature? = nil,
         force: Bool = false,
-        env: [String: String] = ProcessInfo.processInfo.environment
+        env: [String: String] = ProcessInfo.processInfo.environment,
+        sign: SignMode = .config
     ) throws -> String {
+        let config = try SigningConfig.resolve(sign, repository: self, forTag: true)
         var obj: OpaquePointer?
         try check(git_revparse_single(&obj, repo, target))
         defer { git_object_free(obj) }
@@ -95,10 +103,59 @@ extension Repository {
         defer { git_signature_free(sig) }
 
         var oid = git_oid()
-        try check(message.withCString { msg in
-            git_tag_create(&oid, repo, name, obj, sig, msg, force ? 1 : 0)
-        })
+        guard let config else {
+            try check(message.withCString { msg in
+                git_tag_create(&oid, repo, name, obj, sig, msg, force ? 1 : 0)
+            })
+            return formatOID(&oid)
+        }
+        try createSignedTag(&oid, name: name, target: obj, tagger: sig,
+                            message: message, force: force, config: config)
         return formatOID(&oid)
+    }
+
+    /// Format, sign and write in one step, so a failed or refused signature
+    /// leaves neither a tag object nor `refs/tags/<name>` behind.
+    private func createSignedTag(
+        _ oid: inout git_oid, name: String, target: OpaquePointer?,
+        tagger: UnsafePointer<git_signature>?, message: String, force: Bool,
+        config: SigningConfig
+    ) throws {
+        guard let selectedSigner = signer ?? GitSigning.defaultSigner() else {
+            throw SigningError.noSigner(config.format)
+        }
+        // Refuse what git_tag_create_from_buffer would refuse before the
+        // signer asks for a touch or a passphrase.
+        var valid: Int32 = 0
+        try check(git_tag_name_is_valid(&valid, name))
+        guard valid != 0 else {
+            throw Libgit2Error(code: GIT_EINVALIDSPEC.rawValue, klass: Int32(GIT_ERROR_TAG.rawValue),
+                               message: "'\(name)' is not a valid tag name")
+        }
+        if !force, try tagExists(name) {
+            throw Libgit2Error(code: GIT_EEXISTS.rawValue, klass: Int32(GIT_ERROR_TAG.rawValue),
+                               message: "tag already exists")
+        }
+
+        // Git signs a message that ends in a newline, then appends the
+        // signature; tags have no signature header.
+        let text = message.isEmpty || message.hasSuffix("\n") ? message : message + "\n"
+        var buffer = git_buf()
+        defer { git_buf_dispose(&buffer) }
+        try check(gitkit_tag_create_buffer(&buffer, repo, name, target, tagger, text))
+        let payload = Array(UnsafeRawBufferPointer(start: buffer.ptr, count: buffer.size))
+        let identity = ResolvedSignature(tagger)
+        let request = SigningRequest(
+            format: config.format, key: config.key, identity: "\(identity.name) <\(identity.email)>",
+            program: config.program, defaultKeyCommand: config.defaultKeyCommand, workingDirectory: workdirURL)
+        let armor = try selectedSigner.sign(payload, request: request)
+
+        // Parses the text, checks the target and its type, writes the
+        // object and creates the ref; GIT_EEXISTS without `force`.
+        let signed = (payload + Array(armor.utf8)).map { CChar(bitPattern: $0) } + [0]
+        try check(signed.withUnsafeBufferPointer { signed in
+            git_tag_create_from_buffer(&oid, repo, signed.baseAddress, force ? 1 : 0)
+        })
     }
 
     /// Delete a tag. Returns the SHA of what the tag was pointing at,
