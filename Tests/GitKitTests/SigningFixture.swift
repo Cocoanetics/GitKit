@@ -60,19 +60,9 @@ enum SigningFixture {
 
     /// A local test executable, allowing exact argv/stdin/status assertions
     /// without depending on a gpg keyring or an ssh-agent.
-    ///
-    /// A child that parallel tests fork while this process holds the script
-    /// open for writing inherits that descriptor, and on Linux executing the
-    /// script then fails with ETXTBSY. Writing it from a short-lived `cp`
-    /// keeps the only writable descriptor out of this process.
     static func script(_ body: String, name: String = "signer", in dir: URL) throws -> URL {
         let url = dir.appendingPathComponent(name)
-        let source = dir.appendingPathComponent("\(name)-source-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: source) }
-        try Data(("#!/bin/sh\n" + body + "\n").utf8).write(to: source)
-        let copy = try run("cp", [source.path, url.path], in: dir)
-        guard copy.status == 0 else { throw AmendFixture.Failure(description: copy.err) }
-        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: url.path)
+        try ExecutableScript.write("#!/bin/sh\n" + body + "\n", to: url, permissions: 0o700)
         return url
     }
 }
