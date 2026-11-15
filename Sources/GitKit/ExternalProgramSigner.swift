@@ -29,7 +29,7 @@ public struct ExternalProgramSigner: GitSigner {
         var key = request.key
         if key == nil || key?.isEmpty == true, let command = request.defaultKeyCommand {
             #if os(Windows)
-            let shell = ProcessInfo.processInfo.environment["COMSPEC"] ?? "cmd.exe"
+            let shell = environmentValue("COMSPEC") ?? "cmd.exe"
             let arguments = ["/c", command]
             #else
             let shell = "/bin/sh"
@@ -91,7 +91,7 @@ public struct ExternalProgramSigner: GitSigner {
         }
         let process = Process()
         #if os(Windows)
-        process.executableURL = executableURL(program)
+        process.executableURL = executableURL(program, workingDirectory: workingDirectory)
         process.arguments = arguments
         #else
         if program.contains("/") {
@@ -114,17 +114,23 @@ public struct ExternalProgramSigner: GitSigner {
     }
 
     #if os(Windows)
-    private func executableURL(_ program: String) -> URL {
-        if program.contains("/") || program.contains("\\") { return URL(fileURLWithPath: program) }
-        let environment = ProcessInfo.processInfo.environment
-        let extensions = [""] + (environment["PATHEXT"] ?? ".EXE;.CMD;.BAT").split(separator: ";").map(String.init)
-        for path in (environment["PATH"] ?? "").split(separator: ";") {
+    private func executableURL(_ program: String, workingDirectory: URL?) -> URL {
+        if program.contains("/") || program.contains("\\") {
+            return URL(fileURLWithPath: program, relativeTo: workingDirectory)
+        }
+        let extensions = [""] + (environmentValue("PATHEXT") ?? ".EXE").split(separator: ";").map(String.init)
+        for path in (environmentValue("PATH") ?? "").split(separator: ";") {
             for suffix in extensions {
                 let url = URL(fileURLWithPath: String(path)).appendingPathComponent(program + suffix)
                 if FileManager.default.fileExists(atPath: url.path) { return url }
             }
         }
         return URL(fileURLWithPath: program)
+    }
+
+    private func environmentValue(_ name: String) -> String? {
+        // Windows environment names are case-insensitive (commonly "Path").
+        ProcessInfo.processInfo.environment.first { $0.key.caseInsensitiveCompare(name) == .orderedSame }?.value
     }
     #endif
 }
