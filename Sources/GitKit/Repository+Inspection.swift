@@ -1,7 +1,7 @@
 import Foundation
 import CGitKit
 
-/// Rich result returned by ``Repository/commitDetailed(message:author:allowEmpty:env:)``
+/// Rich result returned by ``Repository/commitDetailed(message:author:allowEmpty:env:sign:)``
 /// and ``Repository/amendDetailed(message:author:resetAuthor:allowEmpty:allowEmptyMessage:cleanup:env:)``.
 /// The CLI uses this to format `git commit`'s `[branch sha] message` line,
 /// the ` Author:` / ` Date:` lines, the
