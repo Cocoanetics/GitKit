@@ -142,10 +142,18 @@ struct SigningConfig {
             try check(rc)
             return buffer.ptr.map { String(cString: $0) }
         }
+        func path(_ name: String) throws -> String? {
+            var buffer = git_buf()
+            defer { git_buf_dispose(&buffer) }
+            let rc = git_config_get_path(&buffer, config, name)
+            if rc == GIT_ENOTFOUND.rawValue { return nil }
+            try check(rc)
+            return buffer.ptr.map { String(cString: $0) }
+        }
         let value = try string("gpg.format") ?? "openpgp"
         guard let format = SigningFormat(rawValue: value) else { throw SigningError.unsupportedFormat(value) }
-        let program = try string("gpg.\(format.rawValue).program")
-            ?? (format == .openpgp ? string("gpg.program") : nil)
+        let program = try path("gpg.\(format.rawValue).program")
+            ?? (format == .openpgp ? path("gpg.program") : nil)
         return try SigningConfig(format: format, key: string("user.signingkey"), program: program,
                                  defaultKeyCommand: string("gpg.ssh.defaultKeyCommand"))
     }

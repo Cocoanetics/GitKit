@@ -21,7 +21,7 @@ public struct ExternalProgramSigner: GitSigner {
             guard result.status == 0, result.err.contains("[GNUPG:] SIG_CREATED "), !result.out.isEmpty else {
                 throw SigningError.failed(program: program, stderr: result.err)
             }
-            return result.out
+            return normalizeSignature(result.out)
         }
     }
 
@@ -64,10 +64,18 @@ public struct ExternalProgramSigner: GitSigner {
                              workingDirectory: request.workingDirectory)
         guard result.status == 0 else { throw SigningError.failed(program: program, stderr: result.err) }
         do {
-            return String(decoding: try Data(contentsOf: URL(fileURLWithPath: file.path + ".sig")), as: UTF8.self)
+            let signature = String(
+                decoding: try Data(contentsOf: URL(fileURLWithPath: file.path + ".sig")), as: UTF8.self)
+            return normalizeSignature(signature)
         } catch {
             throw SigningError.failed(program: program, stderr: result.err + "\n" + error.localizedDescription)
         }
+    }
+
+    /// Git removes CR only when it precedes LF in armor produced by an
+    /// external signer. Preserve standalone carriage returns verbatim.
+    private func normalizeSignature(_ signature: String) -> String {
+        signature.replacingOccurrences(of: "\r\n", with: "\n")
     }
 
     // File-backed streams avoid deadlocks when a program writes a large

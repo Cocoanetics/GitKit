@@ -53,6 +53,30 @@ struct ExternalProgramSignerTests {
         #expect(try ExternalProgramSigner().sign(payload, request: request).utf8.count == payload.count)
     }
 
+    @Test("CRLF armor from GPG and SSH is normalized like git")
+    func crlfArmor() throws {
+        defer { fixtures.removeAll() }
+        let dir = try fixtures.directory("crlf")
+        let gpg = try SigningFixture.script("""
+            cat >/dev/null
+            printf 'first\r\nsecond\rstandalone\r\n'
+            printf '[GNUPG:] SIG_CREATED x\n' >&2
+            """, name: "gpg", in: dir)
+        let gpgRequest = SigningRequest(
+            format: .openpgp, key: nil, identity: "T <t@e.com>", program: gpg.path)
+        #expect(try ExternalProgramSigner().sign([], request: gpgRequest)
+            == "first\nsecond\rstandalone\n")
+
+        let ssh = try SigningFixture.script("""
+            for last do :; done
+            printf 'first\r\nsecond\rstandalone\r\n' > "$last.sig"
+            """, name: "ssh-keygen", in: dir)
+        let sshRequest = SigningRequest(
+            format: .ssh, key: "key", identity: "T <t@e.com>", program: ssh.path)
+        #expect(try ExternalProgramSigner().sign([], request: sshRequest)
+            == "first\nsecond\rstandalone\n")
+    }
+
     @Test("SSH paths, literal keys and defaultKeyCommand", arguments: [
         "~/key", "relative key", "key::ssh-ed25519 AAAA test", "ssh-ed25519 AAAA test", ""
     ])
