@@ -39,6 +39,15 @@ GIT_EXTERN(int) gitkit_reference_update_for_commit(
     const git_oid *id, const char *operation);
 
 /*
+ * The text git_tag_annotation_create would write, returned instead of written
+ * so it can be signed first. Mirrors upstream's proposed git_tag_create_buffer
+ * (libgit2/libgit2#4969). Free `out` with git_buf_dispose.
+ */
+GIT_EXTERN(int) gitkit_tag_create_buffer(
+    git_buf *out, git_repository *repo, const char *tag_name,
+    const git_object *target, const git_signature *tagger, const char *message);
+
+/*
  * git2/cred_helpers.h is a deprecated top-level forwarding header — its
  * git_credential_userpass helper now lives in git2/credential_helpers.h (which
  * git2.h already reaches via git2/deprecated.h). git2.h doesn't include the
