@@ -25,27 +25,26 @@ extension Repository {
         try check(git_object_peel(&commit, obj, GIT_OBJECT_COMMIT))
         defer { git_object_free(commit) }
         var oid = git_object_id(commit)?.pointee ?? git_oid()
+        let rawBytes = try rawObjectBytes(repo: repo, oid: &oid)
+        let signedPayload = removingSignatureHeaders(from: rawBytes)
 
         var result: [ObjectSignature] = []
         for field in ["gpgsig", "gpgsig-sha256"] {
+            guard containsHeader(field, in: rawBytes) else { continue }
             var signature = git_buf()
-            var payload = git_buf()
+            var ignoredPayload = git_buf()
             defer {
                 git_buf_dispose(&signature)
-                git_buf_dispose(&payload)
+                git_buf_dispose(&ignoredPayload)
             }
-            let rc = git_commit_extract_signature(&signature, &payload, repo, &oid, field)
+            let rc = git_commit_extract_signature(&signature, &ignoredPayload, repo, &oid, field)
             if rc == GIT_ENOTFOUND.rawValue { continue }
             try check(rc)
             let text = signature.ptr.map {
                 String(decoding: UnsafeRawBufferPointer(start: $0, count: signature.size), as: UTF8.self)
             } ?? ""
-            let bytes = payload.ptr.map {
-                Array(UnsafeRawBufferPointer(start: $0, count: payload.size))
-            } ?? []
             result.append(ObjectSignature(
-                field: field, signature: text,
-                signedPayload: removingSignatureHeaders(from: bytes),
+                field: field, signature: text, signedPayload: signedPayload,
                 format: signatureFormat(text)))
         }
         return result
@@ -63,15 +62,7 @@ extension Repository {
         try check(git_tag_lookup(&tag, repo, &oid))
         defer { git_tag_free(tag) }
 
-        var odb: OpaquePointer?
-        try check(git_repository_odb(&odb, repo))
-        defer { git_odb_free(odb) }
-        var raw: OpaquePointer?
-        try check(git_odb_read(&raw, odb, &oid))
-        defer { git_odb_object_free(raw) }
-        guard let data = git_odb_object_data(raw) else { return nil }
-        let bytes = Array(UnsafeRawBufferPointer(start: data, count: git_odb_object_size(raw)))
-        return parseTagSignature(bytes)
+        return parseTagSignature(try rawObjectBytes(repo: repo, oid: &oid))
     }
 }
 
@@ -88,6 +79,31 @@ private let signatureFieldPrefixes = [
 
 private func signatureFormat(_ signature: String) -> SigningFormat? {
     signatureHeaders.first { signature.hasPrefix($0.0) }?.1
+}
+
+private func rawObjectBytes(repo: OpaquePointer?, oid: inout git_oid) throws -> [UInt8] {
+    var odb: OpaquePointer?
+    try check(git_repository_odb(&odb, repo))
+    defer { git_odb_free(odb) }
+    var raw: OpaquePointer?
+    try check(git_odb_read(&raw, odb, &oid))
+    defer { git_odb_object_free(raw) }
+    guard let data = git_odb_object_data(raw) else { return [] }
+    return Array(UnsafeRawBufferPointer(start: data, count: git_odb_object_size(raw)))
+}
+
+/// Find an exact field only before the header/body separator.
+private func containsHeader(_ field: String, in bytes: [UInt8]) -> Bool {
+    let prefix = Array((field + " ").utf8)
+    var lineStart = 0
+    while lineStart < bytes.count {
+        let lineEnd = bytes[lineStart...].firstIndex(of: 10) ?? bytes.endIndex
+        let line = bytes[lineStart..<lineEnd]
+        if line.isEmpty { return false }
+        if line.starts(with: prefix) { return true }
+        lineStart = lineEnd < bytes.endIndex ? lineEnd + 1 : lineEnd
+    }
+    return false
 }
 
 /// Match git's last armor header at a line start, scanning only the body.

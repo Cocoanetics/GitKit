@@ -82,10 +82,19 @@ struct ObjectSignatureTests {
         for rev in ["HEAD", "lightweight", "unsigned^{}"] {
             #expect(throws: Libgit2Error.self) { try repo.tagSignature(rev) }
         }
+
+        let tree = try AmendFixture.git(["rev-parse", "HEAD^{tree}"], in: dir)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let raw = "tree \(tree)\nauthor T <t@e.com> 1767258000 +0100\n"
+            + "committer T <t@e.com> 1767258000 +0100\n\nsubject\n\n"
+            + "gpgsig example in the message\ngpgsig-sha256 another example\n"
+        let sha = try ObjectSignatureFixture.writeObject(Array(raw.utf8), type: "commit", in: dir)
+        #expect(try repo.commitSignatures(sha).isEmpty)
     }
 
     @Test("Literal commit headers preserve each field's exact payload", arguments: [
-        ["gpgsig"], ["gpgsig-sha256"], ["gpgsig", "gpgsig-sha256"]
+        ["gpgsig"], ["gpgsig-sha256"],
+        ["gpgsig", "gpgsig-sha256"], ["gpgsig-sha256", "gpgsig"]
     ])
     func literalCommit(fields: [String]) throws {
         defer { fixtures.removeAll() }
@@ -95,7 +104,8 @@ struct ObjectSignatureTests {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let headers = "tree \(tree)\nauthor T <t@e.com> 1767258000 +0100\n"
             + "committer T <t@e.com> 1767258000 +0100\n"
-        let message = Array("\nmessage\r\n".utf8) + [0xff, 0xfe, 10]
+        let message = Array("\nmessage\r\ngpgsig example\ngpgsig-sha256 example\n".utf8)
+            + [0xff, 0, 0xfe, 10]
         let signatures = ["gpgsig": "-----BEGIN SSH SIGNATURE-----\nfirst\n-----END SSH SIGNATURE-----",
                           "gpgsig-sha256": "unknown armor\nsecond"]
         let blocks = try fields.map { field in
@@ -104,11 +114,13 @@ struct ObjectSignatureTests {
         let raw = Array((headers + blocks.joined()).utf8) + message
         let sha = try ObjectSignatureFixture.writeObject(raw, type: "commit", in: dir)
         let result = try Repository.open(at: dir).commitSignatures(sha)
-        #expect(result.map(\.field) == fields.map(Optional.some))
-        for (index, signature) in result.enumerated() {
+        let expectedFields = ["gpgsig", "gpgsig-sha256"].filter(fields.contains)
+        #expect(result.map(\.field) == expectedFields.map(Optional.some))
+        for signature in result {
+            let field = try #require(signature.field)
             #expect(signature.signedPayload == Array(headers.utf8) + message)
-            #expect(signature.signature == signatures[fields[index]])
-            #expect(signature.format == (fields[index] == "gpgsig" ? .ssh : nil))
+            #expect(signature.signature == signatures[field])
+            #expect(signature.format == (field == "gpgsig" ? .ssh : nil))
         }
     }
 
@@ -164,7 +176,7 @@ struct ObjectSignatureTests {
         let separator = try #require(payload.range(of: "\n\n"))
         let armor = commit.signature.trimmingCharacters(in: .newlines)
         let foldedArmor = armor.replacingOccurrences(of: "\n", with: "\n ")
-        let commitHeaders = "gpgsig \(foldedArmor)\ngpgsig-sha256 \(foldedArmor)\n"
+        let commitHeaders = "gpgsig-sha256 \(foldedArmor)\ngpgsig \(foldedArmor)\n"
         let raw = String(payload[..<separator.lowerBound]) + "\n" + commitHeaders
             + "\n" + String(payload[separator.upperBound...])
         let sha = try ObjectSignatureFixture.writeObject(Array(raw.utf8), type: "commit", in: dir)
