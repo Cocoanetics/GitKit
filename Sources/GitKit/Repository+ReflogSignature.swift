@@ -13,7 +13,12 @@ extension Repository {
         guard let entry = git_reflog_entry_byindex(log, 0),
               let old = git_reflog_entry_id_old(entry), let new = git_reflog_entry_id_new(entry),
               let message = git_reflog_entry_message(entry) else { return }
-        try restampReflog(name, old: old.pointee, new: new.pointee, committer: committer,
-                         message: Self.bytes(message))
+        do {
+            try restampReflog(name, old: old.pointee, new: new.pointee, committer: committer,
+                             message: Self.bytes(message))
+        } catch let error as Libgit2Error where error.code == GIT_ELOCKED.rawValue {
+            // The ref update has already succeeded. Another writer's
+            // reflog lock must not turn the completed operation into an error.
+        }
     }
 }

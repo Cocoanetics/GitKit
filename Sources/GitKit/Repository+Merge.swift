@@ -61,7 +61,7 @@ extension Repository {
         fastForward: FastForwardMode = .auto,
         message: String? = nil,
         author: Signature? = nil,
-        env: [String: String] = [:],
+        env: [String: String] = ProcessInfo.processInfo.environment,
         sign: SignMode = .config
     ) throws -> MergeOutcome {
         // Resolve the named ref into an annotated commit.

@@ -602,6 +602,20 @@ extension RepositoryAmendTests {
         #expect(leftovers.isEmpty)
     }
 
+    @Test("post-operation reflog restamping skips a busy lock")
+    func busyReflogRestamp() throws {
+        defer { fixtures.removeAll() }
+        let dir = try AmendFixture.makeRepo(in: fixtures)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try AmendFixture.twoCommits(dir)
+        let lock = dir.appendingPathComponent(".git/logs/HEAD.lock")
+        try Data().write(to: lock)
+        defer { try? FileManager.default.removeItem(at: lock) }
+
+        try Repository.open(at: dir).restampLatestReflog("HEAD", committer: nil)
+        #expect(FileManager.default.fileExists(atPath: lock.path))
+    }
+
     @Test("core.commentChar=auto with every candidate used is refused in any cleanup mode")
     func noCommentCharacter() throws {
         defer { fixtures.removeAll() }

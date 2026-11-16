@@ -38,7 +38,7 @@ extension Repository {
         onto ontoSpec: String? = nil,
         author: Signature? = nil,
         progress: (@Sendable (Int, Int) -> Void)? = nil,
-        env: [String: String] = [:],
+        env: [String: String] = ProcessInfo.processInfo.environment,
         sign: SignMode = .config
     ) throws -> RebaseOutcome {
         // Resolve the three annotated commits libgit2 needs: branch
@@ -110,7 +110,7 @@ extension Repository {
     public func rebaseContinue(
         author: Signature? = nil,
         progress: (@Sendable (Int, Int) -> Void)? = nil,
-        env: [String: String] = [:],
+        env: [String: String] = ProcessInfo.processInfo.environment,
         sign: SignMode = .config
     ) throws -> RebaseOutcome {
         let signing = try RebaseSigning(repository: self, sign: persistedSignMode(overriddenBy: sign))
@@ -164,7 +164,7 @@ extension Repository {
     public func rebaseSkip(
         author: Signature? = nil,
         progress: (@Sendable (Int, Int) -> Void)? = nil,
-        env: [String: String] = [:],
+        env: [String: String] = ProcessInfo.processInfo.environment,
         sign: SignMode = .config
     ) throws -> RebaseOutcome {
         let signing = try RebaseSigning(repository: self, sign: persistedSignMode(overriddenBy: sign))
