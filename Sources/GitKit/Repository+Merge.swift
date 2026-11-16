@@ -251,7 +251,7 @@ extension Repository {
         oldTree: OpaquePointer?,
         env: [String: String]
     ) throws -> MergeOutcome {
-        let committer = try SignatureResolver.resolve(role: .committer, repo: repo, env: env)
+        let committer = try fastForwardCommitter(env: env)
         defer { git_signature_free(committer) }
         // Fetch the target commit, point HEAD at it, check out the tree.
         var commit: OpaquePointer?
@@ -273,17 +273,29 @@ extension Repository {
         // Update the current branch ref to point at the new commit. If
         // HEAD is detached, just set HEAD detached to the new oid.
         var head: OpaquePointer?
+        let reflogMessage = Array("merge: Fast-forward".utf8)
+        var updatedReference = "HEAD"
+        var reflogs = [ReflogRestamp(name: "HEAD", old: oldSHA.flatMap(parseOID), message: nil)]
         if git_repository_head(&head, repo) == 0 {
             defer { git_reference_free(head) }
+            let name = String(cString: git_reference_name(head))
+            let old = git_reference_target(head)?.pointee
             var newRef: OpaquePointer?
             try check(git_reference_set_target(&newRef, head, &theirOID,
                 "merge: Fast-forward".cString(using: .utf8)))
             git_reference_free(newRef)
-            try restampLatestReflog(String(cString: git_reference_name(head)), committer: committer)
+            updatedReference = name
+            reflogs = [
+                ReflogRestamp(name: name, old: old, message: reflogMessage),
+                ReflogRestamp(name: "HEAD", old: old, message: reflogMessage)
+            ]
         } else {
             try check(git_repository_set_head_detached(repo, &theirOID))
         }
-        try restampLatestReflog("HEAD", committer: committer)
+        if committer != nil {
+            try restampReflogs(afterUpdating: updatedReference, to: theirOID,
+                               entries: reflogs, committer: committer)
+        }
 
         // Diff stats vs the prior tree for the `<n> file changed, …` line
         // plus per-file create/delete mode lines.
@@ -296,6 +308,24 @@ extension Repository {
             statSummary: stats.summary,
             addedFiles: stats.added,
             deletedFiles: stats.deleted)
+    }
+
+    /// A fast-forward creates no commit and historically required no
+    /// configured identity. Use an environment override when supplied;
+    /// otherwise leave libgit2's fallback reflog identity untouched when
+    /// the repository has no default signature.
+    private func fastForwardCommitter(
+        env: [String: String]
+    ) throws -> UnsafeMutablePointer<git_signature>? {
+        let hasName = env["GIT_COMMITTER_NAME"]?.isEmpty == false
+        let hasEmail = env["GIT_COMMITTER_EMAIL"]?.isEmpty == false
+        if hasName || hasEmail {
+            return try SignatureResolver.resolve(role: .committer, repo: repo, env: env)
+        }
+        var configured: UnsafeMutablePointer<git_signature>?
+        guard git_signature_default(&configured, repo) == 0 else { return nil }
+        git_signature_free(configured)
+        return try SignatureResolver.resolve(role: .committer, repo: repo, env: env)
     }
 
     // MARK: 3-way merge commit

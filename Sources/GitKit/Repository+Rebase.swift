@@ -86,7 +86,15 @@ extension Repository {
             if rebase != nil { git_rebase_free(rebase) }
             withExtendedLifetime(signing) {}
         }
-        try restampLatestReflog("HEAD", committer: committer)
+        if let old = git_rebase_orig_head_id(rebase)?.pointee,
+           var new = git_rebase_onto_id(rebase)?.pointee {
+            let onto = git_rebase_onto_name(rebase).map { String(cString: $0) } ?? formatOID(&new)
+            try restampReflogs(
+                afterUpdating: "HEAD", to: new,
+                entries: [ReflogRestamp(name: "HEAD", old: old,
+                                         message: Array("rebase: checkout \(onto)".utf8))],
+                committer: committer)
+        }
 
         let total = Int(git_rebase_operation_entrycount(rebase))
         if total == 0 {
@@ -266,11 +274,30 @@ extension Repository {
         // to the new tip and removes `.git/rebase-merge/`.
         let finishSig = try SignatureResolver.resolve(role: .committer, repo: repo, env: env)
         defer { git_signature_free(finishSig) }
+        guard let terminal = try headOID() else {
+            throw Libgit2Error(code: -1, klass: 0, message: "rebase finish: HEAD has no oid")
+        }
+        let original = git_rebase_orig_head_id(rebase)?.pointee
+        let ontoSHA = git_rebase_onto_id(rebase).map { pointer in
+            var oid = pointer.pointee
+            return formatOID(&oid)
+        }
         try check(git_rebase_finish(rebase, finishSig))
         // libgit2 uses its default identity for the ref updates in finish,
         // even when given a signature (that argument only signs notes).
-        try restampLatestReflog("HEAD", committer: finishSig)
-        if let branchRefName { try restampLatestReflog(branchRefName, committer: finishSig) }
+        if let branchRefName, let original, let ontoSHA {
+            try restampReflogs(
+                afterUpdating: branchRefName, to: terminal,
+                entries: [
+                    ReflogRestamp(
+                        name: branchRefName, old: original,
+                        message: Array("rebase finished: \(branchRefName) onto \(ontoSHA)".utf8)),
+                    ReflogRestamp(
+                        name: "HEAD", old: nil,
+                        message: Array("rebase finished: returning to \(branchRefName)".utf8))
+                ],
+                committer: finishSig)
+        }
 
         return .completed(
             branchRefName: branchRefName ?? "HEAD",

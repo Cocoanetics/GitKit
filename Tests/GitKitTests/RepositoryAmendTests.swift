@@ -602,18 +602,49 @@ extension RepositoryAmendTests {
         #expect(leftovers.isEmpty)
     }
 
-    @Test("post-operation reflog restamping skips a busy lock")
-    func busyReflogRestamp() throws {
+    @Test("post-operation reflog restamping skips a busy lock", arguments: ["HEAD", "logs/HEAD"])
+    func busyReflogRestamp(lockName: String) throws {
         defer { fixtures.removeAll() }
         let dir = try AmendFixture.makeRepo(in: fixtures)
         defer { try? FileManager.default.removeItem(at: dir) }
         try AmendFixture.twoCommits(dir)
-        let lock = dir.appendingPathComponent(".git/logs/HEAD.lock")
+        let repository = try Repository.open(at: dir)
+        var target = git_oid()
+        try check(git_reference_name_to_id(&target, repository.pointer, "HEAD"))
+        let lock = dir.appendingPathComponent(".git/\(lockName).lock")
         try Data().write(to: lock)
         defer { try? FileManager.default.removeItem(at: lock) }
 
-        try Repository.open(at: dir).restampLatestReflog("HEAD", committer: nil)
+        try repository.restampReflogs(
+            afterUpdating: "HEAD", to: target,
+            entries: [ReflogRestamp(name: "HEAD", old: nil, message: nil)],
+            committer: nil)
         #expect(FileManager.default.fileExists(atPath: lock.path))
+        if lockName != "HEAD" {
+            #expect(!FileManager.default.fileExists(atPath: dir.appendingPathComponent(".git/HEAD.lock").path))
+        }
+    }
+
+    @Test("post-operation reflog restamping leaves a newer ref update alone")
+    func movedReflogRestamp() throws {
+        defer { fixtures.removeAll() }
+        let dir = try AmendFixture.makeRepo(in: fixtures)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try AmendFixture.twoCommits(dir)
+        let repository = try Repository.open(at: dir)
+        var expected = git_oid()
+        try check(git_reference_name_to_id(&expected, repository.pointer, "HEAD"))
+        try AmendFixture.write("three\n", to: "h", in: dir)
+        try AmendFixture.git(["add", "h"], in: dir)
+        try AmendFixture.git(["commit", "-q", "-m", "third"], in: dir)
+        let log = dir.appendingPathComponent(".git/logs/HEAD")
+        let before = try Data(contentsOf: log)
+
+        try repository.restampReflogs(
+            afterUpdating: "HEAD", to: expected,
+            entries: [ReflogRestamp(name: "HEAD", old: nil, message: nil)],
+            committer: nil)
+        #expect(try Data(contentsOf: log) == before)
     }
 
     @Test("core.commentChar=auto with every candidate used is refused in any cleanup mode")

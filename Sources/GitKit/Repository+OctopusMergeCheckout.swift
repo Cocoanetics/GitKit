@@ -643,8 +643,13 @@ extension Repository {
                             ?? message
                     throw HeadNotUpdated(lockFile: lock, reason: reason)
                 }
-                try restampLatestReflog(name, committer: committerSig)
-                if !detached { try restampLatestReflog("HEAD", committer: committerSig) }
+                let message = Array(reflog.utf8)
+                let entries = detached
+                    ? [ReflogRestamp(name: "HEAD", old: start, message: message)]
+                    : [ReflogRestamp(name: name, old: start, message: message),
+                       ReflogRestamp(name: "HEAD", old: start, message: message)]
+                try restampReflogs(afterUpdating: name, to: commitOID,
+                                   entries: entries, committer: committerSig)
             } catch let error where error is HeadNotUpdated || error is HeadMoved || error is HeadMissing {
                 // The merge stays staged only with its merge state, so
                 // `git commit` can conclude it.

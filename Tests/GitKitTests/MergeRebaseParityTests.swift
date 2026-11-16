@@ -82,6 +82,24 @@ struct MergeRebaseParityTests {
         try expectParity(dir, other)
     }
 
+    @Test("a fast-forward needs no configured identity")
+    func fastForwardWithoutIdentity() throws {
+        defer { fixtures.removeAll() }
+        let dir = try AmendFixture.makeRepo(in: fixtures)
+        try OperationSigningFixture.forked(dir)
+        try AmendFixture.git(["reset", "--hard", "side^"], in: dir)
+        try AmendFixture.git(["config", "--unset", "user.name"], in: dir)
+        try AmendFixture.git(["config", "--unset", "user.email"], in: dir)
+        try AmendFixture.git(["config", "core.logAllRefUpdates", "false"], in: dir)
+
+        guard case .fastForward = try Repository.open(at: dir).merge(
+            ref: "side", fastForward: .onlyFastForward, env: [:]
+        ) else {
+            Issue.record("expected a fast-forward"); return
+        }
+        #expect(try git(["rev-parse", "HEAD"], in: dir) == git(["rev-parse", "side"], in: dir))
+    }
+
     @Test("rebase continue and skip take the current environment", arguments: [true, false])
     func resumeRebase(skip: Bool) throws {
         defer { fixtures.removeAll() }
