@@ -55,11 +55,13 @@ extension Repository {
     /// fall back to `Merge branch '<short-shorthand>'`, matching real
     /// git's default subject line. `sign` chooses whether that merge
     /// commit is signed (`git merge -S` / `--no-gpg-sign`).
+    /// `env` resolves `GIT_AUTHOR_*` and `GIT_COMMITTER_*` separately.
     public func merge(
         ref theirRef: String,
         fastForward: FastForwardMode = .auto,
         message: String? = nil,
         author: Signature? = nil,
+        env: [String: String] = ProcessInfo.processInfo.environment,
         sign: SignMode = .config
     ) throws -> MergeOutcome {
         // Resolve the named ref into an annotated commit.
@@ -116,21 +118,21 @@ extension Repository {
             }
             return try performFastForward(
                 repo: repo, theirOID: &theirOID, theirRef: theirRef,
-                oldSHA: oldSHA, oldTree: oldTree)
+                oldSHA: oldSHA, oldTree: oldTree, env: env)
 
         case .auto:
             if canFF {
                 return try performFastForward(
                     repo: repo, theirOID: &theirOID, theirRef: theirRef,
-                    oldSHA: oldSHA, oldTree: oldTree)
+                    oldSHA: oldSHA, oldTree: oldTree, env: env)
             }
             fallthrough
 
         case .never:
             return try performMergeCommit(
-                repo: repo, theirAC: theirAC, theirRef: theirRef,
+                theirAC: theirAC, theirRef: theirRef,
                 theirOID: &theirOID, oldTree: oldTree,
-                message: message, author: author, sign: sign)
+                message: message, author: author, env: env, sign: sign)
         }
     }
 
@@ -185,7 +187,10 @@ extension Repository {
         for mergeHeadOID in mergeHeadOIDs {
             var oid = mergeHeadOID
             var commit: OpaquePointer?
-            try check(git_commit_lookup(&commit, repo, &oid))
+            var object: OpaquePointer?
+            try check(git_object_lookup(&object, repo, &oid, GIT_OBJECT_ANY))
+            defer { git_object_free(object) }
+            try check(git_object_peel(&commit, object, GIT_OBJECT_COMMIT))
             parentCommits.append(commit)
         }
 
@@ -211,9 +216,11 @@ extension Repository {
             resolvedMessage = try preparedMergeMessage()
         }
 
+        let tagHeaders = try mergeTagHeaders(oids: mergeHeadOIDs)
         var commitOID = try createCommit(
             updateRef: "HEAD", author: authorSig, committer: committerSig,
-            message: resolvedMessage, tree: newTree, parents: parentCommits, sign: sign)
+            message: resolvedMessage, tree: newTree, parents: parentCommits, sign: sign,
+            transform: tagHeaders.isEmpty ? nil : { Self.insertingMergeTags($0, headers: tagHeaders) })
 
         try check(git_repository_state_cleanup(repo))
 
@@ -241,8 +248,11 @@ extension Repository {
         theirOID: inout git_oid,
         theirRef: String,
         oldSHA: String?,
-        oldTree: OpaquePointer?
+        oldTree: OpaquePointer?,
+        env: [String: String]
     ) throws -> MergeOutcome {
+        let committer = try fastForwardCommitter(env: env)
+        defer { git_signature_free(committer) }
         // Fetch the target commit, point HEAD at it, check out the tree.
         var commit: OpaquePointer?
         try check(git_commit_lookup(&commit, repo, &theirOID))
@@ -263,14 +273,28 @@ extension Repository {
         // Update the current branch ref to point at the new commit. If
         // HEAD is detached, just set HEAD detached to the new oid.
         var head: OpaquePointer?
+        let reflogMessage = Array("merge: Fast-forward".utf8)
+        var updatedReference = "HEAD"
+        var reflogs = [ReflogRestamp(name: "HEAD", old: oldSHA.flatMap(parseOID), message: nil)]
         if git_repository_head(&head, repo) == 0 {
             defer { git_reference_free(head) }
+            let name = String(cString: git_reference_name(head))
+            let old = git_reference_target(head)?.pointee
             var newRef: OpaquePointer?
             try check(git_reference_set_target(&newRef, head, &theirOID,
                 "merge: Fast-forward".cString(using: .utf8)))
             git_reference_free(newRef)
+            updatedReference = name
+            reflogs = [
+                ReflogRestamp(name: name, old: old, message: reflogMessage),
+                ReflogRestamp(name: "HEAD", old: old, message: reflogMessage)
+            ]
         } else {
             try check(git_repository_set_head_detached(repo, &theirOID))
+        }
+        if committer != nil {
+            try restampReflogs(afterUpdating: updatedReference, to: theirOID,
+                               entries: reflogs, committer: committer)
         }
 
         // Diff stats vs the prior tree for the `<n> file changed, …` line
@@ -286,18 +310,37 @@ extension Repository {
             deletedFiles: stats.deleted)
     }
 
+    /// A fast-forward creates no commit and historically required no
+    /// configured identity. Use an environment override when supplied;
+    /// otherwise leave libgit2's fallback reflog identity untouched when
+    /// the repository has no default signature.
+    private func fastForwardCommitter(
+        env: [String: String]
+    ) throws -> UnsafeMutablePointer<git_signature>? {
+        let hasName = env["GIT_COMMITTER_NAME"]?.isEmpty == false
+        let hasEmail = env["GIT_COMMITTER_EMAIL"]?.isEmpty == false
+        if hasName || hasEmail {
+            return try SignatureResolver.resolve(role: .committer, repo: repo, env: env)
+        }
+        var configured: UnsafeMutablePointer<git_signature>?
+        guard git_signature_default(&configured, repo) == 0 else { return nil }
+        git_signature_free(configured)
+        return try SignatureResolver.resolve(role: .committer, repo: repo, env: env)
+    }
+
     // MARK: 3-way merge commit
 
     private func performMergeCommit(
-        repo: OpaquePointer?,
         theirAC: OpaquePointer?,
         theirRef: String,
         theirOID: inout git_oid,
         oldTree: OpaquePointer?,
         message: String?,
         author: Signature?,
+        env: [String: String],
         sign: SignMode
     ) throws -> MergeOutcome {
+        let mergeObject = try mergeHeadObject(theirRef)
         var mergeOpts = git_merge_options()
         try check(git_merge_options_init(&mergeOpts, UInt32(GIT_MERGE_OPTIONS_VERSION)))
         var coOpts = git_checkout_options()
@@ -309,6 +352,9 @@ extension Repository {
         _ = try heads.withUnsafeMutableBufferPointer { buf in
             try check(git_merge(repo, buf.baseAddress, 1, &mergeOpts, &coOpts))
         }
+        // libgit2 writes the peeled commit; git keeps the tag object so
+        // a later mergeContinue can recover its mergetag header.
+        try writeMergeHeadObjects([mergeObject])
 
         // Did libgit2 leave the index conflicted?
         var index: OpaquePointer?
@@ -342,22 +388,18 @@ extension Repository {
         try check(git_tree_lookup(&newTree, repo, &treeOID))
         defer { git_tree_free(newTree) }
 
-        var sig: UnsafeMutablePointer<git_signature>?
-        if let author {
-            try check(author.name.withCString { n in
-                author.email.withCString { e in
-                    git_signature_now(&sig, n, e)
-                }
-            })
-        } else {
-            try check(git_signature_default(&sig, repo))
-        }
-        defer { git_signature_free(sig) }
+        let authorSig = try SignatureResolver.resolve(role: .author, override: author, repo: repo, env: env)
+        defer { git_signature_free(authorSig) }
+        let committerSig = try SignatureResolver.resolve(role: .committer, repo: repo, env: env)
+        defer { git_signature_free(committerSig) }
 
         let resolvedMessage = message ?? defaultMergeMessage(refName: theirRef)
+        let text = resolvedMessage.hasSuffix("\n") ? resolvedMessage : resolvedMessage + "\n"
+        let tagHeaders = try mergeTagHeaders(oids: [mergeObject])
         var commitOID = try createCommit(
-            updateRef: "HEAD", author: sig, committer: sig, message: resolvedMessage,
-            tree: newTree, parents: [parentCommit, theirCommit], sign: sign)
+            updateRef: "HEAD", author: authorSig, committer: committerSig, message: text,
+            tree: newTree, parents: [parentCommit, theirCommit], sign: sign,
+            transform: tagHeaders.isEmpty ? nil : { Self.insertingMergeTags($0, headers: tagHeaders) })
 
         // Commit done — tell libgit2 we're not in a merging state anymore.
         try check(git_repository_state_cleanup(repo))

@@ -586,7 +586,7 @@ extension Repository {
     /// just logged with `message` — by the same entry under `committer`,
     /// holding the log's lock. A ref without a reflog
     /// (`core.logAllRefUpdates=false`) is left without one.
-    private func restampReflog(
+    func restampReflog(
         _ name: String, old: git_oid, new: git_oid,
         committer: UnsafeMutablePointer<git_signature>?, message: [UInt8]
     ) throws {

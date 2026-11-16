@@ -540,7 +540,7 @@ extension Repository {
     /// if it can't, the checkout is taken back too.
     func commitMerge(
         tree: git_oid, from headTree: git_oid, start: git_oid, parents: [git_oid], message: String,
-        author: Signature?, env: [String: String], sign: SignMode,
+        author: Signature?, env: [String: String], sign: SignMode, tagHeaders: [UInt8] = [],
         settle: () throws -> () -> Void = { {} }, staged: () throws -> Void = {}
     ) throws -> String {
         // A path the merge deletes that the work tree no longer has is
@@ -595,7 +595,8 @@ extension Repository {
                 // takes back its own work where it fails, as does a signer.
                 commitOID = try createCommit(
                     updateRef: nil, author: authorSig, committer: committerSig,
-                    message: message, tree: tree, parents: commits, sign: sign)
+                    message: message, tree: tree, parents: commits, sign: sign,
+                    transform: tagHeaders.isEmpty ? nil : { Self.insertingMergeTags($0, headers: tagHeaders) })
                 unsettle = try settle()
             } catch {
                 // Only a ref that won't move leaves the merge staged.
@@ -642,6 +643,13 @@ extension Repository {
                             ?? message
                     throw HeadNotUpdated(lockFile: lock, reason: reason)
                 }
+                let message = Array(reflog.utf8)
+                let entries = detached
+                    ? [ReflogRestamp(name: "HEAD", old: start, message: message)]
+                    : [ReflogRestamp(name: name, old: start, message: message),
+                       ReflogRestamp(name: "HEAD", old: start, message: message)]
+                try restampReflogs(afterUpdating: name, to: commitOID,
+                                   entries: entries, committer: committerSig)
             } catch let error where error is HeadNotUpdated || error is HeadMoved || error is HeadMissing {
                 // The merge stays staged only with its merge state, so
                 // `git commit` can conclude it.

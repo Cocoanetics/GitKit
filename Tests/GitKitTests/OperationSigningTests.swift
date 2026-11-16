@@ -99,12 +99,14 @@ struct OperationSigningTests {
         defer { CommitSigningTests.signerDefaultsLock.unlock() }
         defer { fixtures.removeAll() }
         let (dir, repo, _) = try repository { try Fixture.forked($0) }
-        let outcome = try repo.merge(ref: "side", fastForward: .never, sign: mode(signed))
+        try AmendFixture.git(["tag", "-s", "-m", "Release", "release", "side"], in: dir)
+        let outcome = try repo.merge(ref: "release", fastForward: .never, sign: mode(signed))
         guard case .mergeCommit(let sha, _, _, _) = outcome else {
             Issue.record("expected a merge commit, got \(outcome)"); return
         }
         #expect(try Fixture.rev("HEAD", in: dir) == sha)
         #expect(try Fixture.rev("HEAD^2", in: dir) == Fixture.rev("side", in: dir))
+        #expect(try AmendFixture.git(["cat-file", "commit", "HEAD"], in: dir).contains("\nmergetag "))
         try Fixture.expectSigned(signed, "HEAD", in: dir)
     }
 
@@ -114,13 +116,15 @@ struct OperationSigningTests {
         defer { CommitSigningTests.signerDefaultsLock.unlock() }
         defer { fixtures.removeAll() }
         let (dir, repo, _) = try repository { try Fixture.forked($0, conflicting: true) }
-        guard case .conflicts = try repo.merge(ref: "side") else {
+        try AmendFixture.git(["tag", "-s", "-m", "Release", "release", "side"], in: dir)
+        guard case .conflicts = try repo.merge(ref: "release") else {
             Issue.record("expected conflicts"); return
         }
         try AmendFixture.write("resolved\n", to: "c", in: dir)
         try repo.add(paths: [])
         let details = try repo.mergeContinue(env: SigningFixture.environment, sign: mode(signed))
         #expect(try Fixture.rev("HEAD", in: dir) == details.sha)
+        #expect(try AmendFixture.git(["cat-file", "commit", "HEAD"], in: dir).contains("\nmergetag "))
         try Fixture.expectSigned(signed, "HEAD", in: dir)
     }
 
@@ -138,13 +142,15 @@ struct OperationSigningTests {
             try AmendFixture.git(["checkout", "-q", "main"], in: dir)
             try Fixture.commit("main", ["m": "m\n"], in: dir)
         }
-        let result = try repo.octopusMerge(heads: ["a", "b"], message: "Merge branches 'a' and 'b'",
+        try AmendFixture.git(["tag", "-s", "-m", "Release", "release", "a"], in: dir)
+        let result = try repo.octopusMerge(heads: ["release", "b"], message: "Merge branches 'a' and 'b'",
                                            env: SigningFixture.environment, sign: mode(signed))
         guard case .mergeCommit(let sha, _, _, _, _) = result.outcome else {
             Issue.record("expected a merge commit, got \(result.outcome)"); return
         }
         #expect(try Fixture.rev("HEAD", in: dir) == sha)
         #expect(try Fixture.rev("HEAD^3", in: dir) == Fixture.rev("b", in: dir))
+        #expect(try AmendFixture.git(["cat-file", "commit", "HEAD"], in: dir).contains("\nmergetag "))
         let reflog = try AmendFixture.lastLine(of: ".git/logs/refs/heads/main", in: dir)
         #expect(reflog.hasSuffix("\tmerge: Merge made by the 'octopus' strategy."))
         try Fixture.expectSigned(signed, "HEAD", in: dir)

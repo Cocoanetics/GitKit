@@ -89,7 +89,8 @@ extension Repository {
             throw Libgit2Error(code: -1, klass: 0,
                 message: "Can merge only exactly one commit into empty head")
         }
-        let oids = try heads.map { try mergeableCommit($0) }
+        let mergeObjects = try heads.map { try mergeHeadObject($0) }
+        let oids = try mergeObjects.map { try peelMergeHead($0) }
         let headTree = try treeOID(ofCommit: head)
         try refuseUnrepresentablePaths(from: headTree, to: oids)
 
@@ -100,9 +101,7 @@ extension Repository {
 
         // git-merge-octopus refuses an index that differs from HEAD.
         let staged = try changedPaths(from: headTree, toIndex: index)
-        if !staged.isEmpty {
-            return OctopusMergeResult(steps: [], outcome: .failed(.localChanges(paths: staged)))
-        }
+        if !staged.isEmpty { return OctopusMergeResult(steps: [], outcome: .failed(.localChanges(paths: staged))) }
         let worktree = try workingTreeChanges(index: index)
         let ignoreCase = try ignoresCase()
         let skipWorktree = try keepingSkipWorktree(skipWorktreePaths(index))
@@ -204,7 +203,7 @@ extension Repository {
             // concludable whatever follows.
             try checkOutConflicts(conflicted, from: headTree, theirLabel: heads.last ?? "", keepingOurs: keepOurs,
                                   mergedContent: mergedContent) {
-                try writeMergeState(oids: oids, message: message, conflicts: conflictedPaths,
+                try writeMergeState(oids: mergeObjects, message: message, conflicts: conflictedPaths,
                                     noFastForward: noFastForward)
             }
             try keepSkipWorktree(skipWorktree)
@@ -213,7 +212,7 @@ extension Repository {
         }
 
         // The work tree is settled, sparse rules and all, before HEAD moves.
-        let outcome = try conclude(head: head, headTree: headTree, mergedTree: mergedTree, oids: oids,
+        let outcome = try conclude(head: head, headTree: headTree, mergedTree: mergedTree, oids: mergeObjects,
                                    noFastForward: noFastForward, message: message, author: author, env: env,
                                    sign: sign) {
             try keepSkipWorktree(skipWorktree)
@@ -231,6 +230,9 @@ extension Repository {
         message: String, author: Signature?, env: [String: String], sign: SignMode = .config,
         settle: () throws -> () -> Void = { {} }
     ) throws -> OctopusMergeOutcome {
+        let mergeObjects = oids
+        let oids = try mergeObjects.map { try peelMergeHead($0) }
+        let tagHeaders = try mergeTagHeaders(oids: mergeObjects)
         let headSubsumed = try oids.contains { try isDescendant($0, of: head) }
         let parents = (headSubsumed && !noFastForward ? [] : [head]) + oids
         // git ends a message with a newline.
@@ -243,8 +245,8 @@ extension Repository {
             // A merge left staged gets its merge state while the checkout
             // can still be taken back, should that fail.
             sha = try commitMerge(tree: mergedTree, from: headTree, start: head, parents: parents, message: text,
-                                  author: author, env: env, sign: sign, settle: settle) {
-                try writeMergeState(oids: oids, message: message, conflicts: [], noFastForward: noFastForward)
+                                  author: author, env: env, sign: sign, tagHeaders: tagHeaders, settle: settle) {
+                try writeMergeState(oids: mergeObjects, message: message, conflicts: [], noFastForward: noFastForward)
             }
         } catch let failed as HeadNotUpdated {
             return .headNotUpdated(lockFile: failed.lockFile, reason: failed.reason)

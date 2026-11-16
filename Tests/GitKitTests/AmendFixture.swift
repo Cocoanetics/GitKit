@@ -21,6 +21,9 @@ enum AmendFixture {
     static func makeRepo(in fixtures: TemporaryRepositories) throws -> URL {
         let dir = try fixtures.directory("RepositoryAmendTests-\(UUID().uuidString)")
         try git(["init", "-q", "-b", "main"], in: dir)
+        // No background gc or maintenance racing copies of the repository.
+        try git(["config", "gc.auto", "0"], in: dir)
+        try git(["config", "maintenance.auto", "false"], in: dir)
         try git(["config", "user.email", "t@e.com"], in: dir)
         try git(["config", "user.name", "T"], in: dir)
         return dir
