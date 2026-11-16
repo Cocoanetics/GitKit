@@ -89,8 +89,8 @@ extension Repository {
             throw Libgit2Error(code: -1, klass: 0,
                 message: "Can merge only exactly one commit into empty head")
         }
-        let oids = try heads.map { try mergeableCommit($0) }
         let mergeObjects = try heads.map { try mergeHeadObject($0) }
+        let oids = try mergeObjects.map { try peelMergeHead($0) }
         let headTree = try treeOID(ofCommit: head)
         try refuseUnrepresentablePaths(from: headTree, to: oids)
 
