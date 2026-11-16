@@ -29,13 +29,16 @@ extension Repository {
     /// `sign` overrides `commit.gpgsign` for every replayed commit
     /// (`-S[<key>]` / `--no-gpg-sign`). An explicit choice is kept in
     /// `rebase-merge/gpg_sign_opt`, as git keeps it, so a later
-    /// ``rebaseContinue(author:progress:sign:)`` or
-    /// ``rebaseSkip(author:progress:sign:)`` signs the same way.
+    /// ``rebaseContinue(author:progress:env:sign:)`` or
+    /// ``rebaseSkip(author:progress:env:sign:)`` signs the same way.
+    /// `env` resolves the committer; each replayed commit keeps its author
+    /// and author date. `author` overrides only that author's name/email.
     public func rebase(
         upstream upstreamSpec: String,
         onto ontoSpec: String? = nil,
         author: Signature? = nil,
         progress: (@Sendable (Int, Int) -> Void)? = nil,
+        env: [String: String] = [:],
         sign: SignMode = .config
     ) throws -> RebaseOutcome {
         // Resolve the three annotated commits libgit2 needs: branch
@@ -69,6 +72,8 @@ extension Repository {
 
         // Resolved before libgit2 writes any rebase state.
         let signing = try RebaseSigning(repository: self, sign: sign)
+        let committer = try SignatureResolver.resolve(role: .committer, repo: repo, env: env)
+        defer { git_signature_free(committer) }
         var rebase: OpaquePointer?
         var opts = try rebaseOptions(signing)
         try check(git_rebase_init(
@@ -81,6 +86,7 @@ extension Repository {
             if rebase != nil { git_rebase_free(rebase) }
             withExtendedLifetime(signing) {}
         }
+        try restampLatestReflog("HEAD", committer: committer)
 
         let total = Int(git_rebase_operation_entrycount(rebase))
         if total == 0 {
@@ -93,7 +99,7 @@ extension Repository {
 
         return try runRebaseLoop(
             rebase: rebase, repo: repo, total: total,
-            author: author, progress: progress,
+            author: author, progress: progress, env: env,
             branchRefName: branchRefName, signing: signing)
     }
 
@@ -104,6 +110,7 @@ extension Repository {
     public func rebaseContinue(
         author: Signature? = nil,
         progress: (@Sendable (Int, Int) -> Void)? = nil,
+        env: [String: String] = [:],
         sign: SignMode = .config
     ) throws -> RebaseOutcome {
         let signing = try RebaseSigning(repository: self, sign: persistedSignMode(overriddenBy: sign))
@@ -134,7 +141,7 @@ extension Repository {
         let currentRaw = git_rebase_operation_current(rebase)
         let total = Int(totalRaw)
         if currentRaw != size_t.max && currentRaw < totalRaw {
-            try commitCurrent(rebase: rebase, repo: repo, author: author, signing: signing)
+            try commitCurrent(rebase: rebase, repo: repo, author: author, env: env, signing: signing)
         }
 
         // Pick branch refname out of the rebase struct itself; HEAD
@@ -145,7 +152,7 @@ extension Repository {
 
         return try runRebaseLoop(
             rebase: rebase, repo: repo, total: total,
-            author: author, progress: progress,
+            author: author, progress: progress, env: env,
             branchRefName: branchRefName, signing: signing)
     }
 
@@ -157,6 +164,7 @@ extension Repository {
     public func rebaseSkip(
         author: Signature? = nil,
         progress: (@Sendable (Int, Int) -> Void)? = nil,
+        env: [String: String] = [:],
         sign: SignMode = .config
     ) throws -> RebaseOutcome {
         let signing = try RebaseSigning(repository: self, sign: persistedSignMode(overriddenBy: sign))
@@ -187,7 +195,7 @@ extension Repository {
 
         return try runRebaseLoop(
             rebase: rebase, repo: repo, total: total,
-            author: author, progress: progress,
+            author: author, progress: progress, env: env,
             branchRefName: branchRefName, signing: signing)
     }
 
@@ -219,6 +227,7 @@ extension Repository {
         total: Int,
         author: Signature?,
         progress: ((Int, Int) -> Void)?,
+        env: [String: String],
         branchRefName: String?,
         signing: RebaseSigning
     ) throws -> RebaseOutcome {
@@ -249,24 +258,19 @@ extension Repository {
             }
             git_index_free(index)
 
-            try commitCurrent(rebase: rebase, repo: repo, author: author, signing: signing)
+            try commitCurrent(rebase: rebase, repo: repo, author: author, env: env, signing: signing)
             applied += 1
         }
 
         // All operations applied — finalize: writes `refs/heads/<branch>`
         // to the new tip and removes `.git/rebase-merge/`.
-        var finishSig: UnsafeMutablePointer<git_signature>?
-        if let author {
-            try check(author.name.withCString { n in
-                author.email.withCString { e in
-                    git_signature_now(&finishSig, n, e)
-                }
-            })
-        } else {
-            try check(git_signature_default(&finishSig, repo))
-        }
+        let finishSig = try SignatureResolver.resolve(role: .committer, repo: repo, env: env)
         defer { git_signature_free(finishSig) }
         try check(git_rebase_finish(rebase, finishSig))
+        // libgit2 uses its default identity for the ref updates in finish,
+        // even when given a signature (that argument only signs notes).
+        try restampLatestReflog("HEAD", committer: finishSig)
+        if let branchRefName { try restampLatestReflog(branchRefName, committer: finishSig) }
 
         return .completed(
             branchRefName: branchRefName ?? "HEAD",
@@ -279,24 +283,33 @@ extension Repository {
         rebase: OpaquePointer?,
         repo: OpaquePointer?,
         author: Signature?,
+        env: [String: String],
         signing: RebaseSigning
     ) throws {
-        var sig: UnsafeMutablePointer<git_signature>?
-        if let author {
-            try check(author.name.withCString { n in
-                author.email.withCString { e in
-                    git_signature_now(&sig, n, e)
-                }
-            })
-        } else {
-            try check(git_signature_default(&sig, repo))
-        }
+        let sig = try SignatureResolver.resolve(role: .committer, repo: repo, env: env)
         defer { git_signature_free(sig) }
+        var authorSig: UnsafeMutablePointer<git_signature>?
+        if let author {
+            let current = git_rebase_operation_current(rebase)
+            guard let operation = git_rebase_operation_byindex(rebase, current) else {
+                throw Libgit2Error(code: -1, klass: 0, message: "no current rebase operation")
+            }
+            var original: OpaquePointer?
+            var originalOID = operation.pointee.id
+            try check(git_commit_lookup(&original, repo, &originalOID))
+            defer { git_commit_free(original) }
+            let date = ResolvedSignature(git_commit_author(original))
+            let offset = abs(Int(date.offsetMinutes))
+            let zone = String(format: "%@%02d%02d", date.offsetMinutes < 0 ? "-" : "+", offset / 60, offset % 60)
+            authorSig = try SignatureResolver.resolve(role: .author, override: author, repo: repo,
+                env: ["GIT_AUTHOR_DATE": "\(date.time) \(zone)"])
+        }
+        defer { git_signature_free(authorSig) }
 
         var oid = git_oid()
         // Pass nil author/message_encoding/message → libgit2 reuses the
         // original commit's author and message verbatim.
-        let rc = git_rebase_commit(&oid, rebase, nil, sig, nil, nil)
+        let rc = git_rebase_commit(&oid, rebase, authorSig, sig, nil, nil)
         // The signer's own error, not libgit2's GIT_EUSER.
         if let error = signing.error {
             signing.error = nil
