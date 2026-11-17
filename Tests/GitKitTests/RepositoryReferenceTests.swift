@@ -1,8 +1,37 @@
 // Integration tests compare the SDK with system git; Process is unavailable on Windows.
 #if os(macOS) || os(Linux)
 import Foundation
+import Dispatch
 import Testing
+import CGitKit
 import GitKit
+
+private final class ReferenceDeleteWorker: @unchecked Sendable {
+    let repository: Repository
+    let name: String
+
+    init(repository: Repository, name: String) {
+        self.repository = repository
+        self.name = name
+    }
+}
+
+private final class ReferenceDeleteResults: @unchecked Sendable {
+    private let lock = NSLock()
+    private var failures: [(name: String, code: Int32)] = []
+
+    func record(name: String, code: Int32) {
+        lock.lock()
+        failures.append((name, code))
+        lock.unlock()
+    }
+
+    func snapshot() -> [(name: String, code: Int32)] {
+        lock.lock()
+        defer { lock.unlock() }
+        return failures
+    }
+}
 
 @Suite("Repository remote branches and references")
 struct RepositoryReferenceTests {
@@ -146,6 +175,271 @@ struct RepositoryReferenceTests {
                 "refs/custom/z", "refs/custom/é"
             ])
             #expect(try repo.references(matching: "refs/missing/*").isEmpty)
+        }
+    }
+
+    @Test("delete a single review ref, loose or packed", arguments: [false, true], [false, true])
+    func deleteReference(packed: Bool, guarded: Bool) throws {
+        let dir = try makeRepo()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try runGit(["commit", "--allow-empty", "-m", "first"], in: dir)
+        let name = "refs/missioncontrol/reviews/pr-80"
+        try runGit(["update-ref", name, "HEAD"], in: dir)
+        try runGit(["update-ref", name + "-keep", "HEAD"], in: dir)
+        try runGit(["tag", "keep"], in: dir)
+        if packed { try runGit(["pack-refs", "--all", "--prune"], in: dir) }
+        let before = try gitRows(in: dir)
+        let repo = try Repository.open(at: dir)
+        let sha = try repo.resolveOID("HEAD")
+
+        try repo.referenceDelete(name: name, expectedTargetSHA: guarded ? sha.uppercased() : nil)
+
+        let expected = before.filter { !$0.hasPrefix(name + " ") }
+        #expect(try gitRows(in: dir) == expected)
+        #expect(try repo.references().map { "\($0.name) \($0.targetSHA)" } == expected)
+    }
+
+    @Test("stale expected targets preserve moved refs", arguments: [false, true])
+    func deleteReferenceExpectedTarget(packed: Bool) throws {
+        let dir = try makeRepo()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try runGit(["commit", "--allow-empty", "-m", "first"], in: dir)
+        let repo = try Repository.open(at: dir)
+        let oldSHA = try repo.resolveOID("HEAD")
+        let name = "refs/missioncontrol/reviews/pr-80"
+        try runGit(["update-ref", name, "HEAD"], in: dir)
+        try runGit(["commit", "--allow-empty", "-m", "second"], in: dir)
+        let newSHA = try repo.resolveOID("HEAD")
+        try runGit(["update-ref", name, newSHA], in: dir)
+        if packed { try runGit(["pack-refs", "--all", "--prune"], in: dir) }
+        let before = try gitRows(in: dir)
+
+        let error = #expect(throws: Libgit2Error.self) {
+            try repo.referenceDelete(name: name, expectedTargetSHA: oldSHA)
+        }
+        #expect(error?.code == GIT_EMODIFIED.rawValue)
+        #expect(try gitRows(in: dir) == before)
+        #expect(try repo.resolveOID(name) == newSHA)
+        try repo.referenceDelete(name: name, expectedTargetSHA: newSHA)
+        #expect(try repo.references(matching: name).isEmpty)
+    }
+
+    @Test("a concurrent ref update preserves the moved ref and its reflog")
+    func deleteReferenceConcurrentUpdatePreservesReflog() throws {
+        let dir = try makeRepo()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try runGit(["commit", "--allow-empty", "-m", "first"], in: dir)
+        let name = "refs/heads/review-80"
+        try runGit(["update-ref", "-m", "create review ref", name, "HEAD"], in: dir)
+        let repo = try Repository.open(at: dir)
+        var rawRepo: OpaquePointer?
+        guard git_repository_open(&rawRepo, dir.path) == 0 else {
+            throw Failure(message: "git_repository_open failed")
+        }
+        defer { git_repository_free(rawRepo) }
+        var stale: OpaquePointer?
+        guard git_reference_lookup(&stale, rawRepo, name) == 0 else {
+            throw Failure(message: "git_reference_lookup failed")
+        }
+        defer { git_reference_free(stale) }
+
+        try runGit(["commit", "--allow-empty", "-m", "second"], in: dir)
+        let movedSHA = try repo.resolveOID("HEAD")
+        try runGit(["update-ref", "-m", "move review ref", name, movedSHA], in: dir)
+        let logURL = dir.appendingPathComponent(".git/logs/" + name)
+        let reflog = try Data(contentsOf: logURL)
+
+        #expect(git_reference_delete(stale) == GIT_EMODIFIED.rawValue)
+        #expect(try repo.resolveOID(name) == movedSHA)
+        #expect(try Data(contentsOf: logURL) == reflog)
+
+        try repo.referenceDelete(name: name, expectedTargetSHA: movedSHA)
+        #expect(!FileManager.default.fileExists(atPath: logURL.path))
+    }
+
+    @Test("per-worktree refs are deleted from the linked worktree only")
+    func deletePerWorktreeReference() throws {
+        let dir = try makeRepo()
+        let linked = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ReferenceLinked-\(UUID().uuidString)")
+        defer {
+            try? FileManager.default.removeItem(at: linked)
+            try? FileManager.default.removeItem(at: dir)
+        }
+        try runGit(["commit", "--allow-empty", "-m", "first"], in: dir)
+        try runGit(["commit", "--allow-empty", "-m", "second"], in: dir)
+        try runGit(["worktree", "add", "-q", "-b", "linked", linked.path, "HEAD~1"], in: dir)
+        let mainSHA = try runGit(["rev-parse", "HEAD"], in: dir)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let linkedSHA = try runGit(["rev-parse", "HEAD"], in: linked)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let names = [
+            "refs/bisect/review-80", "refs/worktree/review-80",
+            "refs/rewritten/review-80"
+        ]
+        for name in names {
+            try runGit(["update-ref", name, mainSHA], in: dir)
+            try runGit(["update-ref", name, linkedSHA], in: linked)
+        }
+        let mainRepo = try Repository.open(at: dir)
+        let linkedRepo = try Repository.open(at: linked)
+
+        for name in names {
+            try linkedRepo.referenceDelete(name: name, expectedTargetSHA: linkedSHA)
+            let error = #expect(throws: Libgit2Error.self) {
+                try linkedRepo.resolveOID(name)
+            }
+            #expect(error?.code == GIT_ENOTFOUND.rawValue)
+            #expect(try mainRepo.resolveOID(name) == mainSHA)
+        }
+    }
+
+    @Test("concurrent packed-ref deletions never resurrect another ref")
+    func deletePackedReferencesConcurrently() throws {
+        let dir = try makeRepo()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try runGit(["commit", "--allow-empty", "-m", "first"], in: dir)
+
+        for round in 0..<20 {
+            let prefix = "refs/missioncontrol/reviews/concurrent-\(round)-"
+            let names = [prefix + "a", prefix + "b"]
+            for name in names { try runGit(["update-ref", name, "HEAD"], in: dir) }
+            try runGit(["pack-refs", "--all", "--prune"], in: dir)
+
+            let workers = try names.map {
+                ReferenceDeleteWorker(repository: try Repository.open(at: dir), name: $0)
+            }
+            for worker in workers {
+                _ = try worker.repository.references(matching: prefix + "*")
+            }
+            let ready = DispatchGroup(), finished = DispatchGroup()
+            let start = DispatchSemaphore(value: 0)
+            let results = ReferenceDeleteResults()
+            for worker in workers {
+                ready.enter()
+                finished.enter()
+                // A dedicated thread, not a GCD worker: this test blocks its
+                // own thread below, and on a runner with few cores the global
+                // queue's workers may never start while every slot is taken.
+                Thread {
+                    ready.leave()
+                    start.wait()
+                    defer { finished.leave() }
+                    do {
+                        try worker.repository.referenceDelete(name: worker.name)
+                    } catch let error as Libgit2Error {
+                        results.record(name: worker.name, code: error.code)
+                    } catch {
+                        results.record(name: worker.name, code: Int32.min)
+                    }
+                }.start()
+            }
+            ready.wait()
+            for _ in workers { start.signal() }
+            finished.wait()
+
+            let failures = results.snapshot()
+            #expect(failures.allSatisfy { $0.code == GIT_ELOCKED.rawValue })
+            let retryRepo = try Repository.open(at: dir)
+            for failure in failures {
+                try retryRepo.referenceDelete(name: failure.name)
+            }
+            #expect(try retryRepo.references(matching: prefix + "*").isEmpty)
+        }
+    }
+
+    @Test("deleting a loose ref cannot resurrect its older packed target", arguments: [false, true])
+    func deleteShadowingReference(guarded: Bool) throws {
+        let dir = try makeRepo()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try runGit(["commit", "--allow-empty", "-m", "first"], in: dir)
+        let name = "refs/missioncontrol/reviews/pr-80"
+        try runGit(["update-ref", name, "HEAD"], in: dir)
+        try runGit(["update-ref", name + "-keep", "HEAD"], in: dir)
+        try runGit(["pack-refs", "--all", "--prune"], in: dir)
+        try runGit(["commit", "--allow-empty", "-m", "second"], in: dir)
+        try runGit(["update-ref", name, "HEAD"], in: dir)
+        let repo = try Repository.open(at: dir)
+        let sha = try repo.resolveOID("HEAD")
+        let before = try gitRows(in: dir)
+
+        try repo.referenceDelete(name: name, expectedTargetSHA: guarded ? sha : nil)
+
+        let expected = before.filter { !$0.hasPrefix(name + " ") }
+        #expect(try gitRows(in: dir) == expected)
+        #expect(try Repository.open(at: dir).references().map { "\($0.name) \($0.targetSHA)" } == expected)
+    }
+
+    @Test("missing reference deletion throws not-found", arguments: [false, true])
+    func deleteMissingReference(guarded: Bool) throws {
+        let dir = try makeRepo()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let repo = try Repository.open(at: dir)
+        let error = #expect(throws: Libgit2Error.self) {
+            try repo.referenceDelete(name: "refs/missioncontrol/reviews/missing",
+                                     expectedTargetSHA: guarded ? String(repeating: "1", count: 40) : nil)
+        }
+        #expect(error?.code == GIT_ENOTFOUND.rawValue)
+    }
+
+    @Test("expected targets must be full hexadecimal object IDs")
+    func deleteReferenceInvalidExpectedTargets() throws {
+        let dir = try makeRepo()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try runGit(["commit", "--allow-empty", "-m", "first"], in: dir)
+        let name = "refs/missioncontrol/reviews/pr-80"
+        try runGit(["update-ref", name, "HEAD"], in: dir)
+        let repo = try Repository.open(at: dir)
+        let sha = try repo.resolveOID("HEAD")
+        let before = try gitRows(in: dir)
+        for invalid in ["", "HEAD", String(sha.prefix(7)), sha + "0", sha + "\0",
+                        String(repeating: "g", count: 40), String(sha.prefix(39)) + "\0"] {
+            let error = #expect(throws: Libgit2Error.self) {
+                try repo.referenceDelete(name: name, expectedTargetSHA: invalid)
+            }
+            #expect(error?.code == GIT_EINVALIDSPEC.rawValue)
+            #expect(try gitRows(in: dir) == before)
+        }
+    }
+
+    @Test("symbolic deletion removes only the named ref and rejects SHA guards", arguments: [false, true])
+    func deleteSymbolicReference(dangling: Bool) throws {
+        let dir = try makeRepo()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try runGit(["commit", "--allow-empty", "-m", "first"], in: dir)
+        let name = "refs/missioncontrol/reviews/pr-80"
+        let target = dangling ? "refs/heads/missing" : "refs/heads/main"
+        try runGit(["symbolic-ref", name, target], in: dir)
+        let repo = try Repository.open(at: dir)
+        let sha = try repo.resolveOID("HEAD")
+        let before = try gitRows(in: dir)
+        let error = #expect(throws: Libgit2Error.self) {
+            try repo.referenceDelete(name: name, expectedTargetSHA: sha)
+        }
+        #expect(error?.code == GIT_EMODIFIED.rawValue)
+        #expect(try runGit(["symbolic-ref", name], in: dir)
+            .trimmingCharacters(in: .whitespacesAndNewlines) == target)
+        #expect(try gitRows(in: dir) == before)
+
+        try repo.referenceDelete(name: name)
+        #expect(!FileManager.default.fileExists(atPath: dir.appendingPathComponent(".git/" + name).path))
+        #expect(try repo.resolveOID("refs/heads/main") == sha)
+        #expect(try gitRows(in: dir) == before.filter { !$0.hasPrefix(name + " ") })
+    }
+
+    @Test("deletion requires a full, single ref name")
+    func deleteReferenceInvalidNames() throws {
+        let dir = try makeRepo()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try runGit(["commit", "--allow-empty", "-m", "first"], in: dir)
+        let repo = try Repository.open(at: dir)
+        let before = try gitRows(in: dir)
+        for invalid in ["HEAD", "main", "refs/heads/*", "refs/heads/main\0suffix"] {
+            let error = #expect(throws: Libgit2Error.self) {
+                try repo.referenceDelete(name: invalid)
+            }
+            #expect(error?.code == GIT_EINVALIDSPEC.rawValue)
+            #expect(try gitRows(in: dir) == before)
         }
     }
 
