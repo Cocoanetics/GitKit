@@ -318,7 +318,10 @@ struct RepositoryReferenceTests {
             for worker in workers {
                 ready.enter()
                 finished.enter()
-                DispatchQueue.global().async {
+                // A dedicated thread, not a GCD worker: this test blocks its
+                // own thread below, and on a runner with few cores the global
+                // queue's workers may never start while every slot is taken.
+                Thread {
                     ready.leave()
                     start.wait()
                     defer { finished.leave() }
@@ -329,7 +332,7 @@ struct RepositoryReferenceTests {
                     } catch {
                         results.record(name: worker.name, code: Int32.min)
                     }
-                }
+                }.start()
             }
             ready.wait()
             for _ in workers { start.signal() }
