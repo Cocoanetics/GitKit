@@ -1,9 +1,37 @@
 // Integration tests compare the SDK with system git; Process is unavailable on Windows.
 #if os(macOS) || os(Linux)
 import Foundation
+import Dispatch
 import Testing
 import CGitKit
 import GitKit
+
+private final class ReferenceDeleteWorker: @unchecked Sendable {
+    let repository: Repository
+    let name: String
+
+    init(repository: Repository, name: String) {
+        self.repository = repository
+        self.name = name
+    }
+}
+
+private final class ReferenceDeleteResults: @unchecked Sendable {
+    private let lock = NSLock()
+    private var failures: [(name: String, code: Int32)] = []
+
+    func record(name: String, code: Int32) {
+        lock.lock()
+        failures.append((name, code))
+        lock.unlock()
+    }
+
+    func snapshot() -> [(name: String, code: Int32)] {
+        lock.lock()
+        defer { lock.unlock() }
+        return failures
+    }
+}
 
 @Suite("Repository remote branches and references")
 struct RepositoryReferenceTests {
@@ -227,6 +255,94 @@ struct RepositoryReferenceTests {
 
         try repo.referenceDelete(name: name, expectedTargetSHA: movedSHA)
         #expect(!FileManager.default.fileExists(atPath: logURL.path))
+    }
+
+    @Test("per-worktree refs are deleted from the linked worktree only")
+    func deletePerWorktreeReference() throws {
+        let dir = try makeRepo()
+        let linked = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ReferenceLinked-\(UUID().uuidString)")
+        defer {
+            try? FileManager.default.removeItem(at: linked)
+            try? FileManager.default.removeItem(at: dir)
+        }
+        try runGit(["commit", "--allow-empty", "-m", "first"], in: dir)
+        try runGit(["commit", "--allow-empty", "-m", "second"], in: dir)
+        try runGit(["worktree", "add", "-q", "-b", "linked", linked.path, "HEAD~1"], in: dir)
+        let mainSHA = try runGit(["rev-parse", "HEAD"], in: dir)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let linkedSHA = try runGit(["rev-parse", "HEAD"], in: linked)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let names = [
+            "refs/bisect/review-80", "refs/worktree/review-80",
+            "refs/rewritten/review-80"
+        ]
+        for name in names {
+            try runGit(["update-ref", name, mainSHA], in: dir)
+            try runGit(["update-ref", name, linkedSHA], in: linked)
+        }
+        let mainRepo = try Repository.open(at: dir)
+        let linkedRepo = try Repository.open(at: linked)
+
+        for name in names {
+            try linkedRepo.referenceDelete(name: name, expectedTargetSHA: linkedSHA)
+            let error = #expect(throws: Libgit2Error.self) {
+                try linkedRepo.resolveOID(name)
+            }
+            #expect(error?.code == GIT_ENOTFOUND.rawValue)
+            #expect(try mainRepo.resolveOID(name) == mainSHA)
+        }
+    }
+
+    @Test("concurrent packed-ref deletions never resurrect another ref")
+    func deletePackedReferencesConcurrently() throws {
+        let dir = try makeRepo()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try runGit(["commit", "--allow-empty", "-m", "first"], in: dir)
+
+        for round in 0..<20 {
+            let prefix = "refs/missioncontrol/reviews/concurrent-\(round)-"
+            let names = [prefix + "a", prefix + "b"]
+            for name in names { try runGit(["update-ref", name, "HEAD"], in: dir) }
+            try runGit(["pack-refs", "--all", "--prune"], in: dir)
+
+            let workers = try names.map {
+                ReferenceDeleteWorker(repository: try Repository.open(at: dir), name: $0)
+            }
+            for worker in workers {
+                _ = try worker.repository.references(matching: prefix + "*")
+            }
+            let ready = DispatchGroup(), finished = DispatchGroup()
+            let start = DispatchSemaphore(value: 0)
+            let results = ReferenceDeleteResults()
+            for worker in workers {
+                ready.enter()
+                finished.enter()
+                DispatchQueue.global().async {
+                    ready.leave()
+                    start.wait()
+                    defer { finished.leave() }
+                    do {
+                        try worker.repository.referenceDelete(name: worker.name)
+                    } catch let error as Libgit2Error {
+                        results.record(name: worker.name, code: error.code)
+                    } catch {
+                        results.record(name: worker.name, code: Int32.min)
+                    }
+                }
+            }
+            ready.wait()
+            for _ in workers { start.signal() }
+            finished.wait()
+
+            let failures = results.snapshot()
+            #expect(failures.allSatisfy { $0.code == GIT_ELOCKED.rawValue })
+            let retryRepo = try Repository.open(at: dir)
+            for failure in failures {
+                try retryRepo.referenceDelete(name: failure.name)
+            }
+            #expect(try retryRepo.references(matching: prefix + "*").isEmpty)
+        }
     }
 
     @Test("deleting a loose ref cannot resurrect its older packed target", arguments: [false, true])
