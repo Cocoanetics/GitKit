@@ -196,6 +196,39 @@ struct RepositoryReferenceTests {
         #expect(try repo.references(matching: name).isEmpty)
     }
 
+    @Test("a concurrent ref update preserves the moved ref and its reflog")
+    func deleteReferenceConcurrentUpdatePreservesReflog() throws {
+        let dir = try makeRepo()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try runGit(["commit", "--allow-empty", "-m", "first"], in: dir)
+        let name = "refs/heads/review-80"
+        try runGit(["update-ref", "-m", "create review ref", name, "HEAD"], in: dir)
+        let repo = try Repository.open(at: dir)
+        var rawRepo: OpaquePointer?
+        guard git_repository_open(&rawRepo, dir.path) == 0 else {
+            throw Failure(message: "git_repository_open failed")
+        }
+        defer { git_repository_free(rawRepo) }
+        var stale: OpaquePointer?
+        guard git_reference_lookup(&stale, rawRepo, name) == 0 else {
+            throw Failure(message: "git_reference_lookup failed")
+        }
+        defer { git_reference_free(stale) }
+
+        try runGit(["commit", "--allow-empty", "-m", "second"], in: dir)
+        let movedSHA = try repo.resolveOID("HEAD")
+        try runGit(["update-ref", "-m", "move review ref", name, movedSHA], in: dir)
+        let logURL = dir.appendingPathComponent(".git/logs/" + name)
+        let reflog = try Data(contentsOf: logURL)
+
+        #expect(git_reference_delete(stale) == GIT_EMODIFIED.rawValue)
+        #expect(try repo.resolveOID(name) == movedSHA)
+        #expect(try Data(contentsOf: logURL) == reflog)
+
+        try repo.referenceDelete(name: name, expectedTargetSHA: movedSHA)
+        #expect(!FileManager.default.fileExists(atPath: logURL.path))
+    }
+
     @Test("deleting a loose ref cannot resurrect its older packed target", arguments: [false, true])
     func deleteShadowingReference(guarded: Bool) throws {
         let dir = try makeRepo()

@@ -33,6 +33,8 @@ import PackageDescription
 //     only the entries of the file being written, not those an `[include]`
 //     file repeats, as git does, and a host can authorise the `[include]`
 //     files libgit2 reads (ConfigIncludePolicy).
+//   • refdb_fs.c is shimmed so a failed compare-and-delete leaves the ref's
+//     reflog intact instead of deleting it before reporting GIT_EMODIFIED.
 //   • Consumers only import `GitKit`.
 // =============================================================================
 
@@ -143,6 +145,10 @@ var excludes: [String] = [
     // set/unset consider only the entries of the file being written and
     // every include file is offered to the host's policy before it is read.
     "src/libgit2/config_file.c",
+
+    // Compiled via Sources/Clibgit2Patches/refdb_fs_patched.c, whose
+    // compare-and-delete checks the old value before deleting the reflog.
+    "src/libgit2/refdb_fs.c",
 ]
 
 // Header search paths for the .c compilation, relative to Clibgit2's path
