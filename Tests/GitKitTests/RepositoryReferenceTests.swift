@@ -2,6 +2,7 @@
 #if os(macOS) || os(Linux)
 import Foundation
 import Testing
+import CGitKit
 import GitKit
 
 @Suite("Repository remote branches and references")
@@ -146,6 +147,147 @@ struct RepositoryReferenceTests {
                 "refs/custom/z", "refs/custom/é"
             ])
             #expect(try repo.references(matching: "refs/missing/*").isEmpty)
+        }
+    }
+
+    @Test("delete a single review ref, loose or packed", arguments: [false, true], [false, true])
+    func deleteReference(packed: Bool, guarded: Bool) throws {
+        let dir = try makeRepo()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try runGit(["commit", "--allow-empty", "-m", "first"], in: dir)
+        let name = "refs/missioncontrol/reviews/pr-80"
+        try runGit(["update-ref", name, "HEAD"], in: dir)
+        try runGit(["update-ref", name + "-keep", "HEAD"], in: dir)
+        try runGit(["tag", "keep"], in: dir)
+        if packed { try runGit(["pack-refs", "--all", "--prune"], in: dir) }
+        let before = try gitRows(in: dir)
+        let repo = try Repository.open(at: dir)
+        let sha = try repo.resolveOID("HEAD")
+
+        try repo.referenceDelete(name: name, expectedTargetSHA: guarded ? sha.uppercased() : nil)
+
+        let expected = before.filter { !$0.hasPrefix(name + " ") }
+        #expect(try gitRows(in: dir) == expected)
+        #expect(try repo.references().map { "\($0.name) \($0.targetSHA)" } == expected)
+    }
+
+    @Test("stale expected targets preserve moved refs", arguments: [false, true])
+    func deleteReferenceExpectedTarget(packed: Bool) throws {
+        let dir = try makeRepo()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try runGit(["commit", "--allow-empty", "-m", "first"], in: dir)
+        let repo = try Repository.open(at: dir)
+        let oldSHA = try repo.resolveOID("HEAD")
+        let name = "refs/missioncontrol/reviews/pr-80"
+        try runGit(["update-ref", name, "HEAD"], in: dir)
+        try runGit(["commit", "--allow-empty", "-m", "second"], in: dir)
+        let newSHA = try repo.resolveOID("HEAD")
+        try runGit(["update-ref", name, newSHA], in: dir)
+        if packed { try runGit(["pack-refs", "--all", "--prune"], in: dir) }
+        let before = try gitRows(in: dir)
+
+        let error = #expect(throws: Libgit2Error.self) {
+            try repo.referenceDelete(name: name, expectedTargetSHA: oldSHA)
+        }
+        #expect(error?.code == GIT_EMODIFIED.rawValue)
+        #expect(try gitRows(in: dir) == before)
+        #expect(try repo.resolveOID(name) == newSHA)
+        try repo.referenceDelete(name: name, expectedTargetSHA: newSHA)
+        #expect(try repo.references(matching: name).isEmpty)
+    }
+
+    @Test("deleting a loose ref cannot resurrect its older packed target", arguments: [false, true])
+    func deleteShadowingReference(guarded: Bool) throws {
+        let dir = try makeRepo()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try runGit(["commit", "--allow-empty", "-m", "first"], in: dir)
+        let name = "refs/missioncontrol/reviews/pr-80"
+        try runGit(["update-ref", name, "HEAD"], in: dir)
+        try runGit(["update-ref", name + "-keep", "HEAD"], in: dir)
+        try runGit(["pack-refs", "--all", "--prune"], in: dir)
+        try runGit(["commit", "--allow-empty", "-m", "second"], in: dir)
+        try runGit(["update-ref", name, "HEAD"], in: dir)
+        let repo = try Repository.open(at: dir)
+        let sha = try repo.resolveOID("HEAD")
+        let before = try gitRows(in: dir)
+
+        try repo.referenceDelete(name: name, expectedTargetSHA: guarded ? sha : nil)
+
+        let expected = before.filter { !$0.hasPrefix(name + " ") }
+        #expect(try gitRows(in: dir) == expected)
+        #expect(try Repository.open(at: dir).references().map { "\($0.name) \($0.targetSHA)" } == expected)
+    }
+
+    @Test("missing reference deletion throws not-found", arguments: [false, true])
+    func deleteMissingReference(guarded: Bool) throws {
+        let dir = try makeRepo()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let repo = try Repository.open(at: dir)
+        let error = #expect(throws: Libgit2Error.self) {
+            try repo.referenceDelete(name: "refs/missioncontrol/reviews/missing",
+                                     expectedTargetSHA: guarded ? String(repeating: "1", count: 40) : nil)
+        }
+        #expect(error?.code == GIT_ENOTFOUND.rawValue)
+    }
+
+    @Test("expected targets must be full hexadecimal object IDs")
+    func deleteReferenceInvalidExpectedTargets() throws {
+        let dir = try makeRepo()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try runGit(["commit", "--allow-empty", "-m", "first"], in: dir)
+        let name = "refs/missioncontrol/reviews/pr-80"
+        try runGit(["update-ref", name, "HEAD"], in: dir)
+        let repo = try Repository.open(at: dir)
+        let sha = try repo.resolveOID("HEAD")
+        let before = try gitRows(in: dir)
+        for invalid in ["", "HEAD", String(sha.prefix(7)), sha + "0", sha + "\0",
+                        String(repeating: "g", count: 40), String(sha.prefix(39)) + "\0"] {
+            let error = #expect(throws: Libgit2Error.self) {
+                try repo.referenceDelete(name: name, expectedTargetSHA: invalid)
+            }
+            #expect(error?.code == GIT_EINVALIDSPEC.rawValue)
+            #expect(try gitRows(in: dir) == before)
+        }
+    }
+
+    @Test("symbolic deletion removes only the named ref and rejects SHA guards", arguments: [false, true])
+    func deleteSymbolicReference(dangling: Bool) throws {
+        let dir = try makeRepo()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try runGit(["commit", "--allow-empty", "-m", "first"], in: dir)
+        let name = "refs/missioncontrol/reviews/pr-80"
+        let target = dangling ? "refs/heads/missing" : "refs/heads/main"
+        try runGit(["symbolic-ref", name, target], in: dir)
+        let repo = try Repository.open(at: dir)
+        let sha = try repo.resolveOID("HEAD")
+        let before = try gitRows(in: dir)
+        let error = #expect(throws: Libgit2Error.self) {
+            try repo.referenceDelete(name: name, expectedTargetSHA: sha)
+        }
+        #expect(error?.code == GIT_EMODIFIED.rawValue)
+        #expect(try runGit(["symbolic-ref", name], in: dir)
+            .trimmingCharacters(in: .whitespacesAndNewlines) == target)
+        #expect(try gitRows(in: dir) == before)
+
+        try repo.referenceDelete(name: name)
+        #expect(!FileManager.default.fileExists(atPath: dir.appendingPathComponent(".git/" + name).path))
+        #expect(try repo.resolveOID("refs/heads/main") == sha)
+        #expect(try gitRows(in: dir) == before.filter { !$0.hasPrefix(name + " ") })
+    }
+
+    @Test("deletion requires a full, single ref name")
+    func deleteReferenceInvalidNames() throws {
+        let dir = try makeRepo()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try runGit(["commit", "--allow-empty", "-m", "first"], in: dir)
+        let repo = try Repository.open(at: dir)
+        let before = try gitRows(in: dir)
+        for invalid in ["HEAD", "main", "refs/heads/*", "refs/heads/main\0suffix"] {
+            let error = #expect(throws: Libgit2Error.self) {
+                try repo.referenceDelete(name: invalid)
+            }
+            #expect(error?.code == GIT_EINVALIDSPEC.rawValue)
+            #expect(try gitRows(in: dir) == before)
         }
     }
 

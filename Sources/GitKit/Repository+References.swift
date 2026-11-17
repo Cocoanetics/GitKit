@@ -82,6 +82,50 @@ extension Repository {
         return entries.sorted { refnamePrecedes($0.name, $1.name) }
     }
 
+    /// Delete one fully qualified reference under `refs/`, loose or packed.
+    /// Symbolic refs (including dangling ones) are deleted by name, without
+    /// resolving or deleting their destination.
+    ///
+    /// If supplied, `expectedTargetSHA` must be a full 40-digit hexadecimal
+    /// object ID and match the direct ref's target. Symbolic refs are rejected
+    /// when an expected SHA is supplied, even if their resolved target matches.
+    /// libgit2 also checks for changes between lookup and deletion.
+    ///
+    /// Throws ``Libgit2Error`` with `GIT_ENOTFOUND` for a missing ref,
+    /// `GIT_EMODIFIED` for a target mismatch, guarded symbolic ref, or concurrent
+    /// change, and `GIT_EINVALIDSPEC` for an invalid name or expected object ID.
+    public func referenceDelete(name: String, expectedTargetSHA: String? = nil) throws {
+        guard name.hasPrefix("refs/"), !name.utf8.contains(0) else {
+            throw Libgit2Error(
+                code: GIT_EINVALIDSPEC.rawValue, klass: Int32(GIT_ERROR_REFERENCE.rawValue),
+                message: "expected a full reference name under refs/")
+        }
+        var expectedOID = git_oid()
+        if let expectedTargetSHA {
+            guard expectedTargetSHA.utf8.count == 40,
+                  expectedTargetSHA.withCString({ git_oid_fromstr(&expectedOID, $0) }) == 0 else {
+                throw Libgit2Error(
+                    code: GIT_EINVALIDSPEC.rawValue, klass: Int32(GIT_ERROR_REFERENCE.rawValue),
+                    message: "expectedTargetSHA must be a full 40-digit hexadecimal object ID")
+            }
+        }
+
+        var ref: OpaquePointer?
+        try check(git_reference_lookup(&ref, repo, name))
+        defer { git_reference_free(ref) }
+
+        if expectedTargetSHA != nil {
+            guard let target = git_reference_target(ref), git_oid_equal(target, &expectedOID) == 1 else {
+                throw Libgit2Error(
+                    code: GIT_EMODIFIED.rawValue, klass: Int32(GIT_ERROR_REFERENCE.rawValue),
+                    message: "reference '\(name)' does not have the expected direct target")
+            }
+        }
+        // Delete the looked-up value so libgit2 compares it again under its
+        // ref lock. Removing by name would lose that concurrency protection.
+        try check(git_reference_delete(ref))
+    }
+
     private func referenceEntry(from ref: OpaquePointer?) throws -> ReferenceEntry? {
         guard let cstr = git_reference_name(ref) else { return nil }
         let symbolicTarget = git_reference_symbolic_target(ref).map { String(cString: $0) }
