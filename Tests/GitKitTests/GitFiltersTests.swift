@@ -3,7 +3,9 @@ import Foundation
 import Testing
 @testable import GitKit
 
-@Suite("Custom clean/smudge filters")
+// Registration is process-wide. Serial execution keeps one test's unregister
+// from racing a filter list that another test has already loaded.
+@Suite("Custom clean/smudge filters", .serialized)
 struct GitFiltersTests {
     private let fixtures = TemporaryRepositories()
     private let name = "upper-\(UUID().uuidString)"
@@ -113,6 +115,18 @@ struct GitFiltersTests {
         var chunks: [Int] {
             lock.lock(); defer { lock.unlock() }
             return sizes
+        }
+    }
+
+    private final class Once: @unchecked Sendable {
+        private let lock = NSLock()
+        private var available = true
+
+        func take() -> Bool {
+            lock.lock(); defer { lock.unlock() }
+            guard available else { return false }
+            available = false
+            return true
         }
     }
 
@@ -382,14 +396,17 @@ struct GitFiltersTests {
         let (dir, repo) = try makeRepo()
         let driver = name
         let observations = Observations()
+        let unregisterOnce = Once()
         try GitFilters.register(name: name, GitFilter(smudge: { _, output in
-            let done = DispatchSemaphore(value: 0)
-            DispatchQueue.global().async {
-                defer { done.signal() }
-                do { try GitFilters.unregister(name: driver) }
-                catch { Issue.record(error) }
+            if unregisterOnce.take() {
+                let done = DispatchSemaphore(value: 0)
+                DispatchQueue.global().async {
+                    defer { done.signal() }
+                    do { try GitFilters.unregister(name: driver) }
+                    catch { Issue.record(error) }
+                }
+                guard done.wait(timeout: .now() + 10) == .success else { throw TestError.failed }
             }
-            guard done.wait(timeout: .now() + 10) == .success else { throw TestError.failed }
             return CopyStream(output, observations)
         }))
         defer { try? GitFilters.unregister(name: name) }
