@@ -24,6 +24,75 @@ for entry in try repo.log(LogQuery(maxCount: 10)) {       // git log
 }
 ```
 
+## Custom filters
+
+`GitFilters` registers LFS-agnostic clean/smudge filters process-wide. A path
+selects a driver with `.gitattributes`, for example `*.txt filter=upper`:
+
+```swift
+try GitFilters.register(name: "upper", clean: { source, input in
+    Data(String(decoding: input, as: UTF8.self).lowercased().utf8)
+}, smudge: { source, input in
+    Data(String(decoding: input, as: UTF8.self).uppercased().utf8)
+})
+// Later, when no new operations should use this driver:
+try GitFilters.unregister(name: "upper")
+```
+
+For large content, use `GitFilter(clean:smudge:)` with `@Sendable` stream
+factories. Each factory receives a `GitFilterSource` (driver, direction,
+repository-relative path, file mode, optional object ID, Git directory and
+optional working directory) and a `GitFilterOutput`. Return a new
+`GitFilterStream` whose `write(_:)` consumes borrowed input chunks and whose
+`close()` flushes output with `try output.write(bytes)` or `try output.write(data)`.
+Do not retain borrowed chunks or use the output asynchronously. A stream's
+callbacks are serial, but different files/repositories can filter concurrently.
+Use deinitialization to release temporary resources if a write fails, since
+the stream's `close()` is skipped after failure. Downstream is always closed.
+
+```swift
+final class CopyFilter: GitFilterStream {
+    let output: GitFilterOutput
+    init(output: GitFilterOutput) { self.output = output }
+    func write(_ chunk: UnsafeRawBufferPointer) throws { try output.write(chunk) }
+    func close() throws {}
+}
+
+try GitFilters.register(name: "copy", GitFilter(
+    clean: { _, output in CopyFilter(output: output) },
+    smudge: { _, output in CopyFilter(output: output) }))
+```
+
+The default attributes match `filter=<registered name>`; `attributes:` accepts
+libgit2's attribute expression syntax. Priority defaults to 200, after CRLF
+(0) and ident (100) on smudge, and before them on clean; the `Int32.min` and
+`Int32.max` endpoints are reserved for required-driver enforcement. Registration
+rejects duplicate names. Use unique names in tests. Unregistering preserves in-flight
+Swift streams/closures. Because libgit2 keeps raw pointers in loaded filter
+lists, the small C filter struct and its attributes intentionally remain
+allocated for process lifetime after each successful registration cycle.
+Register/unregister outside callbacks other than stream factories or stream
+methods; libgit2 holds its registry read lock during attribute checks.
+
+The first registration enables a guard for missing drivers with
+`filter.<name>.required=true`. `GitFilters.enforceRequiredDrivers()` enables
+that guard explicitly without registering a driver. It stays enabled after
+unregistering. Applications that never use `GitFilters` retain libgit2's
+existing behavior. A required driver lacking a closure for the requested
+direction fails. Optional missing directions, nil stream-factory results,
+and nil buffered-transform results pass through unchanged. Buffered transforms
+also fall back to original input on optional errors. Streaming errors always
+fail, even for optional drivers, since emitted output cannot be retracted.
+Failures throw `GitFilterError` with the driver, path, direction, reason and
+original Swift error. A failed checkout can leave partially written files.
+
+The bridge uses libgit2's streaming API exclusively, but libgit2 1.9 still
+buffers smudge **input** (the blob), clean **output** during add, and whole
+working-tree files during status/diff hashing. Clean input during add arrives
+in chunks of at most 64 KiB; smudge output can be emitted in bounded chunks.
+This fits LFS, where smudge input and clean output are small pointer files.
+Raw blob reads (`catFileBlob`) and archives do not invoke these filters.
+
 ## The Swift SDK
 
 `Repository` mirrors libgit2's own `git_repository *` model: open (or
