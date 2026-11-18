@@ -88,6 +88,10 @@ GIT_EXTERN(int) gitkit_tag_create_buffer(
 #include "git2/sys/transport.h"
 /* END sys */
 
+/* Swift callback containers: the C parent is guaranteed to be at offset zero. */
+typedef struct { git_filter parent; void *context; } gitkit_filter;
+typedef struct { git_writestream parent; void *context; } gitkit_filter_stream;
+
 
 /*
  * GitKit addition, implemented in Sources/Clibgit2Patches/index_flags.c:
