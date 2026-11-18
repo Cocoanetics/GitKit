@@ -118,15 +118,18 @@ struct GitFiltersTests {
         }
     }
 
-    private final class Once: @unchecked Sendable {
+    private final class ResultBox: @unchecked Sendable {
         private let lock = NSLock()
-        private var available = true
+        private var result: Result<Void, Error>?
 
-        func take() -> Bool {
+        func store(_ result: Result<Void, Error>) {
             lock.lock(); defer { lock.unlock() }
-            guard available else { return false }
-            available = false
-            return true
+            self.result = result
+        }
+
+        func get() -> Result<Void, Error>? {
+            lock.lock(); defer { lock.unlock() }
+            return result
         }
     }
 
@@ -141,6 +144,26 @@ struct GitFiltersTests {
             observations.record(chunk.count)
             try output.write(chunk)
         }
+        func close() throws {}
+    }
+
+    private final class BlockingCopyStream: GitFilterStream {
+        let output: GitFilterOutput
+        let entered: DispatchSemaphore
+        let resume: DispatchSemaphore
+
+        init(_ output: GitFilterOutput, entered: DispatchSemaphore, resume: DispatchSemaphore) {
+            self.output = output
+            self.entered = entered
+            self.resume = resume
+        }
+
+        func write(_ chunk: UnsafeRawBufferPointer) throws {
+            entered.signal()
+            guard resume.wait(timeout: .now() + 30) == .success else { throw TestError.failed }
+            try output.write(chunk)
+        }
+
         func close() throws {}
     }
 
@@ -393,26 +416,43 @@ struct GitFiltersTests {
     @Test("Unregister on another thread during smudge preserves the loaded stream")
     func unregisterDuringStream() throws {
         defer { fixtures.removeAll() }
-        let (dir, repo) = try makeRepo()
-        let driver = name
-        let observations = Observations()
-        let unregisterOnce = Once()
+        let (dir, _) = try makeRepo()
+        let entered = DispatchSemaphore(value: 0)
+        let resume = DispatchSemaphore(value: 0)
+        let completed = DispatchSemaphore(value: 0)
+        let result = ResultBox()
         try GitFilters.register(name: name, GitFilter(smudge: { _, output in
-            if unregisterOnce.take() {
-                let done = DispatchSemaphore(value: 0)
-                DispatchQueue.global().async {
-                    defer { done.signal() }
-                    do { try GitFilters.unregister(name: driver) }
-                    catch { Issue.record(error) }
-                }
-                guard done.wait(timeout: .now() + 10) == .success else { throw TestError.failed }
-            }
-            return CopyStream(output, observations)
+            BlockingCopyStream(output, entered: entered, resume: resume)
         }))
         defer { try? GitFilters.unregister(name: name) }
-        try restore(repo, in: dir)
+
+        DispatchQueue.global().async {
+            defer { completed.signal() }
+            result.store(Result {
+                let file = dir.appendingPathComponent("a.txt")
+                if FileManager.default.fileExists(atPath: file.path) {
+                    try FileManager.default.removeItem(at: file)
+                }
+                try Repository.open(at: dir).checkoutPaths(["a.txt"])
+            })
+        }
+        guard entered.wait(timeout: .now() + 30) == .success else {
+            resume.signal()
+            _ = completed.wait(timeout: .now() + 30)
+            throw TestError.failed
+        }
+        do {
+            try GitFilters.unregister(name: name)
+        } catch {
+            resume.signal()
+            _ = completed.wait(timeout: .now() + 30)
+            throw error
+        }
+        resume.signal()
+        guard completed.wait(timeout: .now() + 30) == .success else { throw TestError.failed }
+        guard let checkoutResult = result.get() else { throw TestError.failed }
+        try checkoutResult.get()
         #expect(!GitFilters.isRegistered(name))
-        #expect(observations.chunks.reduce(0, +) == 6)
         #expect(try Data(contentsOf: dir.appendingPathComponent("a.txt")) == Data("hello\n".utf8))
     }
 }
