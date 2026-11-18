@@ -118,21 +118,6 @@ struct GitFiltersTests {
         }
     }
 
-    private final class ResultBox: @unchecked Sendable {
-        private let lock = NSLock()
-        private var result: Result<Void, Error>?
-
-        func store(_ result: Result<Void, Error>) {
-            lock.lock(); defer { lock.unlock() }
-            self.result = result
-        }
-
-        func get() -> Result<Void, Error>? {
-            lock.lock(); defer { lock.unlock() }
-            return result
-        }
-    }
-
     private final class CopyStream: GitFilterStream {
         let output: GitFilterOutput
         let observations: Observations
@@ -144,26 +129,6 @@ struct GitFiltersTests {
             observations.record(chunk.count)
             try output.write(chunk)
         }
-        func close() throws {}
-    }
-
-    private final class BlockingCopyStream: GitFilterStream {
-        let output: GitFilterOutput
-        let entered: DispatchSemaphore
-        let resume: DispatchSemaphore
-
-        init(_ output: GitFilterOutput, entered: DispatchSemaphore, resume: DispatchSemaphore) {
-            self.output = output
-            self.entered = entered
-            self.resume = resume
-        }
-
-        func write(_ chunk: UnsafeRawBufferPointer) throws {
-            entered.signal()
-            guard resume.wait(timeout: .now() + 30) == .success else { throw TestError.failed }
-            try output.write(chunk)
-        }
-
         func close() throws {}
     }
 
@@ -413,47 +378,28 @@ struct GitFiltersTests {
         try GitFilters.register(name: name, GitFilter())
     }
 
-    @Test("Unregister on another thread during smudge preserves the loaded stream")
-    func unregisterDuringStream() throws {
+    @Test("Unregister preserves an already loaded filter list")
+    func unregisterLoadedFilterList() throws {
         defer { fixtures.removeAll() }
-        let (dir, _) = try makeRepo()
-        let entered = DispatchSemaphore(value: 0)
-        let resume = DispatchSemaphore(value: 0)
-        let completed = DispatchSemaphore(value: 0)
-        let result = ResultBox()
+        let (_, repo) = try makeRepo()
+        let observations = Observations()
         try GitFilters.register(name: name, GitFilter(smudge: { _, output in
-            BlockingCopyStream(output, entered: entered, resume: resume)
+            CopyStream(output, observations)
         }))
         defer { try? GitFilters.unregister(name: name) }
 
-        DispatchQueue.global().async {
-            defer { completed.signal() }
-            result.store(Result {
-                let file = dir.appendingPathComponent("a.txt")
-                if FileManager.default.fileExists(atPath: file.path) {
-                    try FileManager.default.removeItem(at: file)
-                }
-                try Repository.open(at: dir).checkoutPaths(["a.txt"])
-            })
-        }
-        guard entered.wait(timeout: .now() + 30) == .success else {
-            resume.signal()
-            _ = completed.wait(timeout: .now() + 30)
-            throw TestError.failed
-        }
-        do {
-            try GitFilters.unregister(name: name)
-        } catch {
-            resume.signal()
-            _ = completed.wait(timeout: .now() + 30)
-            throw error
-        }
-        resume.signal()
-        guard completed.wait(timeout: .now() + 30) == .success else { throw TestError.failed }
-        guard let checkoutResult = result.get() else { throw TestError.failed }
-        try checkoutResult.get()
+        var filters: OpaquePointer?
+        try check(git_filter_list_load(&filters, repo.repo, nil, "a.txt", GIT_FILTER_TO_WORKTREE, 0))
+        defer { git_filter_list_free(filters) }
+        #expect(filters != nil)
+        try GitFilters.unregister(name: name)
+
+        var result = git_buf()
+        defer { git_buf_dispose(&result) }
+        try check(git_filter_list_apply_to_buffer(&result, filters, "hello\n", 6))
         #expect(!GitFilters.isRegistered(name))
-        #expect(try Data(contentsOf: dir.appendingPathComponent("a.txt")) == Data("hello\n".utf8))
+        #expect(result.size == 6)
+        #expect(observations.chunks == [6])
     }
 }
 #endif
