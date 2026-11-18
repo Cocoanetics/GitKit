@@ -32,11 +32,12 @@ final class GitFilterRegistry: @unchecked Sendable {
 
     func containsDriver(_ name: String) -> Bool {
         lookupLock.lock(); defer { lookupLock.unlock() }
-        return registrations.contains { registeredName, pointer in
-            if registeredName == name { return true }
+        return registrations.values.contains { pointer in
             let attributes = String(cString: pointer.pointee.parent.attributes)
                 .split(whereSeparator: { $0.isWhitespace })
-            return attributes.contains("filter=\(name)") || attributes.contains("filter=*")
+            return attributes.contains("filter")
+                || attributes.contains("filter=\(name)")
+                || attributes.contains("filter=*")
         }
     }
 

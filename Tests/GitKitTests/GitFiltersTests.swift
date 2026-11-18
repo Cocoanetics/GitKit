@@ -314,6 +314,19 @@ struct GitFiltersTests {
         #expect(try Data(contentsOf: dir.appendingPathComponent("a.txt")) == Data("hello\n".utf8))
     }
 
+    @Test("A registration whose custom attributes do not select the driver remains missing")
+    func nonmatchingRegistrationIsMissing() throws {
+        defer { fixtures.removeAll() }
+        let (dir, repo) = try makeRepo()
+        try requireDriver(in: dir)
+        try GitFilters.register(name: name, attributes: "large", clean: { _, input in input },
+                                smudge: { _, input in input })
+        defer { try? GitFilters.unregister(name: name) }
+        expectFailure(.smudge, reason: .requiredDriverMissing) { try restore(repo, in: dir) }
+        try Data("raw\n".utf8).write(to: dir.appendingPathComponent("a.txt"))
+        expectFailure(.clean, reason: .requiredDriverMissing) { try repo.add(paths: ["a.txt"]) }
+    }
+
     @Test("A missing direction is optional passthrough, but fails when required")
     func missingDirection() throws {
         defer { fixtures.removeAll() }
