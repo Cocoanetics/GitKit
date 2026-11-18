@@ -125,7 +125,8 @@ public enum GitFilters {
     public static let defaultPriority = 200
 
     /// Defaults to matching `filter=<name>` in .gitattributes. Lower priorities
-    /// run first on smudge and last on clean. Also enables required-driver checks.
+    /// run first on smudge and last on clean. `Int32.min` and `Int32.max` are
+    /// reserved for required-driver enforcement. Also enables those checks.
     public static func register(
         name: String, attributes: String? = nil, priority: Int = defaultPriority, _ filter: GitFilter
     ) throws {

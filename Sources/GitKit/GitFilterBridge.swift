@@ -1,7 +1,8 @@
 import Foundation
 import CGitKit
 
-private let requiredGuardName = "gitkit-required-filter-guard"
+private let requiredGuardStartName = "gitkit-required-filter-guard-start"
+private let requiredGuardEndName = "gitkit-required-filter-guard-end"
 
 private final class FilterRegistration {
     let name: String
@@ -16,41 +17,31 @@ private final class FilterRegistration {
     }
 }
 
-/// Mutations are serialized separately from lookups: never hold the lookup lock
-/// while waiting for libgit2's write lock, since `check` holds its read lock.
+/// Mutations and status lookups are serialized together. Required-driver checks
+/// use callbacks selected under libgit2's own registry lock, not this table.
 final class GitFilterRegistry: @unchecked Sendable {
     static let shared = GitFilterRegistry()
     private let mutationLock = NSLock()
-    private let lookupLock = NSLock()
     private var registrations: [String: UnsafeMutablePointer<gitkit_filter>] = [:]
-    private var guardInstalled = false
+    private var guardStartInstalled = false
+    private var guardEndInstalled = false
 
     func contains(_ name: String) -> Bool {
-        lookupLock.lock(); defer { lookupLock.unlock() }
+        mutationLock.lock(); defer { mutationLock.unlock() }
         return registrations[name] != nil
-    }
-
-    func containsDriver(_ name: String) -> Bool {
-        lookupLock.lock(); defer { lookupLock.unlock() }
-        return registrations.values.contains { pointer in
-            let attributes = String(cString: pointer.pointee.parent.attributes)
-                .split(whereSeparator: { $0.isWhitespace })
-            return attributes.contains("filter")
-                || attributes.contains("filter=\(name)")
-                || attributes.contains("filter=*")
-        }
     }
 
     func register(name: String, attributes: String?, priority: Int, filter: GitFilter) throws {
         Libgit2.ensureInitialized()
         guard !name.isEmpty, !name.contains(where: { $0.isWhitespace || $0 == "\0" }),
-              name != requiredGuardName, let priority = Int32(exactly: priority),
+              name != requiredGuardStartName, name != requiredGuardEndName,
+              let priority = Int32(exactly: priority), priority != Int32.min, priority != Int32.max,
               attributes?.contains("\0") != true else {
             throw Libgit2Error(code: -1, klass: Int32(GIT_ERROR_FILTER.rawValue),
                                message: "invalid filter name, attributes, or priority")
         }
         mutationLock.lock(); defer { mutationLock.unlock() }
-        try installGuard()
+        try installGuards()
         let attributes = attributes ?? "filter=\(name)"
         let pointer = try allocateFilter(attributes: attributes)
         let registration = FilterRegistration(name: name, attributes: attributes, filter: filter)
@@ -67,25 +58,19 @@ final class GitFilterRegistry: @unchecked Sendable {
             pointer.deallocate()
             throw error
         }
-        lookupLock.lock()
         registrations[name] = pointer
-        lookupLock.unlock()
     }
 
     func unregister(name: String) throws {
         Libgit2.ensureInitialized()
         mutationLock.lock(); defer { mutationLock.unlock() }
-        lookupLock.lock()
         let pointer = registrations[name]
-        lookupLock.unlock()
         guard let pointer else {
             throw Libgit2Error(code: Int32(GIT_ENOTFOUND.rawValue), klass: Int32(GIT_ERROR_FILTER.rawValue),
                                message: "Swift filter '\(name)' is not registered")
         }
         try check(git_filter_unregister(name))
-        lookupLock.lock()
         registrations.removeValue(forKey: name)
-        lookupLock.unlock()
         Unmanaged<FilterRegistration>.fromOpaque(pointer.pointee.context).release()
         pointer.pointee.context = nil
         // Loaded lists still reference the C struct after unregister. Their
@@ -96,23 +81,32 @@ final class GitFilterRegistry: @unchecked Sendable {
     func enforceRequiredDrivers() throws {
         Libgit2.ensureInitialized()
         mutationLock.lock(); defer { mutationLock.unlock() }
-        try installGuard()
+        try installGuards()
     }
 
-    private func installGuard() throws {
-        guard !guardInstalled else { return }
+    private func installGuards() throws {
+        if !guardStartInstalled {
+            try installGuard(name: requiredGuardStartName, priority: Int32.min, check: requiredGuardStartCheck)
+            guardStartInstalled = true
+        }
+        if !guardEndInstalled {
+            try installGuard(name: requiredGuardEndName, priority: Int32.max, check: requiredGuardEndCheck)
+            guardEndInstalled = true
+        }
+    }
+
+    private func installGuard(name: String, priority: Int32, check callback: git_filter_check_fn?) throws {
         let pointer = try allocateFilter(attributes: "filter=*")
-        pointer.pointee.parent.check = requiredGuardCheck
-        let rc = git_filter_register(requiredGuardName,
+        pointer.pointee.parent.check = callback
+        let rc = git_filter_register(name,
                                     UnsafeMutableRawPointer(pointer).assumingMemoryBound(to: git_filter.self),
-                                    Int32.min)
+                                    priority)
         if rc < 0 {
             let error = Libgit2Error.last(code: rc)
             free(UnsafeMutableRawPointer(mutating: pointer.pointee.parent.attributes))
             pointer.deallocate()
             throw error
         }
-        guardInstalled = true
     }
 }
 
@@ -192,12 +186,45 @@ enum PendingFilterError {
     }
 }
 
-private let requiredGuardCheck: git_filter_check_fn = { _, _, src, values in
+private enum MatchedFilterDrivers {
+    private final class State {
+        var drivers: Set<String> = []
+    }
+
+    private static let key = "GitKit.matchedFilterDrivers"
+
+    static func reset() {
+        Thread.current.threadDictionary[key] = State()
+    }
+
+    static func record(_ driver: String) {
+        let state: State
+        if let current = Thread.current.threadDictionary[key] as? State {
+            state = current
+        } else {
+            state = State()
+            Thread.current.threadDictionary[key] = state
+        }
+        state.drivers.insert(driver)
+    }
+
+    static func contains(_ driver: String) -> Bool {
+        (Thread.current.threadDictionary[key] as? State)?.drivers.contains(driver) == true
+    }
+}
+
+private let requiredGuardStartCheck: git_filter_check_fn = { _, _, _, _ in
+    MatchedFilterDrivers.reset()
+    return GIT_PASSTHROUGH.rawValue
+}
+
+private let requiredGuardEndCheck: git_filter_check_fn = { _, _, src, values in
     guard let src, let value = values?.pointee, git_attr_value(value) == GIT_ATTR_VALUE_STRING else {
         return GIT_PASSTHROUGH.rawValue
     }
     let driver = String(cString: value)
-    if GitFilterRegistry.shared.containsDriver(driver) { return GIT_PASSTHROUGH.rawValue }
+    defer { MatchedFilterDrivers.reset() }
+    if MatchedFilterDrivers.contains(driver) { return GIT_PASSTHROUGH.rawValue }
     let source = sourceSnapshot(src, driver: driver)
     do {
         guard try isRequired(driver, src: src) else { return GIT_PASSTHROUGH.rawValue }
@@ -230,6 +257,7 @@ private let filterCheck: git_filter_check_fn = { filter, payload, src, values in
         }
         let session = FilterSession(registration: registration, required: required, driver: source.driver)
         payload.pointee = Unmanaged.passRetained(session).toOpaque()
+        MatchedFilterDrivers.record(source.driver)
         return 0
     } catch { return PendingFilterError.record(failure(error, source: source)) }
 }

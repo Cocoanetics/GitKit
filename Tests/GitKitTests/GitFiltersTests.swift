@@ -118,6 +118,13 @@ struct GitFiltersTests {
         }
     }
 
+    private final class LifetimeToken: @unchecked Sendable {
+        let observations: Observations
+
+        init(_ observations: Observations) { self.observations = observations }
+        deinit { observations.record(-1) }
+    }
+
     private final class CopyStream: GitFilterStream {
         let output: GitFilterOutput
         let observations: Observations
@@ -316,17 +323,58 @@ struct GitFiltersTests {
         #expect(try Data(contentsOf: dir.appendingPathComponent("a.txt")) == Data("hello\n".utf8))
     }
 
-    @Test("A registration whose custom attributes do not select the driver remains missing")
-    func nonmatchingRegistrationIsMissing() throws {
+    @Test("All predicates in a compound registration must match the required driver")
+    func compoundRegistrationMatching() throws {
         defer { fixtures.removeAll() }
         let (dir, repo) = try makeRepo()
         try requireDriver(in: dir)
-        try GitFilters.register(name: name, attributes: "large", clean: { _, input in input },
-                                smudge: { _, input in input })
+        let observations = Observations()
+        try GitFilters.register(name: name, attributes: "filter=\(name) diff=\(name)", clean: { _, input in
+            observations.record(input.count)
+            return input
+        }, smudge: { _, input in
+            observations.record(input.count)
+            return input
+        })
         defer { try? GitFilters.unregister(name: name) }
         expectFailure(.smudge, reason: .requiredDriverMissing) { try restore(repo, in: dir) }
         try Data("raw\n".utf8).write(to: dir.appendingPathComponent("a.txt"))
         expectFailure(.clean, reason: .requiredDriverMissing) { try repo.add(paths: ["a.txt"]) }
+        #expect(observations.chunks.isEmpty)
+
+        try Data("*.txt -text filter=\(name) diff=\(name)\n".utf8)
+            .write(to: dir.appendingPathComponent(".gitattributes"))
+        try restore(repo, in: dir)
+        try Data("raw\n".utf8).write(to: dir.appendingPathComponent("a.txt"))
+        try repo.add(paths: ["a.txt"])
+        #expect(observations.chunks == [6, 4])
+    }
+
+    @Test("A later check failure cleans sessions from the partial filter list")
+    func failedListLoadCleansSessions() throws {
+        defer { fixtures.removeAll() }
+        let (dir, repo) = try makeRepo()
+        try requireDriver(in: dir)
+        let first = name + "-first"
+        let second = name + "-second"
+        let observations = Observations()
+        var token: LifetimeToken? = LifetimeToken(observations)
+        try GitFilters.register(name: first, attributes: "filter=\(name)", priority: 200,
+                                clean: { [token] _, input in
+                                    _ = token
+                                    return input
+                                })
+        defer { try? GitFilters.unregister(name: first) }
+        token = nil
+        try GitFilters.register(name: second, attributes: "filter=\(name)", priority: 300,
+                                smudge: { _, input in input })
+        defer { try? GitFilters.unregister(name: second) }
+
+        try Data("raw\n".utf8).write(to: dir.appendingPathComponent("a.txt"))
+        expectFailure(.clean) { try repo.add(paths: ["a.txt"]) }
+        #expect(observations.chunks.isEmpty)
+        try GitFilters.unregister(name: first)
+        #expect(observations.chunks == [-1])
     }
 
     @Test("A missing direction is optional passthrough, but fails when required")
@@ -368,6 +416,12 @@ struct GitFiltersTests {
         defer { try? GitFilters.unregister(name: name) }
         #expect(GitFilters.isRegistered(name))
         #expect(throws: Libgit2Error.self) { try GitFilters.register(name: name, GitFilter()) }
+        #expect(throws: Libgit2Error.self) {
+            try GitFilters.register(name: name + "-minimum", priority: Int(Int32.min), GitFilter())
+        }
+        #expect(throws: Libgit2Error.self) {
+            try GitFilters.register(name: name + "-maximum", priority: Int(Int32.max), GitFilter())
+        }
         try restore(repo, in: dir)
         #expect(try Data(contentsOf: dir.appendingPathComponent("a.txt")) == Data("changed\n".utf8))
         try GitFilters.unregister(name: name)

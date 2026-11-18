@@ -65,8 +65,9 @@ try GitFilters.register(name: "copy", GitFilter(
 
 The default attributes match `filter=<registered name>`; `attributes:` accepts
 libgit2's attribute expression syntax. Priority defaults to 200, after CRLF
-(0) and ident (100) on smudge, and before them on clean. Registration rejects
-duplicate names. Use unique names in tests. Unregistering preserves in-flight
+(0) and ident (100) on smudge, and before them on clean; the `Int32.min` and
+`Int32.max` endpoints are reserved for required-driver enforcement. Registration
+rejects duplicate names. Use unique names in tests. Unregistering preserves in-flight
 Swift streams/closures. Because libgit2 keeps raw pointers in loaded filter
 lists, the small C filter struct and its attributes intentionally remain
 allocated for process lifetime after each successful registration cycle.

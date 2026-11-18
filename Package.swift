@@ -33,6 +33,8 @@ import PackageDescription
 //     only the entries of the file being written, not those an `[include]`
 //     file repeats, as git does, and a host can authorise the `[include]`
 //     files libgit2 reads (ConfigIncludePolicy).
+//   • filter.c is shimmed so a failed filter-list load cleans the payloads
+//     earlier filters returned from their check callbacks.
 //   • refdb_fs.c is shimmed so compare-and-delete preserves reflogs on a
 //     mismatch, uses the right linked-worktree path, and serializes packed-ref
 //     read-modify-write cycles across repository handles.
@@ -146,6 +148,10 @@ var excludes: [String] = [
     // set/unset consider only the entries of the file being written and
     // every include file is offered to the host's policy before it is read.
     "src/libgit2/config_file.c",
+
+    // Compiled via Sources/Clibgit2Patches/filter_patched.c, whose failed
+    // list-load path cleans payloads already returned by filter callbacks.
+    "src/libgit2/filter.c",
 
     // Compiled via Sources/Clibgit2Patches/refdb_fs_patched.c, whose guarded
     // delete fixes reflog ordering, linked-worktree paths and packed locking.
