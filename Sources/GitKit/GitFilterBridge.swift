@@ -6,10 +6,13 @@ private let requiredGuardName = "gitkit-required-filter-guard"
 private final class FilterRegistration {
     let name: String
     let filter: GitFilter
+    let driverAttributeIndex: Int?
 
-    init(name: String, filter: GitFilter) {
+    init(name: String, attributes: String, filter: GitFilter) {
         self.name = name
         self.filter = filter
+        driverAttributeIndex = attributes.split(whereSeparator: { $0.isWhitespace })
+            .firstIndex { $0 == "filter" || $0.hasPrefix("filter=") }
     }
 }
 
@@ -47,8 +50,10 @@ final class GitFilterRegistry: @unchecked Sendable {
         }
         mutationLock.lock(); defer { mutationLock.unlock() }
         try installGuard()
-        let pointer = try allocateFilter(attributes: attributes ?? "filter=\(name)")
-        pointer.pointee.context = Unmanaged.passRetained(FilterRegistration(name: name, filter: filter)).toOpaque()
+        let attributes = attributes ?? "filter=\(name)"
+        let pointer = try allocateFilter(attributes: attributes)
+        let registration = FilterRegistration(name: name, attributes: attributes, filter: filter)
+        pointer.pointee.context = Unmanaged.passRetained(registration).toOpaque()
         pointer.pointee.parent.check = filterCheck
         pointer.pointee.parent.stream = filterStream
         pointer.pointee.parent.cleanup = filterCleanup
@@ -158,13 +163,6 @@ private func isRequired(_ driver: String, src: OpaquePointer) throws -> Bool {
     return value != 0
 }
 
-private func driverName(_ src: OpaquePointer, fallback: String) throws -> String {
-    var value: UnsafePointer<CChar>?
-    try check(git_attr_get(&value, git_filter_source_repo(src), 0, git_filter_source_path(src), "filter"))
-    guard git_attr_value(value) == GIT_ATTR_VALUE_STRING, let value else { return fallback }
-    return String(cString: value)
-}
-
 private func failure(_ error: Error, source: GitFilterSource) -> GitFilterError {
     // Preserve a downstream filter's original driver/path and underlying error.
     if let error = error as? GitFilterError { return error }
@@ -207,13 +205,19 @@ private let requiredGuardCheck: git_filter_check_fn = { _, _, src, values in
     } catch { return PendingFilterError.record(failure(error, source: source)) }
 }
 
-private let filterCheck: git_filter_check_fn = { filter, payload, src, _ in
+private let filterCheck: git_filter_check_fn = { filter, payload, src, values in
     guard let filter, let payload, let src else { return -1 }
     let container = UnsafeMutableRawPointer(filter).assumingMemoryBound(to: gitkit_filter.self)
     let registration = Unmanaged<FilterRegistration>.fromOpaque(container.pointee.context).takeUnretainedValue()
-    var source = sourceSnapshot(src, driver: registration.name)
+    // Use libgit2's resolved values, respecting attribute options such as
+    // reading .gitattributes from HEAD rather than the working tree.
+    var driver = registration.name
+    if let index = registration.driverAttributeIndex,
+       let value = values?[index], git_attr_value(value) == GIT_ATTR_VALUE_STRING {
+        driver = String(cString: value)
+    }
+    let source = sourceSnapshot(src, driver: driver)
     do {
-        source = sourceSnapshot(src, driver: try driverName(src, fallback: registration.name))
         let required = try isRequired(source.driver, src: src)
         let factory = source.direction == .clean ? registration.filter.clean : registration.filter.smudge
         guard factory != nil else {
