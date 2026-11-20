@@ -66,6 +66,29 @@ struct PushUpstreamRefspecTests {
         try assertPushSetUpstream(trackingRefExists: false)
     }
 
+    /// Under `core.precomposeunicode` an NFD refspec finds the NFC branch;
+    /// the config keys must use the stored NFC name `@{upstream}` reads.
+    @Test("push setUpstream keys config by the stored branch name")
+    func pushSetUpstreamUsesStoredBranchName() throws {
+        defer { fixtures.removeAll() }
+        let dir = try makeFixtureRepo()
+        let origin = try makeBareOrigin()
+        let nfc = "\u{00E9}"
+        let nfd = "e\u{0301}"
+
+        try runGit(["config", "core.precomposeunicode", "true"], in: dir)
+        try runGit(["checkout", "-b", nfc], in: dir)
+        let repo = try Repository.open(at: dir)
+        try repo.addRemote(name: "origin", url: origin)
+
+        try repo.push(remote: "origin", refspec: nfd, setUpstream: true, progress: { _ in })
+
+        let configured = try runGit(["config", "--get-regexp", "^branch\\."], in: dir)
+        #expect(configured.utf8.elementsEqual(
+            "branch.\(nfc).remote origin\nbranch.\(nfc).merge refs/heads/\(nfc)\n".utf8))
+        #expect(try repo.upstreamBranch(of: nfc) != nil)
+    }
+
     private func assertPushSetUpstream(trackingRefExists: Bool) throws {
         defer { fixtures.removeAll() }
         let dir = try makeFixtureRepo()

@@ -651,9 +651,7 @@ extension Repository {
     private func setUpstreamForRefspec(
         remote: String, refspec: String
     ) throws {
-        let body = refspec.hasPrefix("+")
-            ? String(refspec.dropFirst())
-            : refspec
+        let body = refspec.hasPrefix("+") ? String(refspec.dropFirst()) : refspec
 
         let src: String
         let dst: String
@@ -673,16 +671,22 @@ extension Repository {
         // Only a local branch gets an upstream; a revision pushed by
         // expression (`HEAD^`, an object ID) leaves the config alone.
         var branch: OpaquePointer?
-        let lookupRC = git_branch_lookup(&branch, repo, localBranch, GIT_BRANCH_LOCAL)
-        guard lookupRC == 0 else { return }
+        guard git_branch_lookup(&branch, repo, localBranch, GIT_BRANCH_LOCAL) == 0 else { return }
         defer { git_reference_free(branch) }
+
+        // The lookup precomposes under `core.precomposeunicode`; key the
+        // config by the stored name, which is what `@{upstream}` reads.
+        var namePtr: UnsafePointer<CChar>?
+        try check(git_branch_name(&namePtr, branch))
+        let branchName = namePtr.map { String(cString: $0) } ?? localBranch
+        let mergeBranch = dst == src ? branchName : upstreamBranch
 
         // `git push -u` writes these keys even when no fetch refspec maps
         // the branch onto a remote-tracking ref. `git_branch_set_upstream`
         // cannot: it looks that ref up and fails with "could not determine
         // remote", or "cannot set upstream" when the ref was never created.
-        try configSet("branch.\(localBranch).remote", remote)
-        try configSet("branch.\(localBranch).merge", "refs/heads/\(upstreamBranch)")
+        try configSet("branch.\(branchName).remote", remote)
+        try configSet("branch.\(branchName).merge", "refs/heads/\(mergeBranch)")
     }
 
     private func localBranchName(from ref: String) -> String? {
