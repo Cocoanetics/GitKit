@@ -66,8 +66,10 @@ struct PushUpstreamRefspecTests {
         try assertPushSetUpstream(trackingRefExists: false)
     }
 
+    #if os(macOS)
     /// Under `core.precomposeunicode` an NFD refspec finds the NFC branch;
     /// the config keys must use the stored NFC name `@{upstream}` reads.
+    /// libgit2 precomposes only on Apple platforms.
     @Test("push setUpstream keys config by the stored branch name")
     func pushSetUpstreamUsesStoredBranchName() throws {
         defer { fixtures.removeAll() }
@@ -88,6 +90,7 @@ struct PushUpstreamRefspecTests {
             "branch.\(nfc).remote origin\nbranch.\(nfc).merge refs/heads/\(nfc)\n".utf8))
         #expect(try repo.upstreamBranch(of: nfc) != nil)
     }
+    #endif
 
     private func assertPushSetUpstream(trackingRefExists: Bool) throws {
         defer { fixtures.removeAll() }
