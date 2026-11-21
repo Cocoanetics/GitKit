@@ -11,8 +11,11 @@ import Testing
 private final class UpdateLog: @unchecked Sendable {
     private let lock = NSLock()
     private var calls: [[PushUpdate]] = []
+    private var lines: [String] = []
     func append(_ updates: [PushUpdate]) { lock.lock(); calls.append(updates); lock.unlock() }
+    func write(_ line: String) { lock.lock(); lines.append(line); lock.unlock() }
     var all: [[PushUpdate]] { lock.lock(); defer { lock.unlock() }; return calls }
+    var output: String { lock.lock(); defer { lock.unlock() }; return lines.joined() }
 }
 
 @Suite("Push updates before sending")
@@ -133,6 +136,52 @@ struct PushUpdateTests {
             progress: { _ in }, beforeSending: { log.append($0) })
         // git runs its pre-push hook here too, with nothing on stdin.
         #expect(log.all == [[]])
+    }
+
+    @Test("source changes during the callback do not change the send",
+          arguments: [false, true], [(false, false), (false, true), (true, false), (true, true)])
+    func frozenSources(useLeases: Bool, sourceChange: (Bool, Bool)) throws {
+        defer { fixtures.removeAll() }
+        let (upToDate, deleteSource) = sourceChange
+        let (remote, work) = try makeRemoteAndClone()
+        let before = try runGit(["rev-parse", "main"], in: remote)
+        try runGit(["commit", "-q", "--allow-empty", "-m", "two"], in: work)
+        let announced = upToDate ? before : try runGit(["rev-parse", "main"], in: work)
+        try runGit(["commit", "-q", "--allow-empty", "-m", "three"], in: work)
+        let later = try runGit(["rev-parse", "main"], in: work)
+        try runGit(["update-ref", "refs/heads/main", announced], in: work)
+        let log = UpdateLog()
+        let callback: ([PushUpdate]) throws -> Void = { updates in
+            log.append(updates)
+            if deleteSource {
+                try runGit(["update-ref", "-d", "refs/heads/main"], in: work)
+            } else {
+                try runGit(["update-ref", "refs/heads/main", later], in: work)
+            }
+        }
+        let repository = try Repository.open(at: work)
+        let pushed: [String]
+        // Pattern expansion also has to keep ref names in the summary
+        // even though libgit2 receives object IDs as its sources.
+        let refspecs = ["refs/heads/*:refs/heads/*"]
+        if useLeases {
+            pushed = try repository.push(
+                remote: "origin", refspecs: refspecs, setUpstream: false,
+                leases: PushLeases(trackingForRest: true),
+                progress: { log.write($0) }, beforeSending: callback)
+        } else {
+            pushed = try repository.push(
+                remote: "origin", refspecs: refspecs, setUpstream: false,
+                progress: { log.write($0) }, beforeSending: callback)
+        }
+        #expect(log.all == [upToDate ? [] : [
+            PushUpdate(localRef: "refs/heads/main", localOID: announced,
+                       remoteRef: "refs/heads/main", remoteOID: before)
+        ]])
+        #expect(try runGit(["rev-parse", "main"], in: remote) == announced)
+        #expect(pushed.map { String($0.drop(while: { $0 == "+" })) }
+                == ["refs/heads/main:refs/heads/main"])
+        #expect(log.output.contains(upToDate ? "Everything up-to-date" : "main -> main"))
     }
 
     @Test("the leases overload reports the updates the lease lets through")
