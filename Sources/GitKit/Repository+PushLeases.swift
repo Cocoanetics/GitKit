@@ -76,7 +76,7 @@ public struct PushLeases: Sendable, Equatable {
 extension Repository {
 
     /// Push `refspecs` to `remote` in one operation, as
-    /// ``push(remote:refspecs:setUpstream:connectingTo:credentials:pushOptions:progress:)`` does,
+    /// ``push(remote:refspecs:setUpstream:connectingTo:credentials:pushOptions:progress:beforeSending:)`` does,
     /// with `git push --force-with-lease` semantics for the refs
     /// `leases` covers.
     ///
@@ -97,7 +97,7 @@ extension Repository {
     ///     upstream afterwards, as `git push -u` does.
     ///   - leases: The `--force-with-lease` options given.
     ///   - location: Where to connect instead, as for
-    ///     ``push(remote:refspecs:setUpstream:connectingTo:credentials:pushOptions:progress:)``.
+    ///     ``push(remote:refspecs:setUpstream:connectingTo:credentials:pushOptions:progress:beforeSending:)``.
     ///   - credentials: Invoked by the transport on auth challenges.
     ///   - pushOptions: Options sent to the server, as `git push -o`
     ///     does; as for ``push(remote:refspec:setUpstream:credentials:pushOptions:progress:)``,
@@ -105,6 +105,9 @@ extension Repository {
     ///     by remote" otherwise), and a local path never supports them.
     ///   - progress: Sink for real-git-style progress lines (defaults to
     ///     the process's stderr).
+    ///   - beforeSending: The pre-push updates, as for
+    ///     ``push(remote:refspecs:setUpstream:connectingTo:credentials:pushOptions:progress:beforeSending:)``,
+    ///     once the leases have settled them.
     /// - Returns: The refspecs pushed, one per ref and fully qualified.
     @discardableResult
     public func push(
@@ -115,7 +118,8 @@ extension Repository {
         connectingTo location: String? = nil,
         credentials: CredentialProvider? = nil,
         pushOptions: [String] = [],
-        progress: @escaping @Sendable (String) -> Void = GitProgress.standardError
+        progress: @escaping @Sendable (String) -> Void = GitProgress.standardError,
+        beforeSending: (([PushUpdate]) throws -> Void)? = nil
     ) throws -> [String] {
         // As git does, every expected object ID is read before anything
         // is sent, whether or not its lease comes to apply.
@@ -130,7 +134,8 @@ extension Repository {
         return try pushImpl(
             remote: remote, refspecs: refspecs, setUpstream: setUpstream,
             location: location, forceWithLease: nil, leases: leases,
-            credentials: credentials, pushOptions: pushOptions, progress: progress)
+            credentials: credentials, pushOptions: pushOptions, progress: progress,
+            beforeSending: beforeSending)
     }
 
     /// Refuses push options the push-option pkt-line can't carry.

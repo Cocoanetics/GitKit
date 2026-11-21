@@ -76,6 +76,12 @@ extension Repository {
     ///     in an option throws `GIT_EINVALID`.
     ///   - progress: Sink for real-git-style progress lines (defaults to
     ///     the process's stderr).
+    ///   - beforeSending: Called once the push knows what it sends and
+    ///     before it sends anything, with the updates git would hand its
+    ///     pre-push hook: the ones its rules and the leases let through,
+    ///     those already up to date left out, in the order sent. If it
+    ///     throws, the push disconnects without sending and rethrows. Not
+    ///     called when there is nothing to send.
     /// - Returns: The refspecs pushed, one per ref and fully qualified
     ///   (`+refs/heads/main:refs/heads/main`), including refs that were
     ///   already up to date; empty when there was nothing to send.
@@ -87,12 +93,13 @@ extension Repository {
         connectingTo location: String? = nil,
         credentials: CredentialProvider? = nil,
         pushOptions: [String] = [],
-        progress: @escaping @Sendable (String) -> Void = GitProgress.standardError
+        progress: @escaping @Sendable (String) -> Void = GitProgress.standardError,
+        beforeSending: (([PushUpdate]) throws -> Void)? = nil
     ) throws -> [String] {
         try pushImpl(
             remote: remote, refspecs: refspecs, setUpstream: setUpstream,
             location: location, forceWithLease: nil, credentials: credentials,
-            pushOptions: pushOptions, progress: progress)
+            pushOptions: pushOptions, progress: progress, beforeSending: beforeSending)
     }
 
     /// Push `refspec` to `remote` with `--force-with-lease` semantics.
@@ -167,7 +174,8 @@ extension Repository {
         leases: PushLeases? = nil,
         credentials: CredentialProvider?,
         pushOptions: [String] = [],
-        progress: @escaping @Sendable (String) -> Void
+        progress: @escaping @Sendable (String) -> Void,
+        beforeSending: (([PushUpdate]) throws -> Void)? = nil
     ) throws -> [String] {
         try validatePushOptions(pushOptions)
         let (remoteHandle, isConfigured) = try lookupRemote(remote)
@@ -252,6 +260,7 @@ extension Repository {
                     git_remote_disconnect(remoteHandle)
                     return .pushed(accepted: [], rejected: rejected, remoteRefs: remoteRefs)
                 }
+                try announce(accepted, remoteRefs: remoteRefs, to: beforeSending, remote: remoteHandle)
                 let rc = sendPush(
                     remoteHandle, refspecs: accepted, pushOptions: pushOptions, options: &opts)
                 if rc < 0, let failure = pushLease?.failure {
@@ -561,23 +570,6 @@ extension Repository {
         }
 
         return PushLeaseCheck(remoteRef: destination, expectedOID: expectedOID)
-    }
-
-    func destinationRefName(fromPushRefspec refspec: String) -> String? {
-        let body = refspec.hasPrefix("+")
-            ? String(refspec.dropFirst())
-            : refspec
-
-        guard let colon = body.firstIndex(of: ":") else {
-            return body.isEmpty ? nil : body
-        }
-
-        let dstStart = body.index(after: colon)
-        let dst = String(body[dstStart...])
-        if !dst.isEmpty { return dst }
-
-        let src = String(body[..<colon])
-        return src.isEmpty ? nil : src
     }
 
     private func qualifiedPushSource(_ src: String) throws -> (String, String) {
