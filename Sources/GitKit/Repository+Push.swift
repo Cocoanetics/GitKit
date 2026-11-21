@@ -76,6 +76,13 @@ extension Repository {
     ///     in an option throws `GIT_EINVALID`.
     ///   - progress: Sink for real-git-style progress lines (defaults to
     ///     the process's stderr).
+    ///   - beforeSending: Called once the push knows what it sends and
+    ///     before it sends anything, with the updates git would hand its
+    ///     pre-push hook: the ones its rules and the leases let through,
+    ///     those already up to date left out, in the order sent. If it
+    ///     throws, the push disconnects without sending and rethrows. Called
+    ///     with an empty array when all accepted refs are already up to
+    ///     date; not called when no refspecs are accepted.
     /// - Returns: The refspecs pushed, one per ref and fully qualified
     ///   (`+refs/heads/main:refs/heads/main`), including refs that were
     ///   already up to date; empty when there was nothing to send.
@@ -87,12 +94,13 @@ extension Repository {
         connectingTo location: String? = nil,
         credentials: CredentialProvider? = nil,
         pushOptions: [String] = [],
-        progress: @escaping @Sendable (String) -> Void = GitProgress.standardError
+        progress: @escaping @Sendable (String) -> Void = GitProgress.standardError,
+        beforeSending: (([PushUpdate]) throws -> Void)? = nil
     ) throws -> [String] {
         try pushImpl(
             remote: remote, refspecs: refspecs, setUpstream: setUpstream,
             location: location, forceWithLease: nil, credentials: credentials,
-            pushOptions: pushOptions, progress: progress)
+            pushOptions: pushOptions, progress: progress, beforeSending: beforeSending)
     }
 
     /// Push `refspec` to `remote` with `--force-with-lease` semantics.
@@ -150,7 +158,7 @@ extension Repository {
         /// is what the remote had.
         case pushed(
             accepted: [String], rejected: [(refspec: String, reason: PushRejectedError.Reason)],
-            remoteRefs: RemoteRefs)
+            sent: [String], remoteRefs: RemoteRefs)
         /// Nothing to send to a remote that has refs.
         case nothingToSend
         /// Nothing to send to a remote without any refs, which git refuses.
@@ -167,7 +175,8 @@ extension Repository {
         leases: PushLeases? = nil,
         credentials: CredentialProvider?,
         pushOptions: [String] = [],
-        progress: @escaping @Sendable (String) -> Void
+        progress: @escaping @Sendable (String) -> Void,
+        beforeSending: (([PushUpdate]) throws -> Void)? = nil
     ) throws -> [String] {
         try validatePushOptions(pushOptions)
         let (remoteHandle, isConfigured) = try lookupRemote(remote)
@@ -250,15 +259,17 @@ extension Repository {
                     pushRefspecs, leases: leases, remoteRefs: remoteRefs, remote: remoteHandle)
                 guard !accepted.isEmpty else {
                     git_remote_disconnect(remoteHandle)
-                    return .pushed(accepted: [], rejected: rejected, remoteRefs: remoteRefs)
+                    return .pushed(accepted: [], rejected: rejected, sent: [], remoteRefs: remoteRefs)
                 }
+                let sent = try announce(
+                    accepted, remoteRefs: remoteRefs, to: beforeSending, remote: remoteHandle, payload: payload)
                 let rc = sendPush(
-                    remoteHandle, refspecs: accepted, pushOptions: pushOptions, options: &opts)
+                    remoteHandle, refspecs: sent, pushOptions: pushOptions, options: &opts)
                 if rc < 0, let failure = pushLease?.failure {
                     throw failure
                 }
                 try check(rc)
-                return .pushed(accepted: accepted, rejected: rejected, remoteRefs: remoteRefs)
+                return .pushed(accepted: accepted, rejected: rejected, sent: sent, remoteRefs: remoteRefs)
             },
             outReporter: { reporter = $0 })
 
@@ -268,9 +279,9 @@ extension Repository {
 
         var pushed: [String] = []
         var rejections: [PushRejectedError.Rejection] = []
-        if case .pushed(let accepted, let rejected, let remoteRefs) = outcome {
+        if case .pushed(let accepted, let rejected, let sent, let remoteRefs) = outcome {
             (pushed, rejections) = settle(
-                accepted, rejected: rejected, remoteRefs: remoteRefs,
+                accepted, rejected: rejected, sent: sent, remoteRefs: remoteRefs,
                 typedSources: plan.typedSourcesByRefspec, reporter: &reporter)
         }
 
@@ -318,6 +329,7 @@ extension Repository {
     private func settle(
         _ accepted: [String],
         rejected: [(refspec: String, reason: PushRejectedError.Reason)],
+        sent: [String],
         remoteRefs: RemoteRefs,
         typedSources: [[UInt8]: String],
         reporter: inout ProgressReporter
@@ -357,7 +369,7 @@ extension Repository {
         // it (`[remote failure]`). Each report goes to one update.
         var reports = Dictionary(reporter.reportedRefs.map { (Array($0.utf8), 1) }, uniquingKeysWith: +)
         var unreported = Set<[UInt8]>()
-        for refspec in accepted where !isUpToDate(refspec, remoteRefs: remoteRefs) {
+        for (refspec, frozen) in zip(accepted, sent) where !isUpToDate(frozen, remoteRefs: remoteRefs) {
             guard let destination = destinationRefName(fromPushRefspec: refspec) else { continue }
             if let count = reports[Array(destination.utf8)], count > 0 {
                 reports[Array(destination.utf8)] = count - 1
@@ -561,23 +573,6 @@ extension Repository {
         }
 
         return PushLeaseCheck(remoteRef: destination, expectedOID: expectedOID)
-    }
-
-    func destinationRefName(fromPushRefspec refspec: String) -> String? {
-        let body = refspec.hasPrefix("+")
-            ? String(refspec.dropFirst())
-            : refspec
-
-        guard let colon = body.firstIndex(of: ":") else {
-            return body.isEmpty ? nil : body
-        }
-
-        let dstStart = body.index(after: colon)
-        let dst = String(body[dstStart...])
-        if !dst.isEmpty { return dst }
-
-        let src = String(body[..<colon])
-        return src.isEmpty ? nil : src
     }
 
     private func qualifiedPushSource(_ src: String) throws -> (String, String) {

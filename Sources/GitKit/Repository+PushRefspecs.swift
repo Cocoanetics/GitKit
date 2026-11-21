@@ -478,4 +478,21 @@ extension Repository {
         }
         return names.sorted()
     }
+
+    func destinationRefName(fromPushRefspec refspec: String) -> String? {
+        let body = refspec.hasPrefix("+")
+            ? String(refspec.dropFirst())
+            : refspec
+
+        guard let colon = body.firstIndex(of: ":") else {
+            return body.isEmpty ? nil : body
+        }
+
+        let dstStart = body.index(after: colon)
+        let dst = String(body[dstStart...])
+        if !dst.isEmpty { return dst }
+
+        let src = String(body[..<colon])
+        return src.isEmpty ? nil : src
+    }
 }
