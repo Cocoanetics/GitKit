@@ -35,6 +35,8 @@ import PackageDescription
 //     files libgit2 reads (ConfigIncludePolicy).
 //   • filter.c is shimmed so a failed filter-list load cleans the payloads
 //     earlier filters returned from their check callbacks.
+//   • streams/openssl_dynamic.c is shimmed to hide its OpenSSL function-pointer
+//     globals, which otherwise interpose system OpenSSL functions on ELF hosts.
 //   • refdb_fs.c is shimmed so compare-and-delete preserves reflogs on a
 //     mismatch, uses the right linked-worktree path, and serializes packed-ref
 //     read-modify-write cycles across repository handles.
@@ -152,6 +154,9 @@ var excludes: [String] = [
     // Compiled via Sources/Clibgit2Patches/filter_patched.c, whose failed
     // list-load path cleans payloads already returned by filter callbacks.
     "src/libgit2/filter.c",
+
+    // Internal OpenSSL function-pointer globals must not be dynamic exports.
+    "src/libgit2/streams/openssl_dynamic.c",
 
     // Compiled via Sources/Clibgit2Patches/refdb_fs_patched.c, whose guarded
     // delete fixes reflog ordering, linked-worktree paths and packed locking.
