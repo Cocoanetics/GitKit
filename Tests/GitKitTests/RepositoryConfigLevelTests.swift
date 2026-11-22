@@ -215,7 +215,7 @@ struct RepositoryConfigLevelTests {
         try repo.addConfigEntries([
             ConfigEntry(name: "x.y", value: "1"),
             ConfigEntry(name: "a.b", value: "z"),
-            ConfigEntry(name: "x.y", value: "2"),
+            ConfigEntry(name: "x.y", value: "2")
         ])
         #expect(try repo.configGet("x.y") == "2")
         #expect(try Self.multivar("x.y", in: repo) == ["1", "2"])
@@ -231,7 +231,7 @@ struct RepositoryConfigLevelTests {
             ConfigEntry(name: "t.valueless", value: nil),
             ConfigEntry(name: "t.empty", value: ""),
             ConfigEntry(name: "t.multi", value: nil),
-            ConfigEntry(name: "t.multi", value: ""),
+            ConfigEntry(name: "t.multi", value: "")
         ])
         #expect(try Self.entry("t.valueless", in: repo)?.value == nil)
         #expect(try Self.entry("t.empty", in: repo)?.value == "")
@@ -248,7 +248,7 @@ struct RepositoryConfigLevelTests {
             "  padded  ", "#hash", "; semi", "a # b ; c", "\"quoted\"", "say \"hi\"",
             "back\\slash", "ends\\", "\\\"", "\\n literal", "line\nbreak", "tab\there",
             "\u{08}bs", "cr\rlf", "trailing\r", "\n", "é ünï 漢字 🙂", "[core]", "x = y",
-            "=", "\u{01}\u{1F}\u{7F}", "multi\\\nline",
+            "=", "\u{01}\u{1F}\u{7F}", "multi\\\nline"
         ]
         try repo.addConfigEntries(values.enumerated().map {
             ConfigEntry(name: "v.k\($0.offset)", value: $0.element)
@@ -266,7 +266,7 @@ struct RepositoryConfigLevelTests {
         try repo.addConfigEntries([
             ConfigEntry(name: "Core.AutoCRLF", value: "input"),
             ConfigEntry(name: "URL.\(subsection).insteadOf", value: "alias:"),
-            ConfigEntry(name: "a-b.c-d", value: "1"),
+            ConfigEntry(name: "a-b.c-d", value: "1")
         ], name: "command line")
 
         #expect(try repo.configGet("core.autocrlf") == "input")

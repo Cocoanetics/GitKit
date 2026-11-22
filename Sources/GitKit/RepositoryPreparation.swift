@@ -21,9 +21,11 @@ import CGitKit
 /// Throwing aborts the operation; the error is rethrown as is, and what the
 /// operation created is removed (see each operation for exactly what).
 ///
-/// A configuration the closure installs (`git_repository_set_config`) must
-/// keep the repository's own config file as its writable local level: the
-/// clone writes `remote.origin.*` and the branch's tracking entries there.
+/// Operation-only configuration goes in with
+/// ``Repository/addConfigFile(at:level:)`` and
+/// ``Repository/addConfigEntries(_:level:name:)``, which keep the
+/// repository's own config file as its writable local level: the clone
+/// writes `remote.origin.*` and the branch's tracking entries there.
 ///
 /// Keeping the clone's `Repository` beyond the closure is supported only
 /// through the clone's result. If the clone fails after the closure returned,
