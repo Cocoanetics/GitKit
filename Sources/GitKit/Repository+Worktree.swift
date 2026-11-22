@@ -117,8 +117,23 @@ extension Repository {
                 | UInt32(GIT_CHECKOUT_DONT_UPDATE_INDEX.rawValue)
                 | UInt32(GIT_CHECKOUT_DONT_WRITE_INDEX.rawValue)
 
+        // libgit2 rolls nothing back when the add fails part way: note
+        // what is there now, to remove only what the add created.
+        let adminDir = try repositoryCommonDir().appendingPathComponent("worktrees")
+        let created = CreatedWorktreePaths(
+            adminDir: Self.exists(adminDir) ? nil : adminDir,
+            gitDir: Self.exists(adminDir.appendingPathComponent(name))
+                ? nil : adminDir.appendingPathComponent(name),
+            workdir: Self.exists(path) ? nil : path)
+
         var worktree: OpaquePointer?
         do {
+            // libgit2 opens the new worktree's repository itself, reading
+            // the shared config: this repository's include policy covers
+            // that open, as `Repository.open(at:includePolicy:)` does.
+            let restoreThreadPolicy = includePolicy.map(ConfigIncludePolicyBox.init)?
+                .setForCurrentThread()
+            defer { restoreThreadPolicy?() }
             try name.withCString { nameC in
                 try path.path.withCString { pathC in
                     _ = try check(git_worktree_add(
@@ -126,6 +141,7 @@ extension Repository {
                 }
             }
         } catch {
+            created.remove()
             if createdBranch {
                 _ = git_branch_delete(branchRef)
             }
@@ -139,6 +155,7 @@ extension Repository {
                 at: path, preparation: preparation, strategy: checkoutStrategy)
         } catch {
             pruneCreatedWorktree(named: name)
+            created.remove()
             if createdBranch {
                 _ = git_branch_delete(branchRef)
             }
@@ -314,15 +331,26 @@ extension Repository {
         return String(name.dropFirst(prefix.count))
     }
 
+    /// The first of `preferred`, `preferred1`, … that is neither a listed
+    /// worktree nor an administrative directory left over from one that
+    /// never completed (libgit2 lists only complete ones).
     private func uniqueWorktreeName(preferred: String) throws -> String {
         let names = Set(try linkedWorktreeNames())
-        guard names.contains(preferred) else { return preferred }
+        let adminDir = try repositoryCommonDir().appendingPathComponent("worktrees")
+        func taken(_ name: String) -> Bool {
+            names.contains(name) || Self.exists(adminDir.appendingPathComponent(name))
+        }
+        guard taken(preferred) else { return preferred }
 
         var suffix = 1
-        while names.contains("\(preferred)\(suffix)") {
+        while taken("\(preferred)\(suffix)") {
             suffix += 1
         }
         return "\(preferred)\(suffix)"
+    }
+
+    private static func exists(_ url: URL) -> Bool {
+        FileManager.default.fileExists(atPath: url.path)
     }
 
     private func linkedWorktreeNames() throws -> [String] {
@@ -497,6 +525,23 @@ extension Repository {
 
         if rc < 0 { try check(rc) }
         return payload.name
+    }
+}
+
+/// What a failed `git_worktree_add` may have left: only paths that did not
+/// exist before the call, so removing them never touches what was there.
+private struct CreatedWorktreePaths {
+    let adminDir: URL?
+    let gitDir: URL?
+    let workdir: URL?
+
+    func remove() {
+        let manager = FileManager.default
+        if let gitDir { try? manager.removeItem(at: gitDir) }
+        if let workdir { try? manager.removeItem(at: workdir) }
+        if let adminDir, (try? manager.contentsOfDirectory(atPath: adminDir.path))?.isEmpty == true {
+            try? manager.removeItem(at: adminDir)
+        }
     }
 }
 

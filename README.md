@@ -118,8 +118,14 @@ Operations are synchronous, `throws` (typed ``Libgit2Error``), and return
   is emptied, not removed; a branch is deleted only if the call created
   it). If a clone fails after its preparation, libgit2 has freed the
   handle: a `Repository` the closure kept stops the process on its next
-  use rather than touch freed memory. Without a preparation both behave as
-  before.
+  use rather than touch freed memory. Without a preparation both check out
+  as before. With or without one, `worktreeAdd` puts the repository's
+  include policy over libgit2's own open of the new worktree, and on
+  failure removes the administrative and working directories it created
+  (never a path that was there before). A name whose administrative
+  directory an incomplete add left behind is skipped. A single-branch
+  clone discovers the remote's default branch through the clone's own
+  config, as the fetch does.
 - **Work** — `add`, `commitDetailed`, `amendDetailed`, `status`, `diff`,
   `checkout`, `checkoutNewBranch`, `checkoutPaths`, `reset`,
   `move`/`remove` (git mv/rm).
