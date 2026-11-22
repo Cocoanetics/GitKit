@@ -405,14 +405,104 @@ struct RepositoryPreparationTests {
         #expect(try primary.linkedWorktreeList().map(\.name) == ["linked"])
     }
 
+    @Test("single-branch default-branch discovery uses the prepared config")
+    func singleBranchDiscoveryUsesPreparedConfig() throws {
+        defer { fixtures.removeAll() }
+        let (source, _) = try makeSource()
+        let alias = "gitkit-alias-\(UUID().uuidString):"
+        let rewrite = "[url \"\(source.path)\"]\n\tinsteadOf = \(alias)\n"
+
+        let clone = try Repository.clone(
+            fromRemote: alias, to: fixtures.url("clone"), singleBranch: true, progress: Self.silent,
+            preparation: RepositoryPreparation { try Self.installOperationConfig(rewrite, into: $0) })
+
+        #expect(try clone.currentBranch() == "main")
+        #expect(try clone.configGet("remote.origin.url") == alias)
+    }
+
+    @Test("this repository's include policy covers libgit2's own open of the new worktree")
+    func includePolicyCoversNativeWorktreeOpen() throws {
+        defer { fixtures.removeAll() }
+        let (source, _) = try makeSource()
+        let secret = fixtures.url("secret.config")
+        try "[test]\n\tsecret = 1\n".write(to: secret, atomically: true, encoding: .utf8)
+        let config = source.appendingPathComponent(".git/config")
+        try (try String(contentsOf: config, encoding: .utf8)
+            + "[includeIf \"gitdir:**/worktrees/linked\"]\n\tpath = \(secret.path)\n")
+            .write(to: config, atomically: true, encoding: .utf8)
+        let asked = ConfigIncludePolicyTests.Recorder()
+        let primary = try Repository.open(at: source, includePolicy: ConfigIncludePolicy {
+            asked.record($0)
+            return true
+        })
+        var askedBeforePreparing = 0
+
+        try primary.worktreeAdd(
+            path: fixtures.url("linked"), branch: "feature",
+            preparation: RepositoryPreparation { _ in
+                askedBeforePreparing = asked.includes.filter { $0.path == secret.path }.count
+            })
+
+        // Once for libgit2's own open inside `git_worktree_add`, once for
+        // the open that hands the worktree to the preparation.
+        #expect(askedBeforePreparing == 2)
+    }
+
+    @Test("a failed native add removes only what it created and frees its name")
+    func nativeAddFailureRollsBack() throws {
+        defer { fixtures.removeAll() }
+        let (source, primary) = try makeSource()
+        let occupied = try fixtures.directory("occupied/linked")
+        try Data("mine\n".utf8).write(to: occupied.appendingPathComponent("keep.txt"))
+        let admin = source.appendingPathComponent(".git/worktrees")
+
+        for preparation in [nil, RepositoryPreparation { _ in }] {
+            #expect(throws: Libgit2Error.self) {
+                if let preparation {
+                    try primary.worktreeAdd(path: occupied, branch: "feature", preparation: preparation)
+                } else {
+                    try primary.worktreeAdd(path: occupied, branch: "feature")
+                }
+            }
+            #expect(try Self.contents(of: occupied) == ["keep.txt"])
+            #expect(!FileManager.default.fileExists(atPath: admin.path))
+            #expect(try primary.localBranches() == ["main"])
+        }
+
+        let path = fixtures.url("linked")
+        try primary.worktreeAdd(path: path, branch: "feature", preparation: RepositoryPreparation { _ in })
+        #expect(try primary.linkedWorktreeList().map(\.name) == ["linked"])
+    }
+
+    @Test("an administrative directory left by an incomplete add is skipped, not reused")
+    func staleAdministrativeDirectoryIsSkipped() throws {
+        defer { fixtures.removeAll() }
+        let (source, primary) = try makeSource()
+        let stale = source.appendingPathComponent(".git/worktrees/linked")
+        try FileManager.default.createDirectory(at: stale, withIntermediateDirectories: true)
+
+        let worktree = try primary.worktreeAdd(
+            path: fixtures.url("linked"), branch: "feature", preparation: RepositoryPreparation { _ in })
+
+        #expect(try primary.linkedWorktreeList().map(\.name) == ["linked1"])
+        #expect(try Self.contents(of: stale) == [])
+        #expect(try worktree.currentBranch() == "feature")
+    }
+
     // MARK: Retained handle
 
     @Test("using a kept clone repository after the clone failed stops the process")
-    func keptRepositoryStopsAfterFailure() async {
-        let result = await #expect(processExitsWith: .failure, observing: [\.standardErrorContent]) {
-            let fixtures = TemporaryRepositories()
-            defer { fixtures.removeAll() }
-            let source = try fixtures.directory("source")
+    func keptRepositoryStopsAfterFailure() async throws {
+        // The child stops before any cleanup of its own could run: this
+        // process owns the fixtures and removes them.
+        defer { fixtures.removeAll() }
+        let root = try fixtures.directory("exit-test").path
+        let result = await #expect(
+            processExitsWith: .failure, observing: [\.standardErrorContent]
+        ) { [root = root as String] in
+            let base = URL(fileURLWithPath: root, isDirectory: true)
+            let source = base.appendingPathComponent("source")
+            try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
             let repo = try Repository.initialize(at: source, initialBranch: "main")
             try Data("a\n".utf8).write(to: source.appendingPathComponent("a.txt"))
             try repo.add(paths: [])
@@ -422,7 +512,7 @@ struct RepositoryPreparationTests {
                 sign: .noSign)
             var kept: Repository?
             _ = try? Repository.clone(
-                fromRemote: source.path, to: fixtures.url("clone"), branch: "does-not-exist",
+                fromRemote: source.path, to: base.appendingPathComponent("clone"), branch: "does-not-exist",
                 progress: { _ in }, preparation: RepositoryPreparation { kept = $0 })
             // Only a kept, invalidated repository gets this far.
             guard let kept, !kept.isValid else { return }
