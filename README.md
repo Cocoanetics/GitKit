@@ -104,6 +104,22 @@ Operations are synchronous, `throws` (typed ``Libgit2Error``), and return
   `CredentialProvider` closures for HTTPS/SSH auth, a pluggable progress
   sink, and `depth`/`singleBranch`/`branch` for shallow, single-branch
   clones).
+- **Preparing before the first checkout** — `clone(…preparation:)` and
+  `worktreeAdd(…preparation:)` take a `RepositoryPreparation`: a closure
+  given the very `Repository` the operation goes on with, after it exists
+  and before any working-tree file is written, so a host can install its
+  per-operation config, credentials or filter setup there instead of
+  process-wide. A clone runs it from libgit2's `repository_cb`, before
+  `origin`, the fetch and the checkout; a worktree is created without an
+  index or files, its own repository (private git directory, shared common
+  directory) is prepared, and its initial checkout then runs once on it.
+  Both return that repository. A thrown error comes back as is, after
+  removing only what the operation created (an existing empty clone target
+  is emptied, not removed; a branch is deleted only if the call created
+  it). If a clone fails after its preparation, libgit2 has freed the
+  handle: a `Repository` the closure kept stops the process on its next
+  use rather than touch freed memory. Without a preparation both behave as
+  before.
 - **Work** — `add`, `commitDetailed`, `amendDetailed`, `status`, `diff`,
   `checkout`, `checkoutNewBranch`, `checkoutPaths`, `reset`,
   `move`/`remove` (git mv/rm).

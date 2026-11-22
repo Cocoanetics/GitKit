@@ -110,7 +110,6 @@ extension Repository {
             progress: progress, preparing: preparation)
     }
 
-    // swiftlint:disable:next function_parameter_count
     private static func clone(
         fromRemote remote: String,
         to directory: URL,
