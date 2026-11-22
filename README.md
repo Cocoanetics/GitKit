@@ -190,9 +190,49 @@ Operations are synchronous, `throws` (typed ``Libgit2Error``), and return
   `branchDelete`/`branchRename`,
   `tagList`/`tagCreate`/`tagCreateAnnotated`/`tagDelete`, `resolveOID`,
   `revParse` helpers, `lsTree`, `catFileBlob`/`objectMetadata`.
-- **Integration** — `merge` (fast-forward modes), octopus merges (`mergeHeads(reducing:)`, `octopusMerge`), `rebase`
-  (continue/skip/abort), `cherryPick`, `stash`
-  (save/apply/pop/list/show/branch), `apply` (patches).
+- **Integration** — `merge` (fast-forward modes), non-mutating `mergeTree`
+  (commit and explicit-tree overloads) and `isAncestor`, octopus merges
+  (`mergeHeads(reducing:)`, `octopusMerge`), `rebase` (continue/skip/abort),
+  `cherryPick`, `stash` (save/apply/pop/list/show/branch), `apply` (patches).
+- **Non-mutating merge-tree & ancestry checks** —
+  `mergeTree(ours:theirs:options:)` (commit form with recursive virtual merge
+  bases via `git_merge_commits`), `mergeTree(base:ours:theirs:options:)`
+  (explicit-tree form via `git_merge_trees`), and `isAncestor(_:of:)`
+  (`git merge-base --is-ancestor`). Inputs are resolved and pinned once, and
+  only `Sendable` value types (`MergeTreeResult`, `MergeTreeConflict`) are
+  returned; refs, reflogs, `HEAD`, `MERGE_*`, the index file, and working-tree
+  files are never mutated.
+  - *Object policy*: defaults to `MergeTreeOptions.Objects.inMemory` (a private
+    mempack layered over the repository's object database as read-only
+    alternates with freshening disabled, so no objects are written and existing
+    object/pack timestamps are untouched; newly synthesised result tree OIDs
+    may not exist in the caller's object database afterwards). Passing
+    `.write` persists newly created merge blobs and trees as loose,
+    unreferenced objects (eligible for Git GC) via an independently owned
+    private handle, leaving the caller's handle and refs/index/worktree
+    untouched.
+  - *Attribute source*: defaults to `MergeTreeOptions.AttributeSource.ours`,
+    reading repository `.gitattributes` from the resolved `ours` tree via a
+    private in-memory index — never from the caller's live index or working
+    tree (an intentional divergence from `git merge-tree` in a non-bare
+    checkout so uncommitted or staged `.gitattributes` edits cannot perturb
+    preservation proofs). `.tree(spec)` selects a specific tree; `.none` uses
+    an empty in-memory index (omitting all tree `.gitattributes`). In all
+    modes, `$GIT_COMMON_DIR/info/attributes`, `core.attributesFile` (from the
+    config snapshot, or XDG `git/attributes` when unset), and system
+    `gitattributes` still apply in libgit2's standard precedence.
+  - *Fail-closed limits*: throws `MergeTreeError.unsupportedRenormalize` when
+    `merge.renormalize` is true (libgit2 does not renormalize during merge) and
+    `MergeTreeError.externalMergeDriver(path:driver:)` when a path involved in
+    the merge — including recursive virtual-base steps — selects a configured
+    `merge.<name>.driver` (GitKit never spawns external merge drivers; an
+    unconfigured name falls back to text as Git does, and `favor != .normal`
+    overrides attribute drivers as libgit2 does). Throws
+    `MergeTreeError.invalidRenameThreshold` for thresholds outside `1...100`.
+  - *Cancellation*: checks `Task.checkCancellation()` between stages (before
+    opening, after pinning inputs, during driver inspection, before the merge,
+    and before writing the result tree); an in-flight libgit2 merge call cannot
+    be interrupted mid-flight.
 - **Remotes** — `fetch` (with shallow `depth`), `unshallow`, `push` (incl.
   `-u` upstream wiring and git's per-ref summary; refs git refuses —
   `fetch first`, `non-fast-forward`, a tag that `already exists` — are
