@@ -68,13 +68,13 @@ extension Repository {
     /// path, a submodule or a worktree's repository does not see it. These are
     /// derived again from the new config: the cached `core.*` values,
     /// attribute and ignore files, a loaded index's `core.ignorecase` /
-    /// `core.filemode` / `core.symlinks`, and diff drivers. Settings libgit2
-    /// copies elsewhere are not: those read at open (`core.bare`,
-    /// `core.worktree`, extensions) and those the reference and object
-    /// databases keep once loaded (their `core.ignorecase`,
-    /// `core.precomposeUnicode`, `core.fsyncObjectFiles`). A level meant to
-    /// change those is added before the repository reads a reference or an
-    /// object, as from a clone's preparation.
+    /// `core.filemode` / `core.symlinks`, and diff drivers. Only these: any
+    /// other copy libgit2 keeps is not refreshed, for example the settings
+    /// read at open (`core.bare`, `core.worktree`, extensions) and those the
+    /// reference and object databases keep once loaded (their
+    /// `core.ignorecase`, `core.precomposeUnicode`,
+    /// `core.fsyncObjectFiles`). A level meant to change those is added
+    /// before the repository uses them, as from a clone's preparation.
     ///
     /// Throws, leaving the config as it was, when the path is not a readable
     /// config file, it does not parse or the include policy refuses one of

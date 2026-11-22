@@ -146,9 +146,10 @@ Operations are synchronous, `throws` (typed ``Libgit2Error``), and return
   `.global` scope means that file, not the XDG one. libgit2's cached
   `core.*` values, attribute and ignore files, a loaded index's
   capabilities and diff drivers are derived again, so the next use sees
-  the new level; settings read at open and those the loaded reference and
-  object databases copied (`core.precomposeUnicode`, `core.fsyncObjectFiles`,
-  their `core.ignorecase`) are not. The
+  the new level. Other copies libgit2 keeps are not refreshed, for example
+  settings read at open and those the loaded reference and object databases
+  copied (`core.precomposeUnicode`, `core.fsyncObjectFiles`, their
+  `core.ignorecase`). The
   level belongs to that `Repository` only; add it from a preparation to
   govern a clone or worktree's first checkout. Which files and entries to
   add is the host's policy.
