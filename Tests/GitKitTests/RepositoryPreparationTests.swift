@@ -521,44 +521,52 @@ extension RepositoryPreparationTests {
         #expect(FileManager.default.fileExists(atPath: lock.path))
     }
 
-    @Test("rollback removes a directory only when it is empty or links back to this add")
-    func rollbackProvesOwnership() throws {
+    @Test("rollback removes a directory only while it is empty, even one that links back")
+    func rollbackRemovesOnlyEmptyDirectories() throws {
         defer { fixtures.removeAll() }
         let admin = try fixtures.directory("common/worktrees")
-        func write(_ text: String, to url: URL) throws {
-            try FileManager.default.createDirectory(
-                at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try Data(text.utf8).write(to: url)
-        }
-        // Someone else's: linked to each other, not to this add's paths.
-        let foreignGitDir = admin.appendingPathComponent("linked")
-        let foreignWorkdir = fixtures.url("linked")
-        try write("\(fixtures.url("elsewhere").path)/.git\n", to: foreignGitDir.appendingPathComponent("gitdir"))
-        try write("gitdir: \(admin.appendingPathComponent("other").path)\n",
-                  to: foreignWorkdir.appendingPathComponent(".git"))
-        CreatedWorktreePaths(
-            adminDir: admin, gitDir: foreignGitDir, gitDirExisted: false,
-            workdir: foreignWorkdir, workdirExisted: false).remove()
-        #expect(try Self.contents(of: foreignGitDir) == ["gitdir"])
-        #expect(try Self.contents(of: foreignWorkdir) == [".git"])
-        #expect(FileManager.default.fileExists(atPath: admin.path))
+        // What a raw add of the same name and destination writes: the very
+        // links this add's own would carry, so nothing tells them apart.
+        let gitDir = admin.appendingPathComponent("linked")
+        let workdir = try fixtures.directory("linked")
+        try FileManager.default.createDirectory(at: gitDir, withIntermediateDirectories: true)
+        try Data("\(workdir.path)/.git\n".utf8).write(to: gitDir.appendingPathComponent("gitdir"))
+        try Data("gitdir: \(gitDir.path)\n".utf8).write(to: workdir.appendingPathComponent(".git"))
+        try Data("only copy\n".utf8).write(to: workdir.appendingPathComponent("untracked.txt"))
 
-        // This add's: they name each other.
-        let gitDir = admin.appendingPathComponent("mine")
-        let workdir = fixtures.url("mine")
-        try write("\(workdir.path)/.git\n", to: gitDir.appendingPathComponent("gitdir"))
-        try write("gitdir: \(gitDir.path)\n", to: workdir.appendingPathComponent(".git"))
-        try write("x\n", to: workdir.appendingPathComponent("file.txt"))
-        let empty = try fixtures.directory("empty")
-        CreatedWorktreePaths(
-            adminDir: nil, gitDir: gitDir, gitDirExisted: false,
-            workdir: workdir, workdirExisted: false).remove()
-        CreatedWorktreePaths(
-            adminDir: nil, gitDir: admin.appendingPathComponent("absent"), gitDirExisted: false,
-            workdir: empty, workdirExisted: false).remove()
-        #expect(!FileManager.default.fileExists(atPath: gitDir.path))
-        #expect(!FileManager.default.fileExists(atPath: workdir.path))
-        #expect(!FileManager.default.fileExists(atPath: empty.path))
+        CreatedWorktreePaths(adminDir: admin, gitDir: gitDir, workdir: workdir).remove()
+        #expect(try Self.contents(of: gitDir) == ["gitdir"])
+        #expect(try Self.contents(of: workdir) == [".git", "untracked.txt"])
+        #expect(try Self.contents(of: admin) == ["linked"])
+
+        let emptyGitDir = admin.appendingPathComponent("empty")
+        try FileManager.default.createDirectory(at: emptyGitDir, withIntermediateDirectories: true)
+        let emptyWorkdir = try fixtures.directory("empty")
+        let emptyAdmin = try fixtures.directory("other/worktrees")
+        CreatedWorktreePaths(adminDir: emptyAdmin, gitDir: emptyGitDir, workdir: emptyWorkdir).remove()
+        #expect(!FileManager.default.fileExists(atPath: emptyGitDir.path))
+        #expect(!FileManager.default.fileExists(atPath: emptyWorkdir.path))
+        #expect(!FileManager.default.fileExists(atPath: emptyAdmin.path))
+    }
+
+    @Test("an add from inside a preparation waits its turn: it is refused, and both roll back")
+    func nestedAddIsRefused() throws {
+        defer { fixtures.removeAll() }
+        let (source, primary) = try makeSource()
+        let outer = fixtures.url("outer")
+        let inner = fixtures.url("inner")
+
+        #expect(throws: Libgit2Error.self) {
+            try primary.worktreeAdd(
+                path: outer, branch: "outer",
+                preparation: RepositoryPreparation { _ in
+                    try primary.worktreeAdd(path: inner, branch: "inner")
+                })
+        }
+        #expect(!FileManager.default.fileExists(atPath: outer.path))
+        #expect(!FileManager.default.fileExists(atPath: inner.path))
+        #expect(!FileManager.default.fileExists(atPath: source.appendingPathComponent(".git/worktrees").path))
+        #expect(try primary.localBranches() == ["main"])
     }
 
     @Test("an administrative directory left by an incomplete add is skipped, not reused")

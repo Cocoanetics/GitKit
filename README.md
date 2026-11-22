@@ -120,13 +120,15 @@ Operations are synchronous, `throws` (typed ``Libgit2Error``), and return
   handle: a `Repository` the closure kept stops the process on its next
   use rather than touch freed memory. Without a preparation both check out
   as before. With or without one, `worktreeAdd` puts the repository's
-  include policy over libgit2's own open of the new worktree, and on
-  failure removes the administrative and working directories it created:
-  adds through GitKit take turns per repository
+  include policy over libgit2's own open of the new worktree. Adds through
+  GitKit take turns per repository for the whole add, rollback included
   (`gitkit-worktree-add.lock` in the common directory, refused while held,
-  like git's own locks), and a directory goes only when it is empty or what
-  libgit2 wrote into it links it to this add, never a path that was there
-  before. A name whose administrative directory an incomplete add left
+  like git's own locks; so is an add from inside a preparation). If libgit2
+  fails part way, a directory that wasn't there before is removed only
+  while empty (`rmdir`, one atomic step): nothing proves libgit2 made one
+  with content rather than another writer, so it is kept. A prepared
+  worktree whose preparation or checkout fails was made by this add, and
+  is pruned. A name whose administrative directory an incomplete add left
   behind is skipped. A single-branch
   clone discovers the remote's default branch through the clone's own
   config, as the fetch does.
