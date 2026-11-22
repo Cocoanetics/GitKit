@@ -76,7 +76,7 @@ public enum SignatureResolver {
         env: [String: String] = ProcessInfo.processInfo.environment
     ) throws -> ResolvedSignature {
         let raw = try resolve(role: role, override: override,
-                              repo: repository.pointer, env: env)
+                              repo: repository.repo, env: env)
         defer { git_signature_free(raw) }
         guard let raw else {
             throw Libgit2Error(code: -1, klass: 0,

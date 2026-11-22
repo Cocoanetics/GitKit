@@ -176,7 +176,7 @@ let singleBranchRemoteTrampoline: git_remote_create_cb = {
     let branchShort: String
     if let requested = box.branch {
         branchShort = requested
-    } else if let resolved = resolveDefaultBranch(url: url, box: box) {
+    } else if let resolved = resolveDefaultBranch(repo: repo, url: url, box: box) {
         branchShort = resolved
     } else {
         return -1
@@ -190,13 +190,16 @@ let singleBranchRemoteTrampoline: git_remote_create_cb = {
 }
 
 /// Peek a remote's default branch (its `HEAD` target) without a full
-/// clone: spin up a detached remote, connect, ask, tear down. Returns the
-/// branch shorthand (`"main"`), or `nil` on any failure.
+/// clone: spin up an anonymous remote, connect, ask, tear down. Returns the
+/// branch shorthand (`"main"`), or `nil` on any failure. The remote belongs
+/// to the clone's repository, so its config (`url.<base>.insteadOf`, HTTP
+/// and proxy settings, a preparation's) governs this connection as it does
+/// the fetch.
 private func resolveDefaultBranch(
-    url: UnsafePointer<CChar>, box: SingleBranchBox
+    repo: OpaquePointer, url: UnsafePointer<CChar>, box: SingleBranchBox
 ) -> String? {
     var tmp: OpaquePointer?
-    guard git_remote_create_detached(&tmp, url) == 0 else { return nil }
+    guard git_remote_create_anonymous(&tmp, repo, url) == 0 else { return nil }
     defer { git_remote_free(tmp) }
 
     var cbs = git_remote_callbacks()

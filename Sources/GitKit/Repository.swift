@@ -17,35 +17,74 @@ public final class Repository {
     /// The raw `git_repository *`. Internal: the SDK's typed surface is the
     /// API; code that genuinely needs raw libgit2 opens its own
     /// `git_repository` through the re-exported C API rather than borrowing
-    /// this handle.
-    let pointer: OpaquePointer
+    /// this handle. `nil` once ``invalidate()`` ran: libgit2 freed the
+    /// handle of a prepared clone that failed after its preparation. Read
+    /// it through ``repo``, which refuses an invalidated handle.
+    private(set) var pointer: OpaquePointer?
 
-    /// Internal alias letting operation bodies keep the conventional
-    /// libgit2 parameter name (`repo`) after their move from closure-based
-    /// call sites.
-    var repo: OpaquePointer { pointer }
+    /// The handle every operation uses — the conventional libgit2 parameter
+    /// name. An invalidated repository stops the process here, in every
+    /// build configuration, rather than hand libgit2 freed memory.
+    var repo: OpaquePointer {
+        guard let pointer else {
+            fatalError("Repository used after the clone that created it failed; libgit2 freed its handle")
+        }
+        return pointer
+    }
 
-    /// Whether an include policy is registered for this repository (C
-    /// holds its payload); see ``setIncludePolicy(_:)``.
-    var hasIncludePolicy = false
+    /// Whether `deinit` frees ``pointer``: false only while libgit2 owns a
+    /// clone's handle, between its preparation and `git_clone` returning.
+    private var ownsPointer: Bool
+
+    /// The include policy registered for this repository (C holds its
+    /// payload); see ``setIncludePolicy(_:)``.
+    var includePolicy: ConfigIncludePolicy?
 
     /// Per-repository signer; process defaults are consulted only when nil.
     var signer: (any GitSigner)?
 
-    init(pointer: OpaquePointer) {
+    init(pointer: OpaquePointer, ownsPointer: Bool = true) {
         self.pointer = pointer
+        self.ownsPointer = ownsPointer
     }
 
     deinit {
-        if hasIncludePolicy {
+        guard let pointer, ownsPointer else { return }
+        if includePolicy != nil {
             gitkit_config_set_include_callback(pointer, nil, nil)
         }
         git_repository_free(pointer)
     }
 
+    /// Whether the handle is still usable; false after ``invalidate()``.
+    var isValid: Bool { pointer != nil }
+
+    /// Takes over a handle libgit2 gave back at the end of a clone.
+    func adoptPointer() {
+        ownsPointer = true
+    }
+
+    /// Forgets a handle someone else frees (or freed), dropping its include
+    /// policy registration first, which is keyed by the handle's address.
+    /// Every later use of ``repo`` stops the process.
+    func invalidate() {
+        dropIncludePolicyRegistration()
+        pointer = nil
+        ownsPointer = false
+    }
+
+    /// Removes the include policy registered for the handle's address and
+    /// forgets it here.
+    func dropIncludePolicyRegistration() {
+        if let pointer, includePolicy != nil {
+            gitkit_config_set_include_callback(pointer, nil, nil)
+        }
+        includePolicy = nil
+    }
+
     /// The repository's working-directory URL, `nil` for bare repos.
     public var workdirURL: URL? {
-        guard let cstr = git_repository_workdir(pointer) else { return nil }
+        guard let cstr = git_repository_workdir(repo) else { return nil }
         return URL(fileURLWithPath: String(cString: cstr), isDirectory: true)
     }
 

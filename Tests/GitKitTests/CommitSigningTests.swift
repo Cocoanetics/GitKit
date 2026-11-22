@@ -46,7 +46,7 @@ struct CommitSigningTests {
         var oid = git_oid()
         try check(git_oid_fromstr(&oid, sha))
         var odb: OpaquePointer?
-        try check(git_repository_odb(&odb, repo.pointer))
+        try check(git_repository_odb(&odb, repo.repo))
         defer { git_odb_free(odb) }
         var object: OpaquePointer?
         try check(git_odb_read(&object, odb, &oid))
@@ -155,9 +155,9 @@ struct CommitSigningTests {
         let higherURL = fixtures.url("higher-config")
         try Data("[gpg]\n program = ~/bin/higher-generic\n".utf8).write(to: higherURL)
         var config: OpaquePointer?
-        try check(git_repository_config(&config, repo.pointer))
+        try check(git_repository_config(&config, repo.repo))
         defer { git_config_free(config) }
-        try check(git_config_add_file_ondisk(config, higherURL.path, GIT_CONFIG_LEVEL_APP, repo.pointer, 0))
+        try check(git_config_add_file_ondisk(config, higherURL.path, GIT_CONFIG_LEVEL_APP, repo.repo, 0))
         let signer = Signer()
         repo.setSigner(signer)
 
@@ -175,9 +175,9 @@ struct CommitSigningTests {
         try Data("[commit]\n gpgsign = true\n[tag]\n gpgsign = false\n[user]\n signingkey = key::literal\n".utf8)
             .write(to: configURL)
         var config: OpaquePointer?
-        try check(git_repository_config(&config, repo.pointer))
+        try check(git_repository_config(&config, repo.repo))
         defer { git_config_free(config) }
-        try check(git_config_add_file_ondisk(config, configURL.path, GIT_CONFIG_LEVEL_APP, repo.pointer, 0))
+        try check(git_config_add_file_ondisk(config, configURL.path, GIT_CONFIG_LEVEL_APP, repo.repo, 0))
         let signer = Signer()
         repo.setSigner(signer)
         _ = try commit(repo)
@@ -213,7 +213,7 @@ struct CommitSigningTests {
             // Taking the index lock and editing config inside the callback
             // also checks that the SDK holds neither lock around sign().
             var indexLock: OpaquePointer?
-            try check(gitkit_index_lock_acquire(&indexLock, repo.pointer))
+            try check(gitkit_index_lock_acquire(&indexLock, repo.repo))
             gitkit_index_lock_release(indexLock)
             var headLock: OpaquePointer?
             try check(gitkit_lockfile_acquire(&headLock, fixtures.url("repo/.git/HEAD").path))
@@ -224,7 +224,7 @@ struct CommitSigningTests {
                 try check(git_odb_hash(&oid, $0.baseAddress, $0.count, GIT_OBJECT_COMMIT))
             }
             var odb: OpaquePointer?
-            try check(git_repository_odb(&odb, repo.pointer))
+            try check(git_repository_odb(&odb, repo.repo))
             defer { git_odb_free(odb) }
             #expect(git_odb_exists(odb, &oid) == 0)
             throw SigningError.failed(program: "injected", stderr: "cancelled")
@@ -270,7 +270,7 @@ struct CommitSigningTests {
         let signer = Signer()
         signer.callback = { _, _ in
             let other = try Repository.open(at: #require(repo.workdirURL))
-            try check(git_repository_set_head(other.pointer, "refs/heads/other"))
+            try check(git_repository_set_head(other.repo, "refs/heads/other"))
             return "opaque\n"
         }
         repo.setSigner(signer)
@@ -279,7 +279,7 @@ struct CommitSigningTests {
 
         #expect(error?.code == GIT_EMODIFIED.rawValue)
         var head: OpaquePointer?
-        try check(git_reference_lookup(&head, repo.pointer, "HEAD"))
+        try check(git_reference_lookup(&head, repo.repo, "HEAD"))
         defer { git_reference_free(head) }
         #expect(git_reference_symbolic_target(head).map { String(cString: $0) } == "refs/heads/other")
         #expect(throws: Libgit2Error.self) { try repo.objectMetadata(of: "HEAD") }

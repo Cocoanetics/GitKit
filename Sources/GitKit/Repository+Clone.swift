@@ -57,6 +57,69 @@ extension Repository {
         credentials: CredentialProvider? = nil,
         progress: @escaping @Sendable (String) -> Void = GitProgress.standardError
     ) throws -> Repository {
+        try clone(
+            fromRemote: remote, to: directory, depth: depth,
+            singleBranch: singleBranch, branch: branch, credentials: credentials,
+            progress: progress, preparing: nil)
+    }
+
+    /// Clone `url` into `directory`, letting `preparation` prepare the new
+    /// repository before the clone uses it. See
+    /// ``clone(fromRemote:to:depth:singleBranch:branch:credentials:progress:preparation:)``.
+    @discardableResult
+    public static func clone(
+        from url: URL,
+        to directory: URL,
+        depth: Int? = nil,
+        singleBranch: Bool = false,
+        branch: String? = nil,
+        credentials: CredentialProvider? = nil,
+        progress: @escaping @Sendable (String) -> Void = GitProgress.standardError,
+        preparation: RepositoryPreparation
+    ) throws -> Repository {
+        try clone(
+            fromRemote: url.gitRemote, to: directory, depth: depth,
+            singleBranch: singleBranch, branch: branch, credentials: credentials,
+            progress: progress, preparing: preparation)
+    }
+
+    /// Clone `remote` into `directory`, letting `preparation` prepare the
+    /// new repository first: it runs once the repository is initialised,
+    /// before `origin` is created, anything is fetched, or a working-tree
+    /// file is written (see ``RepositoryPreparation``). The other parameters
+    /// are those of ``clone(from:to:depth:singleBranch:branch:credentials:progress:)``.
+    ///
+    /// - Returns: The repository `preparation` was given.
+    /// - Throws: What `preparation` threw, as is, after removing the
+    ///   repository: `directory` itself, or only what is in it when it was
+    ///   there (empty) before. A clone that fails later removes the same.
+    @discardableResult
+    public static func clone(
+        fromRemote remote: String,
+        to directory: URL,
+        depth: Int? = nil,
+        singleBranch: Bool = false,
+        branch: String? = nil,
+        credentials: CredentialProvider? = nil,
+        progress: @escaping @Sendable (String) -> Void = GitProgress.standardError,
+        preparation: RepositoryPreparation
+    ) throws -> Repository {
+        try clone(
+            fromRemote: remote, to: directory, depth: depth,
+            singleBranch: singleBranch, branch: branch, credentials: credentials,
+            progress: progress, preparing: preparation)
+    }
+
+    private static func clone(
+        fromRemote remote: String,
+        to directory: URL,
+        depth: Int?,
+        singleBranch: Bool,
+        branch: String?,
+        credentials: CredentialProvider?,
+        progress: @escaping @Sendable (String) -> Void,
+        preparing preparation: RepositoryPreparation?
+    ) throws -> Repository {
         Libgit2.ensureInitialized()
 
         var opts = git_clone_options()
@@ -88,6 +151,20 @@ extension Repository {
             opts.remote_cb_payload = singleBranchRaw
         }
 
+        // A preparation creates the repository itself (`repository_cb`),
+        // its payload alive for the call like the single-branch one.
+        let preparationBox = preparation.map(ClonePreparationBox.init)
+        let preparationRaw = preparationBox.map { Unmanaged.passRetained($0).toOpaque() }
+        defer {
+            if let preparationRaw {
+                Unmanaged<ClonePreparationBox>.fromOpaque(preparationRaw).release()
+            }
+        }
+        if let preparationRaw {
+            opts.repository_cb = clonePreparationTrampoline
+            opts.repository_cb_payload = preparationRaw
+        }
+
         var out: OpaquePointer?
         // libgit2 holds `checkout_branch` as a non-owning pointer for the
         // duration of the clone; keep the C string alive across the call.
@@ -104,17 +181,25 @@ extension Repository {
                 },
                 outReporter: { reporter = $0 })
         }
-        if let branch {
-            try branch.withCString { cstr in
-                opts.checkout_branch = cstr
+        do {
+            if let branch {
+                try branch.withCString { cstr in
+                    opts.checkout_branch = cstr
+                    try runClone()
+                }
+            } else {
                 try runClone()
             }
-        } else {
-            try runClone()
+        } catch {
+            _ = try preparationBox?.finish(cloned: nil)
+            throw preparationBox?.error ?? error
         }
         // No `From`/per-ref block on clone — real git just prints
         // `Cloning into '…'` (handled by the CLI subcommand) plus the
         // transfer progress lines we already emitted.
+        if let prepared = try preparationBox?.finish(cloned: out) {
+            return prepared
+        }
         guard let out else {
             throw Libgit2Error(code: -1, klass: 0, message: "git_clone returned no repository")
         }

@@ -128,7 +128,7 @@ struct SigningConfig {
         case .config: break
         }
         var config: OpaquePointer?
-        try check(git_repository_config(&config, repository.pointer))
+        try check(git_repository_config(&config, repository.repo))
         defer { git_config_free(config) }
         var enabled: Int32 = 0
         let rc = git_config_get_bool(&enabled, config, forTag ? "tag.gpgsign" : "commit.gpgsign")

@@ -112,7 +112,7 @@ extension Repository {
     /// config is read; to cover the reads while opening, pass the policy to
     /// ``Repository/open(at:includePolicy:)`` instead.
     public func setIncludePolicy(_ policy: ConfigIncludePolicy?) throws {
-        try check(ConfigIncludePolicyBox.register(policy, forRepository: pointer))
-        hasIncludePolicy = policy != nil
+        try check(ConfigIncludePolicyBox.register(policy, forRepository: repo))
+        includePolicy = policy
     }
 }

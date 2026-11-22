@@ -1,4 +1,15 @@
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#elseif canImport(Android)
+import Android
+#elseif os(Windows)
+import ucrt
+#endif
 import CGitKit
 
 /// One worktree known to a repository.
@@ -37,11 +48,69 @@ extension Repository {
         startPoint: String = "HEAD",
         force: Bool = false
     ) throws {
+        _ = try worktreeAdd(
+            path: path, branch: branch, startPoint: startPoint, force: force, preparing: nil)
+    }
+
+    /// Add a linked worktree at `path`, checking out `branch`, and let
+    /// `preparation` prepare the worktree's own repository before its first
+    /// checkout. Branch and name selection are those of
+    /// ``worktreeAdd(path:branch:startPoint:force:)``.
+    ///
+    /// libgit2 creates the worktree's private git directory, its `.git` file
+    /// and `HEAD` without an index or a file in it. The linked worktree is
+    /// then opened — its git directory `.git/worktrees/<name>`, its common
+    /// directory (objects, refs, config) the primary repository's — and
+    /// handed to `preparation`; the worktree's initial checkout runs on that
+    /// same repository afterwards, exactly once. It inherits this
+    /// repository's include policy.
+    ///
+    /// - Returns: The linked worktree's repository `preparation` was given.
+    /// - Throws: What `preparation` or the checkout threw, as is, after
+    ///   pruning the worktree (its git directory and working directory, both
+    ///   created by this call) and deleting `branch` if this call created it.
+    ///   Adds through GitKit take turns per repository for the whole call,
+    ///   so another add on the same repository from inside `preparation` is
+    ///   refused.
+    @discardableResult
+    public func worktreeAdd(
+        path: URL,
+        branch: String,
+        startPoint: String = "HEAD",
+        force: Bool = false,
+        preparation: RepositoryPreparation
+    ) throws -> Repository {
+        guard let worktree = try worktreeAdd(
+            path: path, branch: branch, startPoint: startPoint, force: force,
+            preparing: preparation) else {
+            throw Libgit2Error(code: -1, klass: 0, message: "worktree add returned no repository")
+        }
+        return worktree
+    }
+
+    /// The worktree's repository when there is a preparation, else nil: the
+    /// unprepared add checks out inside libgit2 as it always has.
+    private func worktreeAdd(
+        path: URL,
+        branch: String,
+        startPoint: String,
+        force: Bool,
+        preparing preparation: RepositoryPreparation?
+    ) throws -> Repository? {
         let preferredName = path.lastPathComponent
         guard !preferredName.isEmpty, preferredName != "/" else {
             throw Libgit2Error(code: -1, klass: 0,
                 message: "worktree path must have a final path component")
         }
+        // Adds through GitKit take turns per common directory for the whole
+        // add, rollback included (`gitkit-worktree-add.lock`, exclusive like
+        // git's own locks; `git worktree add` doesn't take part).
+        let commonDir = try repositoryCommonDir()
+        let adminDir = commonDir.appendingPathComponent("worktrees")
+        var lock: OpaquePointer?
+        try check(gitkit_lockfile_acquire(&lock, commonDir.appendingPathComponent("gitkit-worktree-add").path))
+        defer { gitkit_lockfile_release(lock) }
+
         let name = try uniqueWorktreeName(preferred: preferredName)
 
         var branchRef: OpaquePointer?
@@ -59,12 +128,35 @@ extension Repository {
         try check(git_worktree_add_options_init(
             &opts, UInt32(GIT_WORKTREE_ADD_OPTIONS_VERSION)))
         opts.ref = branchRef
-        opts.checkout_options.checkout_strategy = force
+        let checkoutStrategy = force
             ? UInt32(GIT_CHECKOUT_FORCE.rawValue)
             : UInt32(GIT_CHECKOUT_SAFE.rawValue)
+        // Prepared, libgit2 writes neither files nor an index: without an
+        // index file the deferred checkout is an initial one, as libgit2's
+        // own would have been.
+        opts.checkout_options.checkout_strategy = preparation == nil
+            ? checkoutStrategy
+            : UInt32(GIT_CHECKOUT_NONE.rawValue)
+                | UInt32(GIT_CHECKOUT_DONT_UPDATE_INDEX.rawValue)
+                | UInt32(GIT_CHECKOUT_DONT_WRITE_INDEX.rawValue)
+
+        // libgit2 rolls nothing back when the add fails part way. What it
+        // may have made, of what isn't there now, is removed only while
+        // empty (see `CreatedWorktreePaths`).
+        let gitDir = adminDir.appendingPathComponent(name)
+        let created = CreatedWorktreePaths(
+            adminDir: Self.exists(adminDir) ? nil : adminDir,
+            gitDir: Self.exists(gitDir) ? nil : gitDir,
+            workdir: Self.exists(path) ? nil : path)
 
         var worktree: OpaquePointer?
         do {
+            // libgit2 opens the new worktree's repository itself, reading
+            // the shared config: this repository's include policy covers
+            // that open, as `Repository.open(at:includePolicy:)` does.
+            let restoreThreadPolicy = includePolicy.map(ConfigIncludePolicyBox.init)?
+                .setForCurrentThread()
+            defer { restoreThreadPolicy?() }
             try name.withCString { nameC in
                 try path.path.withCString { pathC in
                     _ = try check(git_worktree_add(
@@ -72,12 +164,63 @@ extension Repository {
                 }
             }
         } catch {
+            created.remove()
             if createdBranch {
                 _ = git_branch_delete(branchRef)
             }
             throw error
         }
         git_worktree_free(worktree)
+        guard let preparation else { return nil }
+
+        do {
+            return try checkoutPreparedWorktree(
+                at: path, preparation: preparation, strategy: checkoutStrategy)
+        } catch {
+            // The add succeeded, so its exclusive mkdirs made both
+            // directories: prune them as git does, then what is left empty.
+            pruneCreatedWorktree(named: name)
+            created.remove()
+            if createdBranch {
+                _ = git_branch_delete(branchRef)
+            }
+            throw error
+        }
+    }
+
+    /// Opens the linked worktree at `path`, prepares it and checks it out.
+    private func checkoutPreparedWorktree(
+        at path: URL,
+        preparation: RepositoryPreparation,
+        strategy: UInt32
+    ) throws -> Repository {
+        let worktree = try Repository.open(at: path, includePolicy: includePolicy)
+        try preparation.prepare(worktree)
+
+        var checkoutOpts = git_checkout_options()
+        try check(git_checkout_options_init(
+            &checkoutOpts, UInt32(GIT_CHECKOUT_OPTIONS_VERSION)))
+        checkoutOpts.checkout_strategy = strategy
+        try check(git_checkout_head(worktree.repo, &checkoutOpts))
+        return worktree
+    }
+
+    /// Removes a worktree this call created: its private git directory and
+    /// its working directory, which libgit2 created exclusively. The
+    /// operation's own error matters more than a failed cleanup.
+    private func pruneCreatedWorktree(named name: String) {
+        var worktree: OpaquePointer?
+        guard git_worktree_lookup(&worktree, repo, name) == 0 else { return }
+        defer { git_worktree_free(worktree) }
+
+        var opts = git_worktree_prune_options()
+        guard git_worktree_prune_options_init(
+            &opts, UInt32(GIT_WORKTREE_PRUNE_OPTIONS_VERSION)) == 0 else { return }
+        opts.flags =
+            UInt32(GIT_WORKTREE_PRUNE_VALID.rawValue)
+            | UInt32(GIT_WORKTREE_PRUNE_LOCKED.rawValue)
+            | UInt32(GIT_WORKTREE_PRUNE_WORKING_TREE.rawValue)
+        _ = git_worktree_prune(worktree, &opts)
     }
 
     /// List worktrees with `git worktree list` semantics.
@@ -213,15 +356,26 @@ extension Repository {
         return String(name.dropFirst(prefix.count))
     }
 
+    /// The first of `preferred`, `preferred1`, … that is neither a listed
+    /// worktree nor an administrative directory left over from one that
+    /// never completed (libgit2 lists only complete ones).
     private func uniqueWorktreeName(preferred: String) throws -> String {
         let names = Set(try linkedWorktreeNames())
-        guard names.contains(preferred) else { return preferred }
+        let adminDir = try repositoryCommonDir().appendingPathComponent("worktrees")
+        func taken(_ name: String) -> Bool {
+            names.contains(name) || Self.exists(adminDir.appendingPathComponent(name))
+        }
+        guard taken(preferred) else { return preferred }
 
         var suffix = 1
-        while names.contains("\(preferred)\(suffix)") {
+        while taken("\(preferred)\(suffix)") {
             suffix += 1
         }
         return "\(preferred)\(suffix)"
+    }
+
+    private static func exists(_ url: URL) -> Bool {
+        FileManager.default.fileExists(atPath: url.path)
     }
 
     private func linkedWorktreeNames() throws -> [String] {
@@ -396,6 +550,37 @@ extension Repository {
 
         if rc < 0 { try check(rc) }
         return payload.name
+    }
+}
+
+/// Directories a failed `git_worktree_add` may have made: each was absent
+/// before the add. Nothing proves libgit2 made one rather than another
+/// writer in the meantime (`git worktree add` and raw libgit2 don't take
+/// GitKit's lock, and write the same files), so each is removed only while
+/// empty, by one call that checks and removes together (`rmdir`); one with
+/// anything in it is kept.
+struct CreatedWorktreePaths {
+    let adminDir: URL?
+    let gitDir: URL?
+    let workdir: URL?
+
+    func remove() {
+        // Children first: the administrative directory holds the git one.
+        for dir in [gitDir, workdir, adminDir].compactMap({ $0 }) {
+            _ = Self.removeIfEmpty(dir)
+        }
+    }
+
+    /// Removes `dir` only if it is empty, atomically.
+    static func removeIfEmpty(_ dir: URL) -> Bool {
+        dir.withUnsafeFileSystemRepresentation { path -> Bool in
+            guard let path else { return false }
+            #if os(Windows)
+            return String(cString: path).withCString(encodedAs: UTF16.self) { _wrmdir($0) } == 0
+            #else
+            return rmdir(path) == 0
+            #endif
+        }
     }
 }
 

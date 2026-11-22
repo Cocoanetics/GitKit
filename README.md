@@ -104,6 +104,34 @@ Operations are synchronous, `throws` (typed ``Libgit2Error``), and return
   `CredentialProvider` closures for HTTPS/SSH auth, a pluggable progress
   sink, and `depth`/`singleBranch`/`branch` for shallow, single-branch
   clones).
+- **Preparing before the first checkout** — `clone(…preparation:)` and
+  `worktreeAdd(…preparation:)` take a `RepositoryPreparation`: a closure
+  given the very `Repository` the operation goes on with, after it exists
+  and before any working-tree file is written, so a host can install its
+  per-operation config, credentials or filter setup there instead of
+  process-wide. A clone runs it from libgit2's `repository_cb`, before
+  `origin`, the fetch and the checkout; a worktree is created without an
+  index or files, its own repository (private git directory, shared common
+  directory) is prepared, and its initial checkout then runs once on it.
+  Both return that repository. A thrown error comes back as is, after
+  removing only what the operation created (an existing empty clone target
+  is emptied, not removed; a branch is deleted only if the call created
+  it). If a clone fails after its preparation, libgit2 has freed the
+  handle: a `Repository` the closure kept stops the process on its next
+  use rather than touch freed memory. Without a preparation both check out
+  as before. With or without one, `worktreeAdd` puts the repository's
+  include policy over libgit2's own open of the new worktree. Adds through
+  GitKit take turns per repository for the whole add, rollback included
+  (`gitkit-worktree-add.lock` in the common directory, refused while held,
+  like git's own locks; so is an add from inside a preparation). If libgit2
+  fails part way, a directory that wasn't there before is removed only
+  while empty (`rmdir`, one atomic step): nothing proves libgit2 made one
+  with content rather than another writer, so it is kept. A prepared
+  worktree whose preparation or checkout fails was made by this add, and
+  is pruned. A name whose administrative directory an incomplete add left
+  behind is skipped. A single-branch
+  clone discovers the remote's default branch through the clone's own
+  config, as the fetch does.
 - **Work** — `add`, `commitDetailed`, `amendDetailed`, `status`, `diff`,
   `checkout`, `checkoutNewBranch`, `checkoutPaths`, `reset`,
   `move`/`remove` (git mv/rm).
