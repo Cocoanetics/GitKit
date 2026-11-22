@@ -216,6 +216,13 @@ void gitkit_config_set_thread_include_callback(
 	gitkit_thread_policy.payload = payload;
 }
 
+/*
+ * repository_patched.c: records the refusal in the calling thread's
+ * operation configuration scope, if any — an open libgit2 makes for itself
+ * (a submodule's, during status) clears the error it fails with.
+ */
+extern void gitkit_config_scope__record(int code);
+
 static int gitkit_include_stat(
 	const char *path, struct stat *st, int depth, const git_repository *repo)
 {
@@ -233,6 +240,7 @@ static int gitkit_include_stat(
 		gitkit_policy_done(&policy);
 		if (refused) {
 			git_error_set(GIT_ERROR_CONFIG, "include of '%s' is not authorised", path);
+			gitkit_config_scope__record(-1);
 			gitkit_include_refused = 1;
 			return -1;
 		}
