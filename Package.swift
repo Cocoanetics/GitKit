@@ -398,5 +398,11 @@ let package = Package(
                 .product(name: "Archive", package: "swift-archive",
                          condition: .when(traits: ["Archive"])),
             ]),
+
+        // What a consumer outside the package sees: `import GitKit` only — no
+        // `@testable`, no CGitKit.
+        .testTarget(
+            name: "GitKitPublicAPITests",
+            dependencies: ["GitKit"]),
     ]
 )

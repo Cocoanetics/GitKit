@@ -132,6 +132,27 @@ Operations are synchronous, `throws` (typed ``Libgit2Error``), and return
   behind is skipped. A single-branch
   clone discovers the remote's default branch through the clone's own
   config, as the fetch does.
+- **Operation-only config levels** — `addConfigFile(at:level:)` reads a
+  file as the `.system`, `.xdg`, `.global` or `.app` level of one repository's
+  live config (what `GIT_CONFIG_SYSTEM` / `GIT_CONFIG_GLOBAL` select), and
+  `addConfigEntries(_:level:name:)` adds a read-only in-memory level from
+  `ConfigEntry` name/value pairs (what `-c` / `GIT_CONFIG_COUNT` give),
+  keeping their order, a valueless entry (`nil`) apart from an empty one,
+  and the subsection exactly (`configEntries()` lists valueless entries,
+  which `configList()` leaves out). Each replaces what the level held, reads an
+  added file's includes with the repository's `ConfigIncludePolicy`, and
+  leaves the config as it was when it throws. Merged-config writes keep
+  going to the repository's own file; after a `.global` add, an explicit
+  `.global` scope means that file, not the XDG one. libgit2's cached
+  `core.*` values, attribute and ignore files, a loaded index's
+  capabilities and diff drivers are derived again, so the next use sees
+  the new level. Other copies libgit2 keeps are not refreshed, for example
+  settings read at open and those the loaded reference and object databases
+  copied (`core.precomposeUnicode`, `core.fsyncObjectFiles`, their
+  `core.ignorecase`). The
+  level belongs to that `Repository` only; add it from a preparation to
+  govern a clone or worktree's first checkout. Which files and entries to
+  add is the host's policy.
 - **Work** — `add`, `commitDetailed`, `amendDetailed`, `status`, `diff`,
   `checkout`, `checkoutNewBranch`, `checkoutPaths`, `reset`,
   `move`/`remove` (git mv/rm).

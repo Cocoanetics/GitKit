@@ -71,8 +71,19 @@ extension Repository {
 
     /// Walk every config entry visible to the repo (merging local +
     /// global + system layers). Returns `(name, value)` pairs in
-    /// libgit2's iteration order — matches `git config --list`.
+    /// libgit2's iteration order — matches `git config --list`, except
+    /// that valueless entries (`[core] bare`) are left out; see
+    /// ``configEntries()``.
     public func configList() throws -> [(name: String, value: String)] {
+        try configEntries().compactMap { entry in
+            entry.value.map { (entry.name, $0) }
+        }
+    }
+
+    /// Every config entry visible to the repo, in libgit2's iteration
+    /// order, valueless entries included (`value == nil`, distinct from
+    /// an empty value).
+    public func configEntries() throws -> [ConfigEntry] {
         var cfg: OpaquePointer?
         try check(git_repository_config(&cfg, repo))
         defer { git_config_free(cfg) }
@@ -81,16 +92,16 @@ extension Repository {
         try check(git_config_iterator_new(&iter, cfg))
         defer { git_config_iterator_free(iter) }
 
-        var entries: [(String, String)] = []
+        var entries: [ConfigEntry] = []
         while true {
             var entry: UnsafeMutablePointer<git_config_entry>?
             let rc = git_config_next(&entry, iter)
             if rc == GIT_ITEROVER.rawValue { break }
             try check(rc)
-            if let e = entry?.pointee,
-               let nameCStr = e.name, let valueCStr = e.value {
-                entries.append((String(cString: nameCStr),
-                                String(cString: valueCStr)))
+            if let e = entry?.pointee, let nameCStr = e.name {
+                entries.append(ConfigEntry(
+                    name: String(cString: nameCStr),
+                    value: e.value.map { String(cString: $0) }))
             }
         }
         return entries
@@ -113,7 +124,13 @@ extension Repository {
 
         case .some(.global):
             var global: OpaquePointer?
-            try check(git_config_open_global(&global, cfg))
+            // A global level the host added stands for git's
+            // GIT_CONFIG_GLOBAL file, which is written instead of XDG's.
+            if addedConfigLevels.contains(.global) {
+                try check(git_config_open_level(&global, cfg, GIT_CONFIG_LEVEL_GLOBAL))
+            } else {
+                try check(git_config_open_global(&global, cfg))
+            }
             return global
 
         case .some(.system):

@@ -205,4 +205,14 @@ GIT_EXTERN(void) gitkit_config_set_thread_include_callback(
 	gitkit_config_include_cb cb, void *payload,
 	gitkit_config_include_cb *previous_cb, void **previous_payload);
 
+/*
+ * GitKit addition, implemented in Sources/Clibgit2Patches/config_cache_export.c:
+ * after a backend was added to `repo`'s live config, forget the `core.*`
+ * values libgit2 caches and its diff drivers, and re-read a loaded index's
+ * capabilities, so the next use sees the new level. libgit2 forgets the
+ * values itself when one is set or the config replaced, but not when a
+ * backend is added.
+ */
+GIT_EXTERN(int) gitkit_repository_config_changed(git_repository *repo);
+
 #endif /* GITKIT_LIBGIT2_H */
