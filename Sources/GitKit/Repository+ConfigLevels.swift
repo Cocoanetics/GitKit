@@ -65,12 +65,16 @@ extension Repository {
     /// `git config --global` does with `GIT_CONFIG_GLOBAL`.
     ///
     /// The level belongs to this `Repository` only: another open of the same
-    /// path, a submodule or a worktree's repository does not see it. What
-    /// this repository derived from its config before is derived again: its
-    /// `core.*` values, attribute and ignore files, a loaded index's
-    /// `core.ignorecase` / `core.filemode` / `core.symlinks` and diff
-    /// drivers. Settings libgit2 reads once, at open (`core.bare`,
-    /// `core.worktree`, extensions), are not affected.
+    /// path, a submodule or a worktree's repository does not see it. These are
+    /// derived again from the new config: the cached `core.*` values,
+    /// attribute and ignore files, a loaded index's `core.ignorecase` /
+    /// `core.filemode` / `core.symlinks`, and diff drivers. Settings libgit2
+    /// copies elsewhere are not: those read at open (`core.bare`,
+    /// `core.worktree`, extensions) and those the reference and object
+    /// databases keep once loaded (their `core.ignorecase`,
+    /// `core.precomposeUnicode`, `core.fsyncObjectFiles`). A level meant to
+    /// change those is added before the repository reads a reference or an
+    /// object, as from a clone's preparation.
     ///
     /// Throws, leaving the config as it was, when the path is not a readable
     /// config file, it does not parse or the include policy refuses one of
