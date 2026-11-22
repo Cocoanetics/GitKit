@@ -50,6 +50,12 @@ public final class Repository {
     init(pointer: OpaquePointer, ownsPointer: Bool = true) {
         self.pointer = pointer
         self.ownsPointer = ownsPointer
+        // Opened in an operation configuration scope, the handle read its
+        // levels, which an explicit config scope then names as added ones.
+        for level in [ConfigLevel.system, .xdg, .global, .app]
+        where gitkit_config_scope_has_level(level.libgit2) != 0 {
+            addedConfigLevels.insert(level)
+        }
     }
 
     deinit {
