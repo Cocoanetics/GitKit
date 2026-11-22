@@ -231,7 +231,7 @@ struct OperationSigningTests {
         var oid = git_oid()
         try check(git_oid_fromstr(&oid, Fixture.rev("HEAD", in: dir)))
         var odb: OpaquePointer?
-        try check(git_repository_odb(&odb, repo.pointer))
+        try check(git_repository_odb(&odb, repo.repo))
         defer { git_odb_free(odb) }
         var object: OpaquePointer?
         try check(git_odb_read(&object, odb, &oid))

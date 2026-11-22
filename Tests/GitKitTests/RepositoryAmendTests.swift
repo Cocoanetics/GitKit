@@ -610,7 +610,7 @@ extension RepositoryAmendTests {
         try AmendFixture.twoCommits(dir)
         let repository = try Repository.open(at: dir)
         var target = git_oid()
-        try check(git_reference_name_to_id(&target, repository.pointer, "HEAD"))
+        try check(git_reference_name_to_id(&target, repository.repo, "HEAD"))
         let lock = dir.appendingPathComponent(".git/\(lockName).lock")
         try Data().write(to: lock)
         defer { try? FileManager.default.removeItem(at: lock) }
@@ -633,7 +633,7 @@ extension RepositoryAmendTests {
         try AmendFixture.twoCommits(dir)
         let repository = try Repository.open(at: dir)
         var expected = git_oid()
-        try check(git_reference_name_to_id(&expected, repository.pointer, "HEAD"))
+        try check(git_reference_name_to_id(&expected, repository.repo, "HEAD"))
         try AmendFixture.write("three\n", to: "h", in: dir)
         try AmendFixture.git(["add", "h"], in: dir)
         try AmendFixture.git(["commit", "-q", "-m", "third"], in: dir)

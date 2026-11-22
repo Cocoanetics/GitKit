@@ -24,16 +24,16 @@ struct AbbreviationTests {
         for index in 0..<20_000 where collision == nil {
             var oid = git_oid()
             let text = "blob \(index)"
-            _ = text.withCString { git_blob_create_from_buffer(&oid, repo.pointer, $0, strlen($0)) }
+            _ = text.withCString { git_blob_create_from_buffer(&oid, repo.repo, $0, strlen($0)) }
             let prefix = String(String(cString: git_oid_tostr_s(&oid)).prefix(4))
             if seen[prefix] != nil { collision = oid } else { seen[prefix] = oid }
         }
         let shared = try #require(collision)
-        #expect(abbreviated(shared, minimum: 4, in: repo.pointer).count > 4)
+        #expect(abbreviated(shared, minimum: 4, in: repo.repo).count > 4)
 
         // An object the repository doesn't have keeps the minimum.
         var missing = git_oid()
         _ = "0123456789abcdef0123456789abcdef01234567".withCString { git_oid_fromstr(&missing, $0) }
-        #expect(abbreviated(missing, minimum: 4, in: repo.pointer) == "0123")
+        #expect(abbreviated(missing, minimum: 4, in: repo.repo) == "0123")
     }
 }
