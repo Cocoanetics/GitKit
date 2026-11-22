@@ -121,9 +121,13 @@ Operations are synchronous, `throws` (typed ``Libgit2Error``), and return
   use rather than touch freed memory. Without a preparation both check out
   as before. With or without one, `worktreeAdd` puts the repository's
   include policy over libgit2's own open of the new worktree, and on
-  failure removes the administrative and working directories it created
-  (never a path that was there before). A name whose administrative
-  directory an incomplete add left behind is skipped. A single-branch
+  failure removes the administrative and working directories it created:
+  adds through GitKit take turns per repository
+  (`gitkit-worktree-add.lock` in the common directory, refused while held,
+  like git's own locks), and a directory goes only when it is empty or what
+  libgit2 wrote into it links it to this add, never a path that was there
+  before. A name whose administrative directory an incomplete add left
+  behind is skipped. A single-branch
   clone discovers the remote's default branch through the clone's own
   config, as the fetch does.
 - **Work** — `add`, `commitDetailed`, `amendDetailed`, `status`, `diff`,

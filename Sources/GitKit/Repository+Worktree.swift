@@ -1,4 +1,13 @@
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#elseif canImport(Android)
+import Android
+#endif
 import CGitKit
 
 /// One worktree known to a repository.
@@ -88,6 +97,22 @@ extension Repository {
             throw Libgit2Error(code: -1, klass: 0,
                 message: "worktree path must have a final path component")
         }
+        // Adds through GitKit take turns per common directory, from name
+        // selection until a failed add is rolled back, so no other add can
+        // claim the name or paths in between (`gitkit-worktree-add.lock`,
+        // exclusive like git's own locks; `git worktree add` doesn't take
+        // part).
+        let commonDir = try repositoryCommonDir()
+        let adminDir = commonDir.appendingPathComponent("worktrees")
+        var lock: OpaquePointer?
+        try check(gitkit_lockfile_acquire(&lock, commonDir.appendingPathComponent("gitkit-worktree-add").path))
+        var lockHeld = true
+        func releaseLock() {
+            if lockHeld { gitkit_lockfile_release(lock) }
+            lockHeld = false
+        }
+        defer { releaseLock() }
+
         let name = try uniqueWorktreeName(preferred: preferredName)
 
         var branchRef: OpaquePointer?
@@ -119,12 +144,12 @@ extension Repository {
 
         // libgit2 rolls nothing back when the add fails part way: note
         // what is there now, to remove only what the add created.
-        let adminDir = try repositoryCommonDir().appendingPathComponent("worktrees")
         let created = CreatedWorktreePaths(
             adminDir: Self.exists(adminDir) ? nil : adminDir,
-            gitDir: Self.exists(adminDir.appendingPathComponent(name))
-                ? nil : adminDir.appendingPathComponent(name),
-            workdir: Self.exists(path) ? nil : path)
+            gitDir: adminDir.appendingPathComponent(name),
+            gitDirExisted: Self.exists(adminDir.appendingPathComponent(name)),
+            workdir: path,
+            workdirExisted: Self.exists(path))
 
         var worktree: OpaquePointer?
         do {
@@ -148,6 +173,8 @@ extension Repository {
             throw error
         }
         git_worktree_free(worktree)
+        // Registered under its name now: later adds choose another one.
+        releaseLock()
         guard let preparation else { return nil }
 
         do {
@@ -528,20 +555,60 @@ extension Repository {
     }
 }
 
-/// What a failed `git_worktree_add` may have left: only paths that did not
-/// exist before the call, so removing them never touches what was there.
-private struct CreatedWorktreePaths {
+/// What a failed `git_worktree_add` may have left, removed only where this
+/// add provably made it. A directory that wasn't there before goes entirely
+/// only when what libgit2 writes into it links it to this add (the git
+/// directory's `gitdir` file names the working directory's `.git`, whose
+/// `gitdir:` line names the git directory); otherwise only if it is empty,
+/// which `rmdir` checks and does in one step.
+struct CreatedWorktreePaths {
     let adminDir: URL?
-    let gitDir: URL?
-    let workdir: URL?
+    let gitDir: URL
+    let gitDirExisted: Bool
+    let workdir: URL
+    let workdirExisted: Bool
 
     func remove() {
-        let manager = FileManager.default
-        if let gitDir { try? manager.removeItem(at: gitDir) }
-        if let workdir { try? manager.removeItem(at: workdir) }
-        if let adminDir, (try? manager.contentsOfDirectory(atPath: adminDir.path))?.isEmpty == true {
-            try? manager.removeItem(at: adminDir)
+        if !gitDirExisted {
+            Self.remove(gitDir) { Self.read("gitdir", in: gitDir).map(Self.real) == Self.real(dotGit) }
         }
+        if !workdirExisted {
+            Self.remove(workdir) {
+                guard let line = Self.read(".git", in: workdir), line.hasPrefix("gitdir: ") else { return false }
+                return Self.real(String(line.dropFirst("gitdir: ".count))) == Self.real(gitDir.path)
+            }
+        }
+        if let adminDir { _ = Self.removeIfEmpty(adminDir) }
+    }
+
+    private var dotGit: String { workdir.appendingPathComponent(".git").path }
+
+    private static func remove(_ dir: URL, ifOwned owned: () -> Bool) {
+        guard !removeIfEmpty(dir), owned() else { return }
+        try? FileManager.default.removeItem(at: dir)
+    }
+
+    /// Removes `dir` only if it is empty, atomically where the platform can.
+    private static func removeIfEmpty(_ dir: URL) -> Bool {
+        #if os(Windows)
+        guard (try? FileManager.default.contentsOfDirectory(atPath: dir.path))?.isEmpty == true else {
+            return false
+        }
+        return (try? FileManager.default.removeItem(at: dir)) != nil
+        #else
+        return rmdir(dir.path) == 0
+        #endif
+    }
+
+    private static func read(_ name: String, in dir: URL) -> String? {
+        guard let data = FileManager.default.contents(atPath: dir.appendingPathComponent(name).path) else {
+            return nil
+        }
+        return String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func real(_ path: String) -> String {
+        URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
     }
 }
 

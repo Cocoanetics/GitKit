@@ -278,7 +278,11 @@ struct RepositoryPreparationTests {
         #expect(clone.isValid)
     }
 
-    // MARK: Worktree
+}
+
+// MARK: Worktree
+
+extension RepositoryPreparationTests {
 
     @Test("a prepared worktree writes its first checkout with the prepared config")
     func preparedWorktreeFirstMaterialization() throws {
@@ -474,6 +478,89 @@ struct RepositoryPreparationTests {
         #expect(try primary.linkedWorktreeList().map(\.name) == ["linked"])
     }
 
+    @Test("a failing add leaves another add's worktree at the same path intact")
+    func failingAddKeepsAnotherAddsWorktree() throws {
+        defer { fixtures.removeAll() }
+        let (source, primary) = try makeSource()
+        let path = fixtures.url("linked")
+        let other = try primary.worktreeAdd(path: path, branch: "other", preparation: RepositoryPreparation { _ in })
+        let untracked = path.appendingPathComponent("untracked.txt")
+        try Data("only copy\n".utf8).write(to: untracked)
+
+        for preparation in [nil, RepositoryPreparation { _ in }] {
+            #expect(throws: Libgit2Error.self) {
+                if let preparation {
+                    try primary.worktreeAdd(path: path, branch: "feature", preparation: preparation)
+                } else {
+                    try primary.worktreeAdd(path: path, branch: "feature")
+                }
+            }
+            #expect(try Data(contentsOf: untracked) == Data("only copy\n".utf8))
+            #expect(try Self.contents(of: source.appendingPathComponent(".git/worktrees")) == ["linked"])
+            #expect(try primary.localBranches().sorted() == ["main", "other"])
+            #expect(try other.status().entries.map(\.path) == ["untracked.txt"])
+        }
+        let lock = source.appendingPathComponent(".git/gitkit-worktree-add.lock")
+        #expect(!FileManager.default.fileExists(atPath: lock.path))
+    }
+
+    @Test("an add another add is holding the lock for creates nothing")
+    func heldLockRefusesAdd() throws {
+        defer { fixtures.removeAll() }
+        let (source, primary) = try makeSource()
+        let lock = source.appendingPathComponent(".git/gitkit-worktree-add.lock")
+        try Data().write(to: lock)
+        let path = fixtures.url("linked")
+
+        #expect(throws: Libgit2Error.self) {
+            try primary.worktreeAdd(path: path, branch: "feature", preparation: RepositoryPreparation { _ in })
+        }
+        #expect(!FileManager.default.fileExists(atPath: path.path))
+        #expect(!FileManager.default.fileExists(atPath: source.appendingPathComponent(".git/worktrees").path))
+        #expect(try primary.localBranches() == ["main"])
+        #expect(FileManager.default.fileExists(atPath: lock.path))
+    }
+
+    @Test("rollback removes a directory only when it is empty or links back to this add")
+    func rollbackProvesOwnership() throws {
+        defer { fixtures.removeAll() }
+        let admin = try fixtures.directory("common/worktrees")
+        func write(_ text: String, to url: URL) throws {
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data(text.utf8).write(to: url)
+        }
+        // Someone else's: linked to each other, not to this add's paths.
+        let foreignGitDir = admin.appendingPathComponent("linked")
+        let foreignWorkdir = fixtures.url("linked")
+        try write("\(fixtures.url("elsewhere").path)/.git\n", to: foreignGitDir.appendingPathComponent("gitdir"))
+        try write("gitdir: \(admin.appendingPathComponent("other").path)\n",
+                  to: foreignWorkdir.appendingPathComponent(".git"))
+        CreatedWorktreePaths(
+            adminDir: admin, gitDir: foreignGitDir, gitDirExisted: false,
+            workdir: foreignWorkdir, workdirExisted: false).remove()
+        #expect(try Self.contents(of: foreignGitDir) == ["gitdir"])
+        #expect(try Self.contents(of: foreignWorkdir) == [".git"])
+        #expect(FileManager.default.fileExists(atPath: admin.path))
+
+        // This add's: they name each other.
+        let gitDir = admin.appendingPathComponent("mine")
+        let workdir = fixtures.url("mine")
+        try write("\(workdir.path)/.git\n", to: gitDir.appendingPathComponent("gitdir"))
+        try write("gitdir: \(gitDir.path)\n", to: workdir.appendingPathComponent(".git"))
+        try write("x\n", to: workdir.appendingPathComponent("file.txt"))
+        let empty = try fixtures.directory("empty")
+        CreatedWorktreePaths(
+            adminDir: nil, gitDir: gitDir, gitDirExisted: false,
+            workdir: workdir, workdirExisted: false).remove()
+        CreatedWorktreePaths(
+            adminDir: nil, gitDir: admin.appendingPathComponent("absent"), gitDirExisted: false,
+            workdir: empty, workdirExisted: false).remove()
+        #expect(!FileManager.default.fileExists(atPath: gitDir.path))
+        #expect(!FileManager.default.fileExists(atPath: workdir.path))
+        #expect(!FileManager.default.fileExists(atPath: empty.path))
+    }
+
     @Test("an administrative directory left by an incomplete add is skipped, not reused")
     func staleAdministrativeDirectoryIsSkipped() throws {
         defer { fixtures.removeAll() }
@@ -489,7 +576,11 @@ struct RepositoryPreparationTests {
         #expect(try worktree.currentBranch() == "feature")
     }
 
-    // MARK: Retained handle
+}
+
+// MARK: Retained handle
+
+extension RepositoryPreparationTests {
 
     @Test("using a kept clone repository after the clone failed stops the process")
     func keptRepositoryStopsAfterFailure() async throws {
