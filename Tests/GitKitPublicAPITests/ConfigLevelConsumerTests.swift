@@ -107,6 +107,12 @@ struct ConfigLevelConsumerTests {
         #expect(try repo.configGet("x.y") == " two # 2 ")
         #expect(try repo.configList().filter { $0.name == "x.y" }.map(\.value) == ["1", " two # 2 "])
         #expect(try repo.configGet("url.\(subsection).insteadof") == "é:")
+
+        try repo.addConfigEntries([
+            ConfigEntry(name: "t.flag", value: nil),
+            ConfigEntry(name: "t.flag", value: "")
+        ])
+        #expect(try repo.configEntries().filter { $0.name == "t.flag" }.map(\.value) == [nil, ""])
     }
 
     @Test("a prepared worktree checks out through levels the primary does not see")

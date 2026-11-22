@@ -43,6 +43,10 @@ public final class Repository {
     /// Per-repository signer; process defaults are consulted only when nil.
     var signer: (any GitSigner)?
 
+    /// The levels ``addConfigFile(at:level:)`` / ``addConfigEntries(_:level:name:)``
+    /// replaced, which an explicit config scope then names exactly.
+    var addedConfigLevels: Set<ConfigLevel> = []
+
     init(pointer: OpaquePointer, ownsPointer: Bool = true) {
         self.pointer = pointer
         self.ownsPointer = ownsPointer

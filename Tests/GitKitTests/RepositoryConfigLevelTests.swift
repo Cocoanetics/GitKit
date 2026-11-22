@@ -238,6 +238,10 @@ struct RepositoryConfigLevelTests {
         #expect(try Self.bool("t.valueless", in: repo))
         #expect(try !Self.bool("t.empty", in: repo))
         #expect(try Self.multivar("t.multi", in: repo) == [nil, ""])
+        let listed = try repo.configEntries().filter { $0.name.hasPrefix("t.") && $0.name != "t.both" }
+        #expect(listed == [ConfigEntry(name: "t.valueless", value: nil), ConfigEntry(name: "t.empty", value: ""),
+                           ConfigEntry(name: "t.multi", value: nil), ConfigEntry(name: "t.multi", value: "")])
+        #expect(try repo.configList().filter { $0.name == "t.multi" }.map(\.value) == [""])
     }
 
     @Test("values come back byte for byte")
@@ -373,6 +377,72 @@ struct RepositoryConfigLevelTests {
         try repo.addRemote(name: "after", remote: "/nowhere")
         let global = try String(contentsOf: fixtures.url("global"), encoding: .utf8)
         #expect(global == "[t]\n\tg = 1\n")
+    }
+
+    // MARK: Scopes and derived state
+
+    @Test("an explicit global scope names the added global file, not XDG's")
+    func globalScopeAfterAdd() throws {
+        defer { fixtures.removeAll() }
+        let (_, repo) = try makeRepository()
+        let xdgText = "[t]\n\tfrom = xdg\n"
+        let xdg = try write(xdgText, to: "xdg")
+        let global = try write("[t]\n\tfrom = global\n", to: "global")
+
+        // Without an added global level, .global prefers XDG as before.
+        try repo.addConfigFile(at: xdg, level: .xdg)
+        #expect(try repo.configGet("t.from", scope: .global) == "xdg")
+
+        try repo.addConfigFile(at: global, level: .global)
+        #expect(try repo.configGet("t.from", scope: .global) == "global")
+        try repo.configSet("t.written", "yes", scope: .global)
+        #expect(try String(contentsOf: global, encoding: .utf8).contains("written = yes"))
+        #expect(try String(contentsOf: xdg, encoding: .utf8) == xdgText)
+        #expect(try repo.configUnset("t.written", scope: .global))
+
+        // A host suppresses XDG, as git does under GIT_CONFIG_GLOBAL.
+        #expect(try repo.configGet("t.from") == "global")
+        try repo.addConfigEntries([], level: .xdg)
+        try repo.addConfigFile(at: fixtures.url("missing"), level: .global)
+        #expect(try repo.configGet("t.from") == nil)
+    }
+
+    @Test("a loaded index re-reads its capabilities after the add")
+    func indexCapabilitiesFollowAddedLevel() throws {
+        defer { fixtures.removeAll() }
+        let (_, repo) = try makeRepository()
+        try repo.configSet("core.filemode", "true")
+        _ = try repo.status()  // loads the repository's index
+        var index: OpaquePointer?
+        try check(git_repository_index(&index, repo.repo))
+        defer { git_index_free(index) }
+        let noFilemode = Int32(GIT_INDEX_CAPABILITY_NO_FILEMODE.rawValue)
+        #expect(git_index_caps(index) & noFilemode == 0)
+
+        try repo.addConfigEntries([ConfigEntry(name: "core.filemode", value: "false")])
+        #expect(git_index_caps(index) & noFilemode != 0)
+    }
+
+    @Test("a diff driver looked up before the add follows the added level")
+    func diffDriverFollowsAddedLevel() throws {
+        defer { fixtures.removeAll() }
+        let (dir, repo) = try makeRepository()
+        try repo.configSet("user.name", "T")
+        try repo.configSet("user.email", "t@example.com")
+        try repo.configSet("diff.mark.binary", "false")  // registers the driver
+        try Data("*.m diff=mark\n".utf8).write(to: dir.appendingPathComponent(".gitattributes"))
+        let file = dir.appendingPathComponent("a.m")
+        let lines = ["MARK alpha", "plain line", "1", "2", "3", "4", "5", "6"]
+        try Data((lines + ["old"]).map { $0 + "\n" }.joined().utf8).write(to: file)
+        try repo.add(paths: [])
+        _ = try repo.commitDetailed(
+            message: "initial", author: Signature(name: "T", email: "t@example.com"),
+            allowEmpty: false, env: [:], sign: .noSign)
+        try Data((lines + ["new"]).map { $0 + "\n" }.joined().utf8).write(to: file)
+
+        #expect(try repo.diff(.workdirVsIndex).contains("@@ plain line"))
+        try repo.addConfigEntries([ConfigEntry(name: "diff.mark.xfuncname", value: "^MARK.*$")])
+        #expect(try repo.diff(.workdirVsIndex).contains("@@ MARK alpha"))
     }
 }
 #endif

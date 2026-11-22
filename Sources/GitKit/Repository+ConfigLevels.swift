@@ -9,8 +9,12 @@ import CGitKit
 public enum ConfigLevel: Sendable, Hashable {
     /// Where libgit2 reads `/etc/gitconfig` (`GIT_CONFIG_SYSTEM`).
     case system
+    /// Where libgit2 reads `$XDG_CONFIG_HOME/git/config`. git reads no XDG
+    /// file when `GIT_CONFIG_GLOBAL` is set; a host following that replaces
+    /// this level too, with an empty entry list.
+    case xdg
     /// Where libgit2 reads `~/.gitconfig` (`GIT_CONFIG_GLOBAL`). Replacing it
-    /// leaves `$XDG_CONFIG_HOME/git/config`, a level of its own, in place.
+    /// leaves ``xdg``, a level of its own, in place.
     case global
     /// Above every file, as git's `-c` / `GIT_CONFIG_COUNT` entries.
     case app
@@ -18,6 +22,7 @@ public enum ConfigLevel: Sendable, Hashable {
     var libgit2: git_config_level_t {
         switch self {
         case .system: GIT_CONFIG_LEVEL_SYSTEM
+        case .xdg: GIT_CONFIG_LEVEL_XDG
         case .global: GIT_CONFIG_LEVEL_GLOBAL
         case .app: GIT_CONFIG_LEVEL_APP
         }
@@ -53,20 +58,25 @@ extension Repository {
     ///
     /// Merged-config writes (`configSet(_:_:scope:)` with `.local`,
     /// `addRemote`, a clone's `remote.origin.*`) keep going to the
-    /// repository's own config file. An explicit `.global` / `.system` scope
-    /// writes the file added at that level, as `git config --global` does
-    /// with `GIT_CONFIG_GLOBAL`.
+    /// repository's own config file. An explicit `.system` scope reads and
+    /// writes the file added at ``ConfigLevel/system``; once a
+    /// ``ConfigLevel/global`` level was added, an explicit `.global` scope
+    /// reads and writes that file and no longer the XDG one, as
+    /// `git config --global` does with `GIT_CONFIG_GLOBAL`.
     ///
     /// The level belongs to this `Repository` only: another open of the same
-    /// path, a submodule or a worktree's repository does not see it. Settings
-    /// libgit2 reads once, at open (`core.bare`, `core.worktree`,
-    /// extensions), are not affected.
+    /// path, a submodule or a worktree's repository does not see it. What
+    /// this repository derived from its config before is derived again: its
+    /// `core.*` values, attribute and ignore files, a loaded index's
+    /// `core.ignorecase` / `core.filemode` / `core.symlinks` and diff
+    /// drivers. Settings libgit2 reads once, at open (`core.bare`,
+    /// `core.worktree`, extensions), are not affected.
     ///
     /// Throws, leaving the config as it was, when the path is not a readable
     /// config file, it does not parse or the include policy refuses one of
     /// its includes.
     public func addConfigFile(at url: URL, level: ConfigLevel) throws {
-        try withLiveConfig { config in
+        try withLiveConfig(level) { config in
             try check(git_config_add_file_ondisk(config, url.path, level.libgit2, repo, 1))
         }
     }
@@ -74,7 +84,8 @@ extension Repository {
     /// Adds `entries`, in order, as a read-only in-memory `level` of this
     /// repository's config, replacing whatever that level held. Repeated
     /// names are kept in order: a single read returns the last one,
-    /// multivar reads and ``configList()`` return them all.
+    /// multivar reads and ``configEntries()`` return them all
+    /// (``configList()`` leaves out valueless ones).
     ///
     /// `name` is the backend type reported for these entries
     /// (`git_config_entry.backend_type`), for example `"command line"`.
@@ -93,7 +104,7 @@ extension Repository {
         guard !name.utf8.contains(0) else {
             throw ConfigEntryText.invalid("backend name contains a NUL character")
         }
-        try withLiveConfig { config in
+        try withLiveConfig(level) { config in
             var backend: UnsafeMutablePointer<git_config_backend>?
             try text.withCString { cText in
                 try name.withCString { type in
@@ -118,8 +129,9 @@ extension Repository {
 
     /// Runs `add` on the repository's live config, then restores what an
     /// added level disturbs: libgit2 makes a new level the merged config's
-    /// write target and keeps serving values it cached before the add.
-    private func withLiveConfig(_ add: (OpaquePointer) throws -> Void) throws {
+    /// write target and keeps serving what it derived from the config before
+    /// the add.
+    private func withLiveConfig(_ level: ConfigLevel, _ add: (OpaquePointer) throws -> Void) throws {
         var config: OpaquePointer?
         try check(git_repository_config(&config, repo))
         defer { git_config_free(config) }
@@ -132,7 +144,8 @@ extension Repository {
         // As the open left it (load_config): only the local file is written.
         var local = GIT_CONFIG_LEVEL_LOCAL
         try check(git_config_set_writeorder(config, &local, 1))
-        gitkit_repository_configmap_cache_clear(repo)
+        addedConfigLevels.insert(level)
+        try check(gitkit_repository_config_changed(repo))
         // core.attributesFile / core.excludesFile are read when the attribute
         // cache is built; the next use rebuilds it from the new config.
         try check(git_attr_cache_flush(repo))
