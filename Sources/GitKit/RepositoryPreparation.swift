@@ -63,22 +63,18 @@ final class ClonePreparationBox {
 
     /// `git_repository_init`, as libgit2's `default_repository_create`, then
     /// the preparation. libgit2 cleans up nothing when this fails, so a
-    /// failed init (its open's config load refusing an include, say) or a
     /// thrown preparation frees the handle and removes the directory here,
-    /// as libgit2 does for a clone that fails later.
+    /// as libgit2 does for a clone that fails later. An init that fails
+    /// (its open's config load refusing an include, say) removes what it
+    /// made only while that holds nothing but what an init writes
+    /// (`gitkit_repository_init_created`).
     func create(_ out: UnsafeMutablePointer<OpaquePointer?>, path: String, bare: Int32) -> Int32 {
         // libgit2 refuses a non-empty directory before calling us, so what
         // is in it from here on is the clone's.
         let existed = FileManager.default.fileExists(atPath: path)
         var raw: OpaquePointer?
-        let rc = git_repository_init(&raw, path, UInt32(bitPattern: bare))
-        guard rc == 0, let raw else {
-            // Removing files doesn't touch libgit2's error, which the clone
-            // rethrows as is.
-            git_repository_free(raw)
-            Self.removeCreated(at: path, keepingRoot: existed)
-            return rc < 0 ? rc : -1
-        }
+        let rc = gitkit_repository_init_created(&raw, path, UInt32(bitPattern: bare))
+        guard rc == 0, let raw else { return rc < 0 ? rc : -1 }
 
         let repository = Repository(pointer: raw, ownsPointer: false)
         self.repository = repository

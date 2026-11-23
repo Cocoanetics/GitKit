@@ -66,10 +66,14 @@ extension Repository {
     /// repository's include policy.
     ///
     /// - Returns: The linked worktree's repository `preparation` was given.
-    /// - Throws: What `preparation`, the checkout or an open of the new
-    ///   worktree (a refused include, say) threw, as is, after pruning the
-    ///   worktree (its git directory and working directory, both created by
-    ///   this call) and deleting `branch` if this call created it.
+    /// - Throws: What `preparation` or the checkout threw, as is, after
+    ///   pruning the worktree (its git directory and working directory, both
+    ///   created by this call) and deleting `branch` if this call created it
+    ///   and it still points there. When libgit2's own add fails after
+    ///   making the worktree — its open of the new worktree refusing an
+    ///   include, say — the worktree is removed only while both directories
+    ///   hold exactly the files the add wrote, unchanged; otherwise it is
+    ///   kept, and so is the branch.
     ///   Adds through GitKit take turns per repository for the whole call,
     ///   so another add on the same repository from inside `preparation` is
     ///   refused.
@@ -141,10 +145,11 @@ extension Repository {
                 | UInt32(GIT_CHECKOUT_DONT_UPDATE_INDEX.rawValue)
                 | UInt32(GIT_CHECKOUT_DONT_WRITE_INDEX.rawValue)
 
-        // libgit2 rolls nothing back when the add fails part way. Unless it
-        // got as far as opening the worktree it made, what it may have made,
-        // of what isn't there now, is removed only while empty (see
-        // `CreatedWorktreePaths`).
+        // libgit2 rolls nothing back when the add fails part way. GitKit's
+        // add removes the worktree it made only while both directories hold
+        // exactly the files it wrote, unchanged (`gitkit_worktree_add`).
+        // What else it may have made, of what isn't there now, is removed
+        // only while empty (see `CreatedWorktreePaths`).
         let gitDir = adminDir.appendingPathComponent(name)
         let created = CreatedWorktreePaths(
             adminDir: Self.exists(adminDir) ? nil : adminDir,
@@ -152,7 +157,7 @@ extension Repository {
             workdir: Self.exists(path) ? nil : path)
 
         var worktree: OpaquePointer?
-        var madeWorktree: Int32 = 0
+        var made = Int32(GITKIT_WORKTREE_ADD_NOT_MADE)
         do {
             // libgit2 opens the new worktree's repository itself, reading
             // the shared config: this repository's include policy covers
@@ -163,19 +168,14 @@ extension Repository {
             try name.withCString { nameC in
                 try path.path.withCString { pathC in
                     _ = try check(gitkit_worktree_add(
-                        &worktree, repo, nameC, pathC, &opts, &madeWorktree))
+                        &worktree, repo, nameC, pathC, &opts, &made))
                 }
             }
         } catch {
-            // Failing in or after its own open of the new worktree (a
-            // refused include, the checkout), the add made both directories
-            // and their files: prune them as below.
-            if madeWorktree != 0 {
-                pruneCreatedWorktree(named: name)
-            }
             created.remove()
-            if createdBranch {
-                _ = git_branch_delete(branchRef)
+            // A worktree kept still has the branch checked out.
+            if createdBranch, made != GITKIT_WORKTREE_ADD_KEPT {
+                deleteCreatedBranch(branchRef)
             }
             throw error
         }
@@ -191,10 +191,24 @@ extension Repository {
             pruneCreatedWorktree(named: name)
             created.remove()
             if createdBranch {
-                _ = git_branch_delete(branchRef)
+                deleteCreatedBranch(branchRef)
             }
             throw error
         }
+    }
+
+    /// Deletes a branch this add created, only while it still points where
+    /// the add created it: one moved meanwhile is someone else's work.
+    private func deleteCreatedBranch(_ branchRef: OpaquePointer?) {
+        guard let name = git_reference_name(branchRef),
+              let created = git_reference_target(branchRef) else { return }
+        var current: OpaquePointer?
+        guard git_reference_lookup(&current, repo, name) == 0 else { return }
+        defer { git_reference_free(current) }
+        guard let target = git_reference_target(current),
+              git_oid_equal(target, created) != 0 else { return }
+        // Its delete compares too, as it removes the ref.
+        _ = git_branch_delete(branchRef)
     }
 
     /// Opens the linked worktree at `path`, prepares it and checks it out.

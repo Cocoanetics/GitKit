@@ -255,15 +255,42 @@ GIT_EXTERN(int) gitkit_config_scope_first_failure(
 GIT_EXTERN(void) gitkit_config_scope_mark_reported(int klass, const char *message);
 
 /*
- * GitKit addition, implemented in Sources/Clibgit2Patches/worktree_patched.c:
- * git_worktree_add(), also setting `*created` (when non-NULL) to 1 once the
- * add has made the worktree's git and working directories and their files
- * and goes on to open it, else 0. A failed add with `*created` set left
- * both directories behind, made by this call.
+ * A file's identity: device and inode, and its ctime, which any change to
+ * the file or its metadata moves. `present` is 0 when it couldn't be read.
  */
+typedef struct {
+	int present;
+	uint64_t dev, ino;
+	int64_t ctime_sec, ctime_nsec;
+} gitkit_file_id;
+
+/*
+ * GitKit addition, implemented in Sources/Clibgit2Patches/worktree_patched.c:
+ * git_worktree_add(), which, when it fails after making the worktree's git
+ * and working directories, removes them if they still hold exactly the
+ * files it wrote there, unchanged, and keeps both otherwise. `*made` (when
+ * non-NULL) tells which: GITKIT_WORKTREE_ADD_NOT_MADE when the add made
+ * neither directory, _REMOVED when it made and removed them, _KEPT when
+ * they stay (the add succeeded, or they couldn't be proven its own).
+ */
+#define GITKIT_WORKTREE_ADD_NOT_MADE 0
+#define GITKIT_WORKTREE_ADD_REMOVED 1
+#define GITKIT_WORKTREE_ADD_KEPT 2
 GIT_EXTERN(int) gitkit_worktree_add(
 	git_worktree **out, git_repository *repo,
 	const char *name, const char *worktree,
-	const git_worktree_add_options *opts, int *created);
+	const git_worktree_add_options *opts, int *made);
+
+/*
+ * GitKit addition, implemented in Sources/Clibgit2Patches/created_dir.c:
+ * git_repository_init(), refusing to reinitialise a repository, that makes
+ * the directory at `path` (when there is none) and its `.git` exclusively
+ * itself. When the init then fails — its open's config load refusing an
+ * include, say — what it made is removed if it holds nothing but what an
+ * init writes, and kept otherwise; libgit2's error is left as it was.
+ * Windows: git_repository_init(), keeping what it made.
+ */
+GIT_EXTERN(int) gitkit_repository_init_created(
+	git_repository **out, const char *path, unsigned bare);
 
 #endif /* GITKIT_LIBGIT2_H */

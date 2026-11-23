@@ -43,8 +43,9 @@ import PackageDescription
 //   • repository.c is shimmed so every repository a thread opens — the ones
 //     libgit2 opens internally, like a submodule's during status, too —
 //     reads the levels of the thread's operation configuration scope.
-//   • worktree.c is shimmed so a failed worktree add tells its caller
-//     whether it made the new worktree's directories, which it leaves behind.
+//   • worktree.c is shimmed so a worktree add that fails after making the
+//     new worktree removes it, only while it holds exactly what the add
+//     wrote (Clibgit2Patches/created_dir.c).
 //   • Consumers only import `GitKit`.
 // =============================================================================
 
@@ -171,8 +172,8 @@ var excludes: [String] = [
     // load adds the calling thread's operation configuration levels.
     "src/libgit2/repository.c",
 
-    // Compiled via Sources/Clibgit2Patches/worktree_patched.c, which reports
-    // whether a failed add made the worktree it leaves behind.
+    // Compiled via Sources/Clibgit2Patches/worktree_patched.c, whose failed
+    // add removes the worktree it provably made.
     "src/libgit2/worktree.c",
 ]
 
