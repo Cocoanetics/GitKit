@@ -424,11 +424,12 @@ Both cannot hold at once: a `Level` with exactly 2.17's cases keeps 2.17
 clients building, and the 2.18 code that constructs or matches `.layers`
 (`case .layers`, `Level.layers(...)`) has to move to
 `OperationConfiguration.layers` / `init(levels:layers:includePolicy:)` when
-it updates to 2.19. Every other 2.18 API, `ConfigLayer` and
-`Repository.addConfigLayers(_:)` included, is unchanged, as are 2.17's
-`init(levels:includePolicy:)` and a client that only constructs levels or
-switches with `@unknown default`. So 2.19 is source-compatible with 2.17,
-and with 2.18 except for `.layers`; not with every 2.x release. A package
+it updates to 2.19. `ConfigLayer`, `Repository.addConfigLayers(_:)` and
+2.17's `init(levels:includePolicy:)` (also as a function value) are
+unchanged; the compile probes in `compat/` show the 2.17 exhaustive,
+`@unknown default`, initializer and construct-only clients building with
+2.19, and the 2.18 `.layers` client failing. 2.19 is therefore not
+source-compatible with every 2.x caller: code naming `.layers` must migrate. A package
 that requires `from: "2.18.0"` and uses `.layers` should migrate before it
 resolves 2.19, or pin `.upToNextMinor(from: "2.18.0")` until it does.
 
