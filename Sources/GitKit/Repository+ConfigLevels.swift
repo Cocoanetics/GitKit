@@ -49,7 +49,7 @@ public struct ConfigEntry: Sendable, Hashable {
 
 /// One layer of git's command-line config, in `-c` order
 /// (``Repository/addConfigLayers(_:)``,
-/// ``OperationConfiguration/Level/layers(_:)``).
+/// ``OperationConfiguration/layers``).
 ///
 /// `git -c a=1 -c include.path=<file> -c b=2` reads as three layers:
 /// `.entries([a=1, include.path=<file>])`, `.file(<file>)`,

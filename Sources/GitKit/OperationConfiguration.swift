@@ -35,24 +35,28 @@ public struct OperationConfiguration: Sendable {
         /// backend type reported for them (`git_config_entry.backend_type`).
         /// An `include.path` among them is stored, not followed; to read the
         /// file in its place, as git's `-c include.path=<file>` does, use
-        /// ``layers(_:)``.
+        /// ``OperationConfiguration/layers``.
         case entries([ConfigEntry], ConfigLevel = .app, name: String = "command line")
-        /// The ``ConfigLevel/app`` level as ordered command-line layers:
-        /// layer `i` is read at `GIT_CONFIG_LEVEL_APP + i`, so a later layer
-        /// wins a single read over an earlier one. A file layer is read as a
-        /// ``file(_:_:)`` level is (missing: empty; unreadable: an error;
-        /// its includes through the include policy in force, its
-        /// repository-only settings skipped); an entries layer as an
-        /// ``entries(_:_:name:)`` level. No layers leave no command-line
-        /// config.
-        case layers([ConfigLayer])
     }
 
     /// The levels, applied in order; a later level replaces an earlier one
-    /// of the same ``ConfigLevel``. ``Level/layers(_:)`` is the
-    /// ``ConfigLevel/app`` level: it replaces an `.app` file or entries
-    /// level, and the whole set is replaced by one.
+    /// of the same ``ConfigLevel``.
     public var levels: [Level]
+
+    /// The ``ConfigLevel/app`` level as ordered command-line layers, git's
+    /// `-c a=1 -c include.path=<file> -c b=2`: layer `i` is read at
+    /// `GIT_CONFIG_LEVEL_APP + i`, so a later layer wins a single read over
+    /// an earlier one. A file layer is read as a ``Level/file(_:_:)`` level
+    /// is (missing: empty; unreadable: an error; its includes through the
+    /// include policy in force, its repository-only settings skipped); an
+    /// entries layer as an ``Level/entries(_:_:name:)`` level.
+    ///
+    /// `nil` names no command-line layers: the `.app` level of ``levels``,
+    /// if any, or else an outer call's command-line set is in force. `[]`
+    /// leaves no command-line config. Layers are the whole `.app` level, so
+    /// a configuration with both layers and an `.app` level in ``levels`` is
+    /// refused before the operation runs.
+    public var layers: [ConfigLayer]?
 
     /// The policy for the include files read by repositories opened during
     /// the operation that have no policy of their own — every one libgit2
@@ -63,6 +67,14 @@ public struct OperationConfiguration: Sendable {
 
     public init(levels: [Level], includePolicy: ConfigIncludePolicy? = nil) {
         self.levels = levels
+        self.includePolicy = includePolicy
+    }
+
+    /// A configuration with command-line `layers` above `levels`, which
+    /// then name no ``ConfigLevel/app`` level.
+    public init(levels: [Level] = [], layers: [ConfigLayer]?, includePolicy: ConfigIncludePolicy? = nil) {
+        self.levels = levels
+        self.layers = layers
         self.includePolicy = includePolicy
     }
 }
@@ -82,7 +94,7 @@ extension Repository {
     /// replace the outer ones of the same ``ConfigLevel`` only; the outer
     /// call's other levels stay in force, as does its `includePolicy`
     /// when `configuration` has none; an inner `.app` level or
-    /// ``OperationConfiguration/Level/layers(_:)`` replaces the outer
+    /// ``OperationConfiguration/layers`` replaces the outer
     /// call's whole command-line set. Nothing global changes: no environment
     /// variable, search path or config file is written; the levels are
     /// copied, so nothing the caller holds is lent to libgit2.
@@ -106,7 +118,9 @@ extension Repository {
     /// already thrown to `body` by a GitKit call is thrown instead of its
     /// result. When `body` throws, its error is thrown.
     ///
-    /// - Throws: before `body` runs, `GIT_EINVALIDSPEC` for an entry that
+    /// - Throws: before `body` runs, `GIT_EINVALIDSPEC` for a configuration
+    ///   with both ``OperationConfiguration/layers`` and an `.app` level, an
+    ///   entry that
     ///   is not a valid config entry or names a setting git reads from the
     ///   repository's own config only — `core.repositoryformatversion`,
     ///   `core.bare`, `core.worktree`, `extensions.*` — or the error reading
@@ -116,7 +130,7 @@ extension Repository {
         _ configuration: OperationConfiguration, _ body: () throws -> T
     ) throws -> T {
         Libgit2.ensureInitialized()
-        let scope = try OperationConfigurationScope(configuration.levels)
+        let scope = try OperationConfigurationScope(configuration)
 
         let restoreThreadPolicy = configuration.includePolicy
             .map(ConfigIncludePolicyBox.init)?.setForCurrentThread()
@@ -133,11 +147,24 @@ extension Repository {
     }
 }
 
+extension OperationConfiguration.Level {
+    var configLevel: ConfigLevel {
+        switch self {
+        case let .file(_, level), let .entries(_, level, _): level
+        }
+    }
+}
+
 /// Owns the C scope of one ``Repository/withOperationConfiguration(_:_:)``.
 final class OperationConfigurationScope {
     let pointer: OpaquePointer
 
-    init(_ levels: [OperationConfiguration.Level]) throws {
+    init(_ configuration: OperationConfiguration) throws {
+        // Layers are the whole .app level: both would leave one unread.
+        if configuration.layers != nil, configuration.levels.contains(where: { $0.configLevel == .app }) {
+            throw ConfigEntryText.invalid("an operation configuration has both command-line layers and an .app level")
+        }
+
         var scope: OpaquePointer?
         try check(gitkit_config_scope_new(&scope))
         guard let scope else {
@@ -145,7 +172,7 @@ final class OperationConfigurationScope {
         }
         pointer = scope
 
-        for item in levels {
+        for item in configuration.levels {
             switch item {
             case let .file(url, level):
                 try check(gitkit_config_scope_add_file(pointer, level.libgit2, url.path))
@@ -153,21 +180,22 @@ final class OperationConfigurationScope {
                 let text = try Self.entriesText(entries, name: name)
                 try check(gitkit_config_scope_add_entries(
                     pointer, level.libgit2, text, text.utf8.count, name))
-            case let .layers(layers):
-                try check(gitkit_config_scope_reset_layers(pointer))
-                for layer in layers {
-                    switch layer {
-                    case let .entries(entries, name):
-                        let text = try Self.entriesText(entries, name: name)
-                        try check(gitkit_config_scope_add_layer_entries(
-                            pointer, text, text.utf8.count, name))
-                    case let .file(url):
-                        guard url.isFileURL else {
-                            throw ConfigEntryText.invalid("config layer '\(url.absoluteString)' is not a file URL")
-                        }
-                        try check(gitkit_config_scope_add_layer_file(pointer, url.path))
-                    }
+            }
+        }
+
+        guard let layers = configuration.layers else { return }
+        try check(gitkit_config_scope_reset_layers(pointer))
+        for layer in layers {
+            switch layer {
+            case let .entries(entries, name):
+                let text = try Self.entriesText(entries, name: name)
+                try check(gitkit_config_scope_add_layer_entries(
+                    pointer, text, text.utf8.count, name))
+            case let .file(url):
+                guard url.isFileURL else {
+                    throw ConfigEntryText.invalid("config layer '\(url.absoluteString)' is not a file URL")
                 }
+                try check(gitkit_config_scope_add_layer_file(pointer, url.path))
             }
         }
     }
