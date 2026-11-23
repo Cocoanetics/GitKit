@@ -180,7 +180,10 @@ Operations are synchronous, `throws` (typed ``Libgit2Error``), and return
   resolves the include's path and keeps `include.path` among the entries.
 - **Operation configuration** — `Repository.withOperationConfiguration(_:_:)`
   gives the same levels (`OperationConfiguration.Level.file` /
-  `.entries`, and `.layers` for the command-line layers) to every repository opened on the calling thread while its
+  `.entries`) and command-line layers (`OperationConfiguration.layers`,
+  set with `OperationConfiguration(levels:layers:includePolicy:)`: `nil`
+  keeps the outer scope's, `[]` clears them; together with an `.app` level
+  they are refused before the body) to every repository opened on the calling thread while its
   synchronous body runs, from the open on, including those libgit2 opens
   itself: each submodule during `status` / `diff`, submodule sync, a staged
   gitlink, worktree checks, a local clone. A replaced level's search-path file
@@ -390,6 +393,44 @@ package has its own evolution (API additions, fixes) between libgit2 releases,
 which a mirrored version number can't express. SDK changes bump GitKit's
 major/minor/patch per SemVer; a libgit2 submodule bump is called out in the
 release notes (and in this table).
+
+A new case in a public enum is **not** a compatible minor addition: a client
+may switch over the enum exhaustively, with no `default`, and that switch
+stops compiling (GitKit is built without library evolution, so `@frozen` or
+its absence changes nothing). Such a change is major, or the value goes into
+a new property or type instead. `Scripts/check-enum-cases.sh` compares the
+public enum cases with `compat/public-enum-cases.txt`, and
+`Scripts/check-source-compat.sh` builds the external clients in
+`compat/clients` against released versions and the working tree, in the
+Swift 5 and Swift 6 language modes (see [compat/README.md](compat/README.md)).
+
+### 2.18.0 broke source compatibility; 2.19 restores 2.17's
+
+2.18.0 added a third case, `OperationConfiguration.Level.layers`, as a
+minor release. A 2.17 client with an exhaustive `switch` over `Level` fails
+to build against 2.18.0 ("switch must be exhaustive", in Swift 5 and Swift 6
+modes). 2.18.0 stays published as it is; 2.19 restores `Level` to exactly
+2.17's `.file` and `.entries` and moves the command-line layers to a
+property:
+
+```swift
+// 2.18.0 only — does not compile with 2.19:
+OperationConfiguration(levels: [.file(global, .global), .layers(layers)])
+// 2.19:
+OperationConfiguration(levels: [.file(global, .global)], layers: layers)
+```
+
+Both cannot hold at once: a `Level` with exactly 2.17's cases keeps 2.17
+clients building, and the 2.18 code that constructs or matches `.layers`
+(`case .layers`, `Level.layers(...)`) has to move to
+`OperationConfiguration.layers` / `init(levels:layers:includePolicy:)` when
+it updates to 2.19. Every other 2.18 API, `ConfigLayer` and
+`Repository.addConfigLayers(_:)` included, is unchanged, as are 2.17's
+`init(levels:includePolicy:)` and a client that only constructs levels or
+switches with `@unknown default`. So 2.19 is source-compatible with 2.17,
+and with 2.18 except for `.layers`; not with every 2.x release. A package
+that requires `from: "2.18.0"` and uses `.layers` should migrate before it
+resolves 2.19, or pin `.upToNextMinor(from: "2.18.0")` until it does.
 
 ## Supported platforms
 
