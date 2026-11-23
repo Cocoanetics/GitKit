@@ -198,17 +198,10 @@ extension Repository {
     }
 
     /// Deletes a branch this add created, only while it still points where
-    /// the add created it: one moved meanwhile is someone else's work.
+    /// the add created it: one moved meanwhile is someone else's work, and
+    /// keeps its config too (`gitkit_branch_delete_created`).
     private func deleteCreatedBranch(_ branchRef: OpaquePointer?) {
-        guard let name = git_reference_name(branchRef),
-              let created = git_reference_target(branchRef) else { return }
-        var current: OpaquePointer?
-        guard git_reference_lookup(&current, repo, name) == 0 else { return }
-        defer { git_reference_free(current) }
-        guard let target = git_reference_target(current),
-              git_oid_equal(target, created) != 0 else { return }
-        // Its delete compares too, as it removes the ref.
-        _ = git_branch_delete(branchRef)
+        _ = gitkit_branch_delete_created(branchRef)
     }
 
     /// Opens the linked worktree at `path`, prepares it and checks it out.

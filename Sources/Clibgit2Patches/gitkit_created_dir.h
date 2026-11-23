@@ -46,4 +46,10 @@ void gitkit_created_id(gitkit_file_id *out, const char *path);
  */
 int gitkit_remove_created_dirs(const gitkit_created_dir *dirs, size_t len);
 
+/*
+ * Called before each config read on the calling thread: while a GitKit
+ * init runs on it, records what the init wrote so far (created_dir.c).
+ */
+void gitkit_created_watch_notify(void);
+
 #endif /* GITKIT_CREATED_DIR_H */

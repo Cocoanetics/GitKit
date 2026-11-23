@@ -132,8 +132,8 @@ Operations are synchronous, `throws` (typed ``Libgit2Error``), and return
   the directories GitKit or libgit2 made exclusively for it are moved
   aside in one step and removed, all or none, only if they are still those
   directories and hold nothing but what the init or add wrote, unchanged;
-  otherwise they are moved back and kept, with the branch (Windows keeps
-  them). A prepared
+  otherwise they are moved back and kept, with the branch. Missing parent
+  directories of a clone target are kept, and Windows keeps everything. A prepared
   worktree whose preparation or checkout fails was made by this add, and
   is pruned. A name whose administrative directory an incomplete add left
   behind is skipped. A single-branch

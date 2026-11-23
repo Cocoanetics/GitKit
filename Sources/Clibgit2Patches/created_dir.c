@@ -23,6 +23,9 @@
 #include "common.h"
 #include "repository.h"
 #include "rand.h"
+#include "refs.h"
+#include "config.h"
+#include "git2/branch.h"
 #include "gitkit_created_dir.h"
 
 #ifndef GIT_WIN32
@@ -41,6 +44,8 @@
 #endif
 
 #define GITKIT_DIR_FLAGS (O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+
+#define GITKIT_THREAD_LOCAL __thread
 
 static void gitkit_id_from_stat(gitkit_file_id *out, const struct stat *st)
 {
@@ -298,16 +303,63 @@ static const gitkit_created_entry gitkit_init_layout[] = {
 
 #define GITKIT_INIT_LAYOUT_LEN ARRAY_SIZE(gitkit_init_layout)
 
+/*
+ * What an init wrote, recorded each time it is about to read config, the
+ * only point where it runs host code (the include policy; the repository.c
+ * shim calls gitkit_created_watch_notify() there). A file is the init's
+ * as first recorded, before any host code could touch it; changed or gone
+ * at a later record, it is no longer provably the init's.
+ */
+typedef struct {
+	const char *git_dir;
+	gitkit_file_id ids[GITKIT_INIT_LAYOUT_LEN];
+} gitkit_created_watch;
+
+static GITKIT_THREAD_LOCAL gitkit_created_watch *gitkit_current_watch;
+
+void gitkit_created_watch_notify(void)
+{
+	gitkit_created_watch *watch = gitkit_current_watch;
+	gitkit_file_id now;
+	git_str path = GIT_STR_INIT;
+	size_t i;
+
+	if (watch == NULL)
+		return;
+	for (i = 0; i < GITKIT_INIT_LAYOUT_LEN; i++) {
+		gitkit_file_id *id = &watch->ids[i];
+		int is_dir = gitkit_init_layout[i].is_dir;
+
+		if (git_str_joinpath(&path, watch->git_dir, gitkit_init_layout[i].path) < 0) {
+			memset(id, 0, sizeof(*id));
+			id->dev = 1;	/* not provable: never recorded again */
+			continue;
+		}
+		gitkit_created_id(&now, path.ptr);
+		if (!id->present && id->dev == 0 && id->ino == 0) {
+			*id = now;	/* first seen now, or still absent */
+		} else if (id->present &&
+		           (!now.present || now.dev != id->dev || now.ino != id->ino ||
+		            (!is_dir && (now.ctime_sec != id->ctime_sec ||
+		                         now.ctime_nsec != id->ctime_nsec)))) {
+			memset(id, 0, sizeof(*id));
+			id->dev = 1;	/* changed since: not provable */
+		}
+	}
+	git_str_dispose(&path);
+}
+
 int gitkit_repository_init_created(
 	git_repository **out, const char *path, unsigned bare)
 {
 	git_repository_init_options opts = GIT_REPOSITORY_INIT_OPTIONS_INIT;
 	git_str parent = GIT_STR_INIT, dotgit = GIT_STR_INIT;
 	gitkit_file_id root_id = { 0 }, dotgit_id = { 0 };
+	gitkit_created_watch watch, *previous = gitkit_current_watch;
 	gitkit_created_entry entries[GITKIT_INIT_LAYOUT_LEN + 1];
 	char prefixed[GITKIT_INIT_LAYOUT_LEN][64];
 	struct stat st;
-	size_t i;
+	size_t i, len = 0;
 	int error;
 
 	/* git_repository_init()'s, refusing a repository someone else made. */
@@ -327,29 +379,31 @@ int gitkit_repository_init_created(
 		gitkit_created_id(&dotgit_id, dotgit.ptr);
 	git_error_clear();
 
+	memset(&watch, 0, sizeof(watch));
+	watch.git_dir = bare ? path : dotgit.ptr;
+	gitkit_current_watch = &watch;
 	error = git_repository_init_ext(out, path, &opts);
+	gitkit_current_watch = previous;
+
+	/* Each file of the layout only as the init wrote it. */
+	if (!bare)
+		entries[len++] = (gitkit_created_entry){ ".git", 1, &dotgit_id };
+	for (i = 0; i < GITKIT_INIT_LAYOUT_LEN; i++, len++) {
+		entries[len] = gitkit_init_layout[i];
+		entries[len].id = &watch.ids[i];
+		if (!bare && root_id.present) {
+			snprintf(prefixed[i], sizeof(prefixed[i]), ".git/%s",
+			         gitkit_init_layout[i].path);
+			entries[len].path = prefixed[i];
+		}
+	}
 
 	if (error < 0 && root_id.present && (bare || dotgit_id.present)) {
-		size_t len = 0;
-
-		if (!bare)
-			entries[len++] = (gitkit_created_entry){ ".git", 1, &dotgit_id };
-		for (i = 0; i < GITKIT_INIT_LAYOUT_LEN; i++) {
-			entries[len] = gitkit_init_layout[i];
-			if (!bare) {
-				snprintf(prefixed[i], sizeof(prefixed[i]), ".git/%s",
-				         gitkit_init_layout[i].path);
-				entries[len].path = prefixed[i];
-			}
-			len++;
-		}
 		gitkit_created_dir root = { path, &root_id, entries, len };
 
 		gitkit_remove_created_dirs(&root, 1);
 	} else if (error < 0 && dotgit_id.present) {
-		gitkit_created_dir git_dir = {
-			dotgit.ptr, &dotgit_id, gitkit_init_layout, GITKIT_INIT_LAYOUT_LEN
-		};
+		gitkit_created_dir git_dir = { dotgit.ptr, &dotgit_id, entries + 1, len - 1 };
 
 		gitkit_remove_created_dirs(&git_dir, 1);
 	}
@@ -360,6 +414,10 @@ int gitkit_repository_init_created(
 }
 
 #else /* GIT_WIN32 */
+
+void gitkit_created_watch_notify(void)
+{
+}
 
 int gitkit_repository_init_created(
 	git_repository **out, const char *path, unsigned bare)
@@ -381,3 +439,37 @@ int gitkit_remove_created_dirs(const gitkit_created_dir *dirs, size_t len)
 }
 
 #endif /* GIT_WIN32 */
+
+/*
+ * git_branch_delete(), for a branch the operation created, in the other
+ * order: it removes `branch.<name>.*` before its compare-and-delete of the
+ * ref, so a branch someone moved meanwhile kept its ref but lost its
+ * config. Here the ref goes first, only while it still points where
+ * `branch` does, and the config only after that.
+ */
+int gitkit_branch_delete_created(git_reference *branch)
+{
+	git_str section = GIT_STR_INIT;
+	int error;
+
+	GIT_ASSERT_ARG(branch);
+
+	if (!git_reference_is_branch(branch)) {
+		git_error_set(GIT_ERROR_INVALID, "reference '%s' is not a local branch",
+		              git_reference_name(branch));
+		return -1;
+	}
+	if (git_branch_is_checked_out(branch)) {
+		git_error_set(GIT_ERROR_REFERENCE, "cannot delete branch '%s' as it is "
+		              "the current HEAD of a repository", git_reference_name(branch));
+		return -1;
+	}
+	if ((error = git_reference_delete(branch)) < 0)
+		return error;
+
+	if ((error = git_str_join(&section, '.', "branch",
+	                          git_reference_name(branch) + strlen(GIT_REFS_HEADS_DIR))) == 0)
+		error = git_config_rename_section(git_reference_owner(branch), section.ptr, NULL);
+	git_str_dispose(&section);
+	return error;
+}

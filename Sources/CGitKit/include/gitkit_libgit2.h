@@ -293,4 +293,12 @@ GIT_EXTERN(int) gitkit_worktree_add(
 GIT_EXTERN(int) gitkit_repository_init_created(
 	git_repository **out, const char *path, unsigned bare);
 
+/*
+ * GitKit addition, implemented in Sources/Clibgit2Patches/created_dir.c:
+ * git_branch_delete() for a branch the caller created, deleting the ref
+ * only while it still points where `branch` does (compare-and-delete), and
+ * its `branch.<name>` config only once the ref is gone.
+ */
+GIT_EXTERN(int) gitkit_branch_delete_created(git_reference *branch);
+
 #endif /* GITKIT_LIBGIT2_H */

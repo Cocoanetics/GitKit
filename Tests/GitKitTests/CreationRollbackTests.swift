@@ -148,22 +148,21 @@ struct CreationRollbackTests {
         #expect(try String(contentsOf: config, encoding: .utf8).contains("note = mine"))
     }
 
-    @Test("a file someone adds to a new clone keeps the clone")
-    func addedFileKeepsClone() throws {
-        defer { fixtures.removeAll() }
-        let (source, _, _) = try makeSource()
+    /// Clones into a new and an existing empty `probe-clone`; the refused
+    /// include's policy, in the new repository's open, runs `meanwhile` on
+    /// each first.
+    private func failingClones(
+        _ source: URL, meanwhile: @escaping @Sendable (_ directory: URL) throws -> Void
+    ) throws -> [URL] {
         let extra = fixtures.url("extra.config")
         try "[test]\n\textra = 1\n".write(to: extra, atomically: true, encoding: .utf8)
         let global = fixtures.url("global.config")
         try "[includeIf \"gitdir:**/probe-clone/\"]\n\tpath = \(extra.path)\n"
             .write(to: global, atomically: true, encoding: .utf8)
-        let target = fixtures.url("probe-clone")
-        let existing = try fixtures.directory("existing/probe-clone")
-
-        for (directory, notes) in [(target, "notes.txt"), (existing, ".git/notes.txt")] {
-            let file = directory.appendingPathComponent(notes)
+        let directories = [fixtures.url("probe-clone"), try fixtures.directory("existing/probe-clone")]
+        for directory in directories {
             let policy = ConfigIncludePolicy { include in
-                if include.path == extra.path { try? Data("mine\n".utf8).write(to: file) }
+                if include.path == extra.path { try? meanwhile(directory) }
                 return false
             }
             #expect(throws: Libgit2Error.self) {
@@ -174,7 +173,35 @@ struct CreationRollbackTests {
                         preparation: RepositoryPreparation { _ in Issue.record("prepared") })
                 }
             }
-            #expect(try Data(contentsOf: file) == Data("mine\n".utf8))
+        }
+        return directories
+    }
+
+    @Test("a file someone adds to a new clone keeps the clone")
+    func addedFileKeepsClone() throws {
+        defer { fixtures.removeAll() }
+        let (source, _, _) = try makeSource()
+        for directory in try failingClones(source, meanwhile: { directory in
+            try Data("mine\n".utf8).write(to: directory.appendingPathComponent(".git/notes.txt"))
+        }) {
+            #expect(try Data(contentsOf: directory.appendingPathComponent(".git/notes.txt")) == Data("mine\n".utf8))
+            #expect(Self.exists(directory.appendingPathComponent(".git/HEAD")))
+        }
+    }
+
+    @Test("a clone config someone writes to meanwhile is not the init's: the clone is kept")
+    func rewrittenConfigKeepsClone() throws {
+        defer { fixtures.removeAll() }
+        let (source, _, _) = try makeSource()
+        for directory in try failingClones(source, meanwhile: { directory in
+            // In place, as an editor would: same file, new content.
+            let handle = try FileHandle(forWritingTo: directory.appendingPathComponent(".git/config"))
+            defer { try? handle.close() }
+            try handle.seekToEnd()
+            try handle.write(contentsOf: Data("[x]\n\ty = z\n".utf8))
+        }) {
+            let config = try String(contentsOf: directory.appendingPathComponent(".git/config"), encoding: .utf8)
+            #expect(config.contains("y = z"))
             #expect(Self.exists(directory.appendingPathComponent(".git/HEAD")))
         }
     }
