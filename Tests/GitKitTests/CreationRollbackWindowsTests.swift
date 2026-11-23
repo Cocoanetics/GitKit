@@ -9,6 +9,23 @@ import CGitKit
 
 extension CreationRollbackTests {
 
+    /// Clones into `directory`, refused by the include policy in the new
+    /// repository's own open.
+    func expectFailingClone(from source: URL, into directory: URL) throws {
+        let extra = fixtures.url("extra.config")
+        try "[test]\n\textra = 1\n".write(to: extra, atomically: true, encoding: .utf8)
+        let global = fixtures.url("global.config")
+        try "[includeIf \"gitdir:**/probe-clone/\"]\n\tpath = \(extra.path)\n"
+            .write(to: global, atomically: true, encoding: .utf8)
+        _ = Self.trace()
+        #expect(throws: Libgit2Error.self) {
+            try Repository.withOperationConfiguration(OperationConfiguration(
+                levels: [.file(global, .global)], includePolicy: ConfigIncludePolicy { _ in false })) {
+                try Repository.clone(fromRemote: source.path, to: directory, progress: Self.silent)
+            }
+        }
+    }
+
     /// `path` as Win32 takes it: drive-letter, backslash-separated.
     private static func win32Path(_ url: URL) -> String {
         var path = url.path
@@ -118,43 +135,71 @@ extension CreationRollbackTests {
         }
     }
 
-    /// Whether `writeLateStream` could add a stream, sharing everything,
-    /// to a checked directory about to be deleted.
-    nonisolated(unsafe) private static var lateStreamWritten = false
+    /// Makes `link` another name of `target`, with Win32's CreateHardLinkW.
+    static func makeHardLink(_ link: URL, to target: URL) throws {
+        let made = win32Path(link).withCString(encodedAs: UTF16.self) { link in
+            win32Path(target).withCString(encodedAs: UTF16.self) { CreateHardLinkW(link, $0, nil) }
+        }
+        guard made else { throw CocoaError(.fileWriteUnknown, userInfo: ["win32": GetLastError()]) }
+    }
+
+    /// What `writeLateStream` did: how often it ran, where it wrote (the
+    /// checked directory, or `.git` in it, which the walk checked), and
+    /// whether the stream could be made, sharing everything.
+    nonisolated(unsafe) private static var lateCalls = 0
+    nonisolated(unsafe) private static var lateSuffix = ""
+    nonisolated(unsafe) private static var lateWritten = false
+    nonisolated(unsafe) private static var lateError: DWORD = 0
 
     private static let writeLateStream: gitkit_created_restore_hook = { path in
-        guard let path, !lateStreamWritten else { return }
-        let stream = String(cString: path) + ":late"
+        guard let path else { return }
+        lateCalls += 1
+        guard lateCalls == 1 else { return }
+        let stream = String(cString: path) + lateSuffix + ":late"
         let handle = stream.withCString(encodedAs: UTF16.self) {
             CreateFileW($0, DWORD(GENERIC_WRITE),
                         DWORD(FILE_SHARE_READ) | DWORD(FILE_SHARE_WRITE) | DWORD(FILE_SHARE_DELETE),
                         nil, DWORD(CREATE_NEW), 0, nil)
         }
-        guard handle != INVALID_HANDLE_VALUE, let handle else { return }
+        guard handle != INVALID_HANDLE_VALUE, let handle else {
+            lateError = GetLastError()
+            return
+        }
         defer { CloseHandle(handle) }
         var written: DWORD = 0
-        lateStreamWritten = Array("late\n".utf8).withUnsafeBytes {
+        lateWritten = Array("late\n".utf8).withUnsafeBytes {
             WriteFile(handle, $0.baseAddress, DWORD($0.count), &written, nil)
         }
+        if !lateWritten { lateError = GetLastError() }
     }
 
-    @Test("a stream someone adds to a checked directory just before its delete keeps it, with the stream")
-    func lateDirectoryStreamIsKept() throws {
+    @Test("a stream someone adds to a checked directory just before its delete keeps it, with the stream",
+          arguments: ["", "\\.git"])
+    func lateDirectoryStreamIsKept(suffix: String) throws {
         defer { fixtures.removeAll() }
         let (source, _, _) = try makeSource()
-        Self.lateStreamWritten = false
+        Self.lateCalls = 0
+        Self.lateSuffix = suffix
+        Self.lateWritten = false
+        Self.lateError = 0
         gitkit_created_set_delete_hook(Self.writeLateStream)
         defer { gitkit_created_set_delete_hook(nil) }
         let directory = fixtures.url("probe-clone")
         try expectFailingClone(from: source, into: directory)
         gitkit_created_set_delete_hook(nil)
 
-        // How Windows behaved, for the record: a pin denying delete sharing
-        // does not stop another stream being opened by one sharing delete.
-        print("CreationRollbackTests: late stream written: \(Self.lateStreamWritten)")
-        if Self.lateStreamWritten {
-            #expect(Self.streamExists(directory.path + ":late"), Self.trace())
+        // The hook ran between the last check and the delete.
+        #expect(Self.lateCalls >= 1, "the delete hook ran")
+        // How Windows behaved, for the record: whether a pin denying delete
+        // sharing keeps another stream from being made by one sharing it.
+        print("CreationRollbackTests: late stream on '\(suffix)': written \(Self.lateWritten), "
+              + "Win32 error \(Self.lateError)")
+        let target = suffix.isEmpty ? directory : directory.appendingPathComponent(".git")
+        if Self.lateWritten {
+            #expect(Self.streamExists(target.path + ":late"), Self.trace())
         } else {
+            // Refused: nothing foreign was added, so the clone goes.
+            #expect(Self.lateError != 0)
             #expect(!Self.exists(directory), Self.trace())
         }
     }

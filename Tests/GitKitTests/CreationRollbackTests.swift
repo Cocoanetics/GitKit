@@ -154,23 +154,6 @@ struct CreationRollbackTests {
         #expect(prepared)
     }
 
-    /// Clones into `directory`, refused by the include policy in the new
-    /// repository's own open.
-    func expectFailingClone(from source: URL, into directory: URL) throws {
-        let extra = fixtures.url("extra.config")
-        try "[test]\n\textra = 1\n".write(to: extra, atomically: true, encoding: .utf8)
-        let global = fixtures.url("global.config")
-        try "[includeIf \"gitdir:**/probe-clone/\"]\n\tpath = \(extra.path)\n"
-            .write(to: global, atomically: true, encoding: .utf8)
-        _ = Self.trace()
-        #expect(throws: Libgit2Error.self) {
-            try Repository.withOperationConfiguration(OperationConfiguration(
-                levels: [.file(global, .global)], includePolicy: ConfigIncludePolicy { _ in false })) {
-                try Repository.clone(fromRemote: source.path, to: directory, progress: Self.silent)
-            }
-        }
-    }
-
     @Test("an add whose own open of the new worktree fails prunes it and the branch it created")
     func failedNativeOpenPrunesWorktree() throws {
         defer { fixtures.removeAll() }
@@ -371,9 +354,12 @@ struct CreationRollbackTests {
         let (source, secret, _) = try makeSource()
         let head = source.appendingPathComponent(".git/worktrees/linked/HEAD")
         let link = fixtures.url("HEAD-link")
+        let linked = SetupRan()
         let (_, path) = try failingAdd(source, secret: secret) { _ in
-            try FileManager.default.linkItem(at: head, to: link)
+            try Self.makeHardLink(link, to: head)
+            linked.mark()
         }
+        #expect(linked.ran, "the hard link was made while the add's open ran")
         #expect(Self.exists(head))
         #expect(Self.exists(path.appendingPathComponent(".git")))
         #expect(try Data(contentsOf: link) == (try Data(contentsOf: head)))
@@ -534,6 +520,31 @@ struct CreationRollbackTests {
             #expect(Self.exists(directory.appendingPathComponent(".git/config")))
         }
     }
+}
+
+extension CreationRollbackTests {
+
+    /// Whether a test's setup inside the include policy ran to its end.
+    final class SetupRan: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = false
+
+        func mark() {
+            lock.lock(); defer { lock.unlock() }
+            value = true
+        }
+
+        var ran: Bool {
+            lock.lock(); defer { lock.unlock() }
+            return value
+        }
+    }
+
+    #if !os(Windows)
+    static func makeHardLink(_ link: URL, to target: URL) throws {
+        try FileManager.default.linkItem(at: target, to: link)
+    }
+    #endif
 }
 
 #endif
