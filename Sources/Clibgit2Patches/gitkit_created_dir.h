@@ -28,7 +28,8 @@ typedef struct {
 /* What gitkit_remove_created_dirs() did. */
 #define GITKIT_CREATED_REMOVED 1	/* the directories are gone */
 #define GITKIT_CREATED_KEPT 0		/* kept */
-#define GITKIT_CREATED_STRANDED -1	/* kept, one under its private name */
+#define GITKIT_CREATED_STRANDED -1	/* kept, one under its private name:
+					 * something else took its name */
 
 /* Records `path`'s identity, not following a symlink. */
 void gitkit_created_id(gitkit_file_id *out, const char *path);
@@ -40,7 +41,9 @@ void gitkit_created_id(gitkit_file_id *out, const char *path);
  * names one, the very file recorded, unchanged. Each is first renamed to a
  * private name next to it, in one step, so nothing can be added to it or
  * put in its place while they are checked; if any doesn't match, all are
- * renamed back and kept. Something added to one after the check (through a
+ * renamed back and kept. Neither rename replaces anything (where the
+ * platform can't promise that, nothing is renamed): one whose name was
+ * taken meanwhile stays under its private name. Something added to one after the check (through a
  * handle opened before) stops the removal there and keeps what is left.
  * Never follows a symlink. Leaves libgit2's last error as it was.
  */

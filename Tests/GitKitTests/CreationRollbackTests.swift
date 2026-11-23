@@ -4,6 +4,7 @@
 #if os(macOS) || os(Linux)
 import Foundation
 import Testing
+import CGitKit
 @testable import GitKit
 
 /// The refused include's policy runs inside the failing open, after the
@@ -119,6 +120,48 @@ struct CreationRollbackTests {
         }
         #expect(Self.exists(head))
         #expect(Self.exists(path.appendingPathComponent(".git")))
+    }
+
+    /// The inode of the directory `takeName` made, for the C hook.
+    nonisolated(unsafe) private static var takenInode: UInt64 = 0
+
+    /// Another writer making an empty directory at the working directory's
+    /// name just before the kept worktree is renamed back there.
+    private static let takeName: gitkit_created_restore_hook = { path in
+        guard let path, String(cString: path).hasSuffix("/linked") else { return }
+        let url = URL(fileURLWithPath: String(cString: path))
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
+        let inode = (try? FileManager.default.attributesOfItem(atPath: url.path)[.systemFileNumber]) as? UInt64
+        takenInode = inode ?? 0
+    }
+
+    @Test("an empty directory that takes the kept worktree's name is not replaced by it")
+    func takenNameIsNotReplaced() throws {
+        defer { fixtures.removeAll() }
+        let (source, secret, _) = try makeSource()
+        let head = source.appendingPathComponent(".git/worktrees/linked/HEAD")
+        Self.takenInode = 0
+        gitkit_created_set_restore_hook(Self.takeName)
+        defer { gitkit_created_set_restore_hook(nil) }
+        let (_, path) = try failingAdd(source, secret: secret) { _ in
+            // Something the add can't prove its own: the worktree is kept.
+            let text = try String(contentsOf: head, encoding: .utf8)
+            try FileManager.default.removeItem(at: head)
+            try text.write(to: head, atomically: false, encoding: .utf8)
+        }
+        gitkit_created_set_restore_hook(nil)
+
+        // The other writer's directory, as it made it.
+        let inode = try FileManager.default.attributesOfItem(atPath: path.path)[.systemFileNumber] as? UInt64
+        #expect(Self.takenInode != 0 && inode == Self.takenInode)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: path.path).isEmpty)
+        // The worktree, kept whole under its private name; its git directory back.
+        let parent = path.deletingLastPathComponent()
+        let kept = try FileManager.default.contentsOfDirectory(atPath: parent.path)
+            .filter { $0.hasPrefix(".linked.gitkit-rollback-") }
+        #expect(kept.count == 1)
+        #expect(kept.allSatisfy { Self.exists(parent.appendingPathComponent($0).appendingPathComponent(".git")) })
+        #expect(Self.exists(head))
     }
 
     @Test("a worktree directory replaced by a symlink leaves its target and the original alone")

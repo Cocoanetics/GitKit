@@ -16,7 +16,10 @@
  * and, where the operation recorded them, the very files it wrote, unchanged
  * (device, inode and ctime). It is renamed to a private name next to it
  * first, in one step, so it can't change or be replaced while it is checked;
- * if anything doesn't match, it is renamed back and kept. Entries are
+ * if anything doesn't match, it is renamed back and kept. Neither rename
+ * replaces what is at its destination (renameatx_np / renameat2 no-replace;
+ * elsewhere nothing is renamed): if something took the name meanwhile, it
+ * stays, and the creation stays under its private name. Entries are
  * opened relative to their directory and never through a symlink, and a
  * directory is removed only while empty. Windows keeps everything.
  */
@@ -46,6 +49,41 @@
 #define GITKIT_DIR_FLAGS (O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
 
 #define GITKIT_THREAD_LOCAL __thread
+
+#if defined(__linux__) || defined(__ANDROID__)
+#  include <sys/syscall.h>
+#  ifndef RENAME_NOREPLACE
+#    define RENAME_NOREPLACE (1 << 0)
+#  endif
+#endif
+
+/*
+ * renameat() that fails (EEXIST) instead of replacing what is at `to`:
+ * plain rename silently replaces an empty directory, which may be someone
+ * else's. Where the platform or file system can't, nothing is renamed.
+ */
+static int gitkit_rename_noreplace(int fromfd, const char *from, int tofd, const char *to)
+{
+#if defined(__APPLE__)
+	return renameatx_np(fromfd, from, tofd, to, RENAME_EXCL);
+#elif (defined(__linux__) || defined(__ANDROID__)) && defined(SYS_renameat2)
+	return (int)syscall(SYS_renameat2, fromfd, from, tofd, to, RENAME_NOREPLACE);
+#else
+	GIT_UNUSED(fromfd);
+	GIT_UNUSED(from);
+	GIT_UNUSED(tofd);
+	GIT_UNUSED(to);
+	errno = ENOSYS;
+	return -1;
+#endif
+}
+
+static GITKIT_THREAD_LOCAL gitkit_created_restore_hook gitkit_restore_hook;
+
+void gitkit_created_set_restore_hook(gitkit_created_restore_hook hook)
+{
+	gitkit_restore_hook = hook;
+}
 
 static void gitkit_id_from_stat(gitkit_file_id *out, const struct stat *st)
 {
@@ -225,7 +263,7 @@ static int gitkit_quarantine_dir(gitkit_quarantine *q, const gitkit_created_dir 
 		return -1;
 	if (fstatat(q->parent, q->name, &st, AT_SYMLINK_NOFOLLOW) < 0 ||
 	    !S_ISDIR(st.st_mode) || !gitkit_is_id(&st, dir->id, 0) ||
-	    renameat(q->parent, q->name, q->parent, q->quarantine) < 0)
+	    gitkit_rename_noreplace(q->parent, q->name, q->parent, q->quarantine) < 0)
 		return -1;
 	q->moved = 1;
 	return 0;
@@ -278,8 +316,14 @@ int gitkit_remove_created_dirs(const gitkit_created_dir *dirs, size_t len)
 
 	for (i = 0; i < len; i++) {
 		if (q[i].moved) {
-			result = GITKIT_CREATED_KEPT;
-			if (renameat(q[i].parent, q[i].quarantine, q[i].parent, q[i].name) < 0)
+			if (result == GITKIT_CREATED_REMOVED)
+				result = GITKIT_CREATED_KEPT;
+			if (gitkit_restore_hook)
+				gitkit_restore_hook(dirs[i].path);
+			/* Whatever took its name meanwhile is not replaced: it stays,
+			 * and so does this, under its private name. */
+			if (gitkit_rename_noreplace(q[i].parent, q[i].quarantine,
+			                            q[i].parent, q[i].name) < 0)
 				result = GITKIT_CREATED_STRANDED;
 		}
 		if (q[i].parent >= 0)
@@ -417,6 +461,11 @@ int gitkit_repository_init_created(
 
 void gitkit_created_watch_notify(void)
 {
+}
+
+void gitkit_created_set_restore_hook(gitkit_created_restore_hook hook)
+{
+	GIT_UNUSED(hook);
 }
 
 int gitkit_repository_init_created(

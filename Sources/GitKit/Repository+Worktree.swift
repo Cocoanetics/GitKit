@@ -173,7 +173,14 @@ extension Repository {
                 }
             }
         } catch {
-            created.remove()
+            // Once the add made the worktree, its two directories were
+            // rolled back with it, or kept; either way not touched here
+            // again: what now holds a kept one's name is someone else's.
+            if made == GITKIT_WORKTREE_ADD_NOT_MADE {
+                created.remove()
+            } else {
+                CreatedWorktreePaths(adminDir: created.adminDir, gitDir: nil, workdir: nil).remove()
+            }
             // A worktree kept still has the branch checked out.
             if let createdBranch, made != GITKIT_WORKTREE_ADD_KEPT {
                 deleteCreatedBranch(createdBranch)

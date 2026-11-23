@@ -294,6 +294,15 @@ GIT_EXTERN(int) gitkit_repository_init_created(
 	git_repository **out, const char *path, unsigned bare);
 
 /*
+ * GitKit testing seam, implemented in Sources/Clibgit2Patches/created_dir.c:
+ * on the calling thread, `hook` (NULL clears it) runs with a rolled-back
+ * directory's path just before a kept one is renamed back there. Not a
+ * stable API.
+ */
+typedef void (*gitkit_created_restore_hook)(const char *path);
+GIT_EXTERN(void) gitkit_created_set_restore_hook(gitkit_created_restore_hook hook);
+
+/*
  * GitKit addition, implemented in Sources/Clibgit2Patches/created_dir.c:
  * git_branch_delete() for a branch the caller created, deleting the ref
  * only while it still points where `branch` does (compare-and-delete).
