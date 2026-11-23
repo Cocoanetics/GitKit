@@ -169,7 +169,9 @@ Operations are synchronous, `throws` (typed ``Libgit2Error``), and return
   opened earlier keep their config. Entries git reads from the repository's
   own config only (`core.repositoryformatversion`, `core.bare`,
   `core.worktree`, `extensions.*`) are refused, and skipped in a file level
-  and the files it includes. Not covered: configs libgit2
+  and the files it includes. A level's missing file reads as empty; one that
+  exists but cannot be read is thrown before the body runs, and fails any open
+  that later finds it unreadable. Not covered: configs libgit2
   reads without opening a repository (an init's template directory and
   `init.defaultBranch`, a detached remote).
 - **Work** — `add`, `commitDetailed`, `amendDetailed`, `status`, `diff`,

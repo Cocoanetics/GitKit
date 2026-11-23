@@ -224,7 +224,9 @@ GIT_EXTERN(int) gitkit_repository_config_changed(git_repository *repo);
  * read; the open's write target stays the repository's own config file. A
  * level never yields core.repositoryformatversion, core.bare, core.worktree
  * or extensions.* (git reads them from the repository's own config only),
- * nor do the files it includes.
+ * nor do the files it includes. A level's file reads as empty when missing;
+ * _add_file refuses one that exists but cannot be read, and an open that
+ * finds it unreadable later fails (it does not open with no config).
  *
  * Build a scope with _new and _add_* (each copies its arguments; adding a
  * level again replaces it), push it on the thread that runs the operation,

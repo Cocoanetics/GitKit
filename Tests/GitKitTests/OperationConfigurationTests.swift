@@ -181,7 +181,9 @@ struct OperationConfigurationTests {
         let outer = try Repository.open(at: fixture.outer)
         let refuseAll = ConfigIncludePolicy { _ in false }
 
-        let configuration = OperationConfiguration(levels: [Self.autocrlf], includePolicy: refuseAll)
+        // The host's config is left out: an include in it would be refused.
+        let configuration = OperationConfiguration(
+            levels: Self.noGlobal.levels + [Self.autocrlf], includePolicy: refuseAll)
         let report = try Repository.withOperationConfiguration(configuration) { try outer.status() }
         #expect(report.isClean)
         #expect(!report.entries.contains { $0.path == "missing-sub" })
@@ -431,6 +433,78 @@ struct OperationConfigurationTests {
             // read the included core.autocrlf.
             #expect(try outer.status().isClean)
         }
+    }
+
+    @Test("an unreadable level file is refused before the body and fails the opens that find it",
+          .enabled(if: geteuid() != 0, "root reads a file whatever its mode"))
+    func unreadableLevelFileFails() throws {
+        defer { fixtures.removeAll() }
+        let fixture = try makeFixture()
+        let global = try write("[core]\n\tautocrlf = true\n", to: "global")
+        try git(["config", "--unset", "core.autocrlf"], in: fixture.inner)
+        let outer = try Repository.open(at: fixture.outer)
+        func unreadable(_ url: URL) -> String {
+            "failed to read config file '\(url.path)': \(String(cString: strerror(EACCES)))"
+        }
+        func setMode(_ mode: Int, _ url: URL) throws {
+            try FileManager.default.setAttributes([.posixPermissions: mode], ofItemAtPath: url.path)
+        }
+        defer { try? setMode(0o644, global) }
+        let configuration = OperationConfiguration(levels: Self.hostIsolated + [.file(global, .global)])
+
+        // A missing file reads as empty: the leaf is dirty, as with no level.
+        let absent = OperationConfiguration(levels: Self.hostIsolated + [.file(fixtures.url("absent"), .global)])
+        #expect(try Repository.withOperationConfiguration(absent) {
+            try outer.status().entries.map(\.path)
+        } == ["middle-sub"])
+
+        // Unreadable from the start: thrown before the body changes anything.
+        try setMode(0, global)
+        let before = try configBytes(fixture)
+        var ran = false
+        let refused = #expect(throws: Libgit2Error.self) {
+            try Repository.withOperationConfiguration(configuration) {
+                ran = true
+                try outer.configSet("t.mutated", "1")
+            }
+        }
+        #expect(!ran)
+        #expect(refused?.message == unreadable(global))
+        #expect(try configBytes(fixture) == before)
+
+        // Unreadable once the body runs: an open fails rather than opening
+        // with no config, and the hidden submodule opens libgit2 swallows
+        // are thrown after the body.
+        try setMode(0o644, global)
+        var opened: Result<URL?, Error>?
+        var statusReturned = false
+        let swallowed = #expect(throws: Libgit2Error.self) {
+            try Repository.withOperationConfiguration(configuration) {
+                #expect(try outer.status().isClean)
+                try setMode(0, global)
+                opened = Result { try Repository.open(at: fixture.outer).workdirURL }
+                _ = try outer.status()
+                statusReturned = true
+            }
+        }
+        let openFailure = #expect(throws: Libgit2Error.self) { _ = try opened?.get() }
+        #expect(openFailure?.message == unreadable(global))
+        #expect(statusReturned)
+        #expect(swallowed?.message == unreadable(global))
+
+        // An unreadable file the level includes fails the open, naming it.
+        try setMode(0o644, global)
+        let included = try write("[t]\n\tx = 1\n", to: "global-include")
+        let including = try write("[include]\n\tpath = \(included.path)\n", to: "including")
+        defer { try? setMode(0o644, included) }
+        try setMode(0, included)
+        let includeFailure = #expect(throws: Libgit2Error.self) {
+            try Repository.withOperationConfiguration(OperationConfiguration(
+                levels: Self.hostIsolated + [.file(including, .global)])) {
+                _ = try Repository.open(at: fixture.outer)
+            }
+        }
+        #expect(includeFailure?.message.contains(included.path) == true)
     }
 
     @Test("settings git reads from the repository's own config are refused")

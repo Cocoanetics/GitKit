@@ -42,6 +42,11 @@
  * each load reads the file and parses the text again into backends the
  * config owns.
  *
+ * A scope's file that is missing reads as empty; one that exists but
+ * cannot be read is refused when the scope is built and fails any open
+ * that finds it so later (libgit2 would read it as missing and open the
+ * repository with no config at all).
+ *
  * A failure to read a level while a scope is active (a refused include —
  * recorded where it is refused, config_file_patched.c — an unreadable or
  * unparsable file, an entries level that doesn't parse) is recorded in the
@@ -187,6 +192,23 @@ static gitkit_config_scope_level *gitkit_scope_slot(
 	return &scope->levels[scope->levels_len++];
 }
 
+/*
+ * A scope's file reads as empty when it is missing, as a search-path file
+ * does. One that exists but cannot be read is an error, not git's silently
+ * ignored search-path file: config_file_open() reports it as GIT_ENOTFOUND
+ * with no error set, and an open handed GIT_ENOTFOUND from load_config()
+ * carries on with no config at all — no repository config, workdir or
+ * format checks.
+ */
+static int gitkit_scope_file_readable(const char *path)
+{
+	if (p_access(path, R_OK) == 0 || errno == ENOENT || errno == ENOTDIR)
+		return 0;
+
+	git_error_set(GIT_ERROR_OS, "failed to read config file '%s'", path);
+	return -1;
+}
+
 int gitkit_config_scope_add_file(
 	gitkit_config_scope *scope, git_config_level_t level, const char *path)
 {
@@ -194,6 +216,10 @@ int gitkit_config_scope_add_file(
 
 	GIT_ASSERT_ARG(scope);
 	GIT_ASSERT_ARG(path);
+
+	/* Refused here already, before the operation runs. */
+	if (gitkit_scope_file_readable(path) < 0)
+		return -1;
 
 	if ((slot = gitkit_scope_slot(scope, level)) == NULL)
 		return -1;
@@ -363,7 +389,10 @@ void gitkit_config_scope__record(int code)
 	}
 	scope->failures = grown;
 
+	/* With no error set, git_error_last() is libgit2's "no error". */
 	last = git_error_last();
+	if (last && last->klass == GIT_ERROR_NONE)
+		last = NULL;
 	grown = &scope->failures[scope->failures_len];
 	grown->code = code < 0 ? code : -1;
 	grown->klass = last ? last->klass : 0;
@@ -575,15 +604,12 @@ static int gitkit_scope_add_level(
 {
 	git_config_backend_memory_options options = GIT_CONFIG_BACKEND_MEMORY_OPTIONS_INIT;
 	git_config_backend *inner = NULL, *backend = NULL;
-	struct stat st;
 	int error;
 
 	if (level->path) {
-		/* As git_config_add_file_ondisk(): a missing file reads as empty. */
-		if (p_stat(level->path, &st) < 0 && errno != ENOENT && errno != ENOTDIR) {
-			git_error_set(GIT_ERROR_CONFIG, "failed to stat '%s'", level->path);
+		/* It may have become unreadable since the scope was built. */
+		if (gitkit_scope_file_readable(level->path) < 0)
 			return -1;
-		}
 		error = git_config_backend_from_file(&inner, level->path);
 	} else {
 		options.backend_type = level->backend_type;
@@ -594,6 +620,18 @@ static int gitkit_scope_add_level(
 
 	if ((error = git_config_add_backend(cfg, backend, level->level, repo, 1)) < 0)
 		backend->free(backend);	/* not owned by the config yet */
+
+	/*
+	 * Only config_file_open() reports GIT_ENOTFOUND: the file became
+	 * unreadable since the check above. Never hand that code to the open.
+	 */
+	if (error == GIT_ENOTFOUND) {
+		if (!level->path)
+			git_error_set(GIT_ERROR_CONFIG, "an operation config level could not be loaded");
+		else if (gitkit_scope_file_readable(level->path) == 0)
+			git_error_set(GIT_ERROR_CONFIG, "config file '%s' changed while it was read", level->path);
+		error = -1;
+	}
 	return error;
 }
 

@@ -24,7 +24,10 @@ public struct OperationConfiguration: Sendable {
     /// One level of the operation's config.
     public enum Level: Sendable {
         /// The config file at the URL, as `level`. A missing file reads as
-        /// empty. The file is read by each open; its includes go through
+        /// empty; one that exists but cannot be read is an error — thrown
+        /// before the body runs, or by an open that finds it so later (git
+        /// skips an unreadable search-path file; a level the host named is
+        /// not skipped). The file is read by each open; its includes go through
         /// the include policy in force. Repository-only settings in it or
         /// its includes are skipped.
         case file(URL, ConfigLevel)
@@ -87,10 +90,11 @@ extension Repository {
     /// already thrown to `body` by a GitKit call is thrown instead of its
     /// result. When `body` throws, its error is thrown.
     ///
-    /// - Throws: `GIT_EINVALIDSPEC` before `body` runs, for an entry that
+    /// - Throws: before `body` runs, `GIT_EINVALIDSPEC` for an entry that
     ///   is not a valid config entry or names a setting git reads from the
     ///   repository's own config only — `core.repositoryformatversion`,
-    ///   `core.bare`, `core.worktree`, `extensions.*`; a recorded failure;
+    ///   `core.bare`, `core.worktree`, `extensions.*` — or the error reading
+    ///   a level's file that exists but cannot be read; a recorded failure;
     ///   or what `body` throws.
     public static func withOperationConfiguration<T>(
         _ configuration: OperationConfiguration, _ body: () throws -> T
