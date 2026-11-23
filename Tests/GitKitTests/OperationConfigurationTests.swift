@@ -18,6 +18,14 @@ struct OperationConfigurationTests {
     private static let crlf = Data("a\r\nb\r\n".utf8)
     private static let autocrlf = OperationConfiguration.Level.entries(
         [ConfigEntry(name: "core.autocrlf", value: "true")])
+    /// The host's system and XDG files left out, so that a test's own
+    /// levels decide, whatever the machine's config says.
+    private static let hostIsolated: [OperationConfiguration.Level] = [
+        .entries([], .system, name: "isolated"), .entries([], .xdg, name: "isolated")
+    ]
+    /// No global level at all: the control for a test's global level.
+    private static let noGlobal = OperationConfiguration(
+        levels: hostIsolated + [.entries([], .global, name: "isolated")])
 
     private struct Failure: Error, CustomStringConvertible {
         let description: String
@@ -145,15 +153,20 @@ struct OperationConfigurationTests {
         let before = try configBytes(fixture, plus: [global])
         let outer = try Repository.open(at: fixture.outer)
 
-        let configuration = OperationConfiguration(levels: [.file(global, .global)])
+        let configuration = OperationConfiguration(levels: Self.hostIsolated + [.file(global, .global)])
         let entries = try Repository.withOperationConfiguration(configuration) {
             try outer.status().entries.map(\.path)
         }
         #expect(entries == ["middle-sub"])
         #expect(try configBytes(fixture, plus: [global]) == before)
 
-        // Without the leaf's local setting, the global level decides.
+        // Without the leaf's local setting, the global level decides: with
+        // no global level the leaf is dirty, with the operation's it is clean.
         try git(["config", "--unset", "core.autocrlf"], in: fixture.inner)
+        let control = try Repository.withOperationConfiguration(Self.noGlobal) {
+            try outer.status().entries.map(\.path)
+        }
+        #expect(control == ["middle-sub"])
         let clean = try Repository.withOperationConfiguration(configuration) {
             try outer.status().isClean
         }
@@ -215,8 +228,14 @@ struct OperationConfigurationTests {
         let outer = try Repository.open(at: fixture.outer)
 
         let allowing = OperationConfiguration(
-            levels: [.file(global, .global)], includePolicy: ConfigIncludePolicy { _ in true })
+            levels: Self.hostIsolated + [.file(global, .global)],
+            includePolicy: ConfigIncludePolicy { _ in true })
         try git(["config", "--unset", "core.autocrlf"], in: fixture.inner)
+        // Control: with no global level the leaf is dirty, so only the
+        // included file can clean it.
+        #expect(try Repository.withOperationConfiguration(Self.noGlobal) {
+            try outer.status().entries.map(\.path)
+        } == ["middle-sub"])
         #expect(try Repository.withOperationConfiguration(allowing) { try outer.status().isClean })
 
         let refusing = OperationConfiguration(
@@ -338,6 +357,80 @@ struct OperationConfigurationTests {
         #expect(try String(contentsOf: global, encoding: .utf8) == globalText)
         let local = try String(contentsOf: dir.appendingPathComponent(".git/config"), encoding: .utf8)
         #expect(local.contains("[t]") && !local.contains("host"))
+    }
+
+    @Test("a nested scope replaces only the levels it names")
+    func nestedScopeKeepsOuterLevels() throws {
+        defer { fixtures.removeAll() }
+        let fixture = try makeFixture()
+        let global = try write("[core]\n\tautocrlf = true\n[t]\n\thost = outer\n", to: "global")
+        try git(["config", "--unset", "core.autocrlf"], in: fixture.inner)
+        let outer = try Repository.open(at: fixture.outer)
+        func probe(_ name: String) throws -> String? {
+            try Repository.open(at: fixture.outer).configGet(name)
+        }
+
+        let outerScope = OperationConfiguration(levels: Self.hostIsolated + [
+            .file(global, .global),
+            .entries([ConfigEntry(name: "t.app", value: "outer")])
+        ])
+        let systemOnly = OperationConfiguration(levels: [
+            .entries([ConfigEntry(name: "t.system", value: "inner")], .system, name: "inner")
+        ])
+        let emptyGlobal = OperationConfiguration(levels: [.entries([], .global, name: "inner")])
+        try Repository.withOperationConfiguration(outerScope) { () throws -> Void in
+            try Repository.withOperationConfiguration(systemOnly) { () throws -> Void in
+                #expect(try probe("t.host") == "outer")
+                #expect(try probe("t.app") == "outer")
+                #expect(try probe("t.system") == "inner")
+                // The leaf libgit2 opens itself still reads the outer global.
+                #expect(try outer.status().isClean)
+            }
+            try Repository.withOperationConfiguration(emptyGlobal) { () throws -> Void in
+                #expect(try probe("t.host") == nil)
+                #expect(try probe("t.app") == "outer")
+                #expect(try outer.status().entries.map(\.path) == ["middle-sub"])
+            }
+            #expect(try outer.status().isClean)
+        }
+    }
+
+    @Test("a file level and its includes cannot change a repository's format or layout")
+    func fileLevelsSkipRepositoryOnlySettings() throws {
+        defer { fixtures.removeAll() }
+        let fixture = try makeFixture()
+        let elsewhere = try fixtures.directory("elsewhere")
+        let included = try write(
+            "[core]\n\tworktree = \(elsewhere.path)\n\tautocrlf = true\n[t]\n\tincluded = yes\n",
+            to: "global-include")
+        let global = try write("[include]\n\tpath = \(included.path)\n", to: "global")
+        // At the app level, over each repository's own config: libgit2
+        // would open every repository bare, or refuse its format.
+        let app = try write(
+            "[core]\n\tbare = true\n\trepositoryformatversion = 1\n"
+                + "[extensions]\n\tgitkitbogus = yes\n[t]\n\tapp = yes\n",
+            to: "app")
+        try git(["config", "--unset", "core.autocrlf"], in: fixture.inner)
+        let outer = try Repository.open(at: fixture.outer)
+
+        let configuration = OperationConfiguration(
+            levels: Self.hostIsolated + [.file(global, .global), .file(app, .app)],
+            includePolicy: ConfigIncludePolicy { _ in true })
+        try Repository.withOperationConfiguration(configuration) { () throws -> Void in
+            let repo = try Repository.open(at: fixture.outer)
+            #expect(repo.workdirURL?.resolvingSymlinksInPath().path
+                == fixture.outer.resolvingSymlinksInPath().path)
+            #expect(try repo.configGet("core.bare") == "false")
+            #expect(try repo.configGet("core.repositoryformatversion") == "0")
+            #expect(try repo.configGet("core.worktree") == nil)
+            #expect(try repo.configGet("extensions.gitkitbogus") == nil)
+            // The levels' other settings are read, the include's too.
+            #expect(try repo.configGet("t.app") == "yes")
+            #expect(try repo.configGet("t.included") == "yes")
+            // The submodules libgit2 opens itself keep their worktrees and
+            // read the included core.autocrlf.
+            #expect(try outer.status().isClean)
+        }
     }
 
     @Test("settings git reads from the repository's own config are refused")

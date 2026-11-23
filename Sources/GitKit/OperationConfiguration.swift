@@ -13,13 +13,20 @@ import CGitKit
 /// ``ConfigLevel/app`` level is read over a repository's own config, a
 /// ``ConfigLevel/global`` or ``ConfigLevel/system`` one under it. Writes
 /// keep going to the repository's own config file.
+///
+/// A level never sets what git reads from the repository's own config only
+/// — `core.repositoryformatversion`, `core.bare`, `core.worktree`,
+/// `extensions.*`: an entries level naming one is refused, and a file
+/// level's, or a file it includes, are not read, so a level never changes a
+/// repository's format or layout.
 public struct OperationConfiguration: Sendable {
 
     /// One level of the operation's config.
     public enum Level: Sendable {
         /// The config file at the URL, as `level`. A missing file reads as
         /// empty. The file is read by each open; its includes go through
-        /// the include policy in force.
+        /// the include policy in force. Repository-only settings in it or
+        /// its includes are skipped.
         case file(URL, ConfigLevel)
         /// `entries`, in order, as an in-memory `level`; `name` is the
         /// backend type reported for them (`git_config_entry.backend_type`).
@@ -55,7 +62,10 @@ extension Repository {
     /// The scope is the calling thread's, for the synchronous `body` only:
     /// another thread, including one a callback hands work to, does not
     /// see it, and the previous scope (an outer call's, or none) is back
-    /// when this returns or throws. Nothing global changes: no environment
+    /// when this returns or throws. Nested in an outer call, its levels
+    /// replace the outer ones of the same ``ConfigLevel`` only; the outer
+    /// call's other levels stay in force, as does its `includePolicy`
+    /// when `configuration` has none. Nothing global changes: no environment
     /// variable, search path or config file is written; the levels are
     /// copied, so nothing the caller holds is lent to libgit2.
     ///

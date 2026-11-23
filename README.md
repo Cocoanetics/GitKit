@@ -160,14 +160,16 @@ Operations are synchronous, `throws` (typed ``Libgit2Error``), and return
   itself: each submodule during `status` / `diff`, submodule sync, a staged
   gitlink, worktree checks, a local clone. A replaced level's search-path file
   is not read; writes keep going to each repository's own file; nothing global
-  changes, and nesting restores the outer scope. Its optional
+  changes; a nested call replaces only the levels it names, and its end
+  restores the outer scope. Its optional
   `includePolicy` authorises those repositories' includes. libgit2 clears the
   error of a submodule it fails to open; such a failure (a refused include,
   an unreadable level) is recorded and thrown after a body that returned
   normally, unless a GitKit call already threw it to the body. Repositories
   opened earlier keep their config. Entries git reads from the repository's
   own config only (`core.repositoryformatversion`, `core.bare`,
-  `core.worktree`, `extensions.*`) are refused. Not covered: configs libgit2
+  `core.worktree`, `extensions.*`) are refused, and skipped in a file level
+  and the files it includes. Not covered: configs libgit2
   reads without opening a repository (an init's template directory and
   `init.defaultBranch`, a detached remote).
 - **Work** — `add`, `commitDetailed`, `amendDetailed`, `status`, `diff`,

@@ -221,12 +221,16 @@ GIT_EXTERN(int) gitkit_repository_config_changed(git_repository *repo);
  * opens while the scope is pushed reads as part of its config from the open
  * on — the ones libgit2 opens internally (a submodule's, during status) too.
  * A level replaces the search-path file of the same level, which is then not
- * read; the open's write target stays the repository's own config file.
+ * read; the open's write target stays the repository's own config file. A
+ * level never yields core.repositoryformatversion, core.bare, core.worktree
+ * or extensions.* (git reads them from the repository's own config only),
+ * nor do the files it includes.
  *
  * Build a scope with _new and _add_* (each copies its arguments; adding a
  * level again replaces it), push it on the thread that runs the operation,
  * pop it on that thread (innermost first; popping restores the scope the push
- * found), then free it. A failure to read a level or a refused include while
+ * found), then free it. While nested, a level is the innermost scope's that
+ * has it; the outer scopes' other levels stay in force. A failure to read a level or a refused include while
  * the scope is pushed is recorded: _first_failure returns the first one not
  * marked as handed back (its message lives as long as the scope), and
  * _mark_reported marks the calling thread's newest record when it is the

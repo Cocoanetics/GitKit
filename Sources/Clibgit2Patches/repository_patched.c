@@ -27,9 +27,17 @@
  *    (forcing out whatever the level held), then sets the write order the
  *    open asked for: the repository's own config file only.
  *
+ * Each scope level's backend hides the settings git reads from the
+ * repository's own config only — core.repositoryformatversion, core.bare,
+ * core.worktree, extensions.* — whether its file, a file that includes or
+ * its entries set them, so an operation level never changes a repository's
+ * format or layout.
+ *
  * With no scope on the calling thread both behave exactly as before. A
  * scope is pushed and popped by the thread it belongs to (LIFO, so a
- * nested scope restores the outer one) and holds only copies — a file's
+ * nested scope restores the outer one). A level is the innermost pushed
+ * scope's that has it: a nested scope replaces only the levels it names,
+ * the outer scopes' others stay in force. A scope holds only copies — a file's
  * path, an entries level's text — so no caller memory is lent to libgit2;
  * each load reads the file and parses the text again into backends the
  * config owns.
@@ -60,6 +68,7 @@
 #include "filebuf.h"
 #include "index.h"
 #include "config.h"
+#include "config_backend.h"
 #include "refs.h"
 #include "filter.h"
 #include "odb.h"
@@ -251,18 +260,26 @@ int gitkit_config_scope_pop(gitkit_config_scope *scope)
 	return 0;
 }
 
-int gitkit_config_scope_has_level(git_config_level_t level)
+/*
+ * The level in force on the calling thread: the innermost pushed scope's
+ * that has it, so a nested scope replaces only the levels it names and the
+ * outer scopes' others stay in force.
+ */
+static const gitkit_config_scope_level *gitkit_scope_effective_level(git_config_level_t level)
 {
-	gitkit_config_scope *scope = gitkit_current_scope;
+	const gitkit_config_scope *scope;
 	size_t i;
 
-	if (!scope)
-		return 0;
+	for (scope = gitkit_current_scope; scope; scope = scope->previous)
+		for (i = 0; i < scope->levels_len; i++)
+			if (scope->levels[i].level == level)
+				return &scope->levels[i];
+	return NULL;
+}
 
-	for (i = 0; i < scope->levels_len; i++)
-		if (scope->levels[i].level == level)
-			return 1;
-	return 0;
+int gitkit_config_scope_has_level(git_config_level_t level)
+{
+	return gitkit_scope_effective_level(level) != NULL;
 }
 
 int gitkit_config_scope_first_failure(
@@ -379,18 +396,200 @@ static int gitkit_repository_add_file(
 	return error;
 }
 
+/*
+ * git reads the repository format and layout — core.repositoryformatversion,
+ * core.bare, core.worktree, extensions.* — from the repository's own config
+ * only, while libgit2 reads them from the merged config at open. A scope
+ * level must not change them, from its file, the files that includes, or
+ * its entries, so its backend hides them.
+ */
+static int gitkit_repository_only(const char *name)
+{
+	const char *dot = name ? strchr(name, '.') : NULL;
+	const char *variable;
+
+	if (!dot)
+		return 0;
+	if (dot - name == 10 && !git__strncasecmp(name, "extensions", 10))
+		return 1;
+	if (dot - name != 4 || git__strncasecmp(name, "core", 4))
+		return 0;
+
+	variable = dot + 1;
+	if (strchr(variable, '.'))
+		return 0;	/* core.<subsection>.<variable> */
+	return !git__strcasecmp(variable, "repositoryformatversion") ||
+	       !git__strcasecmp(variable, "bare") ||
+	       !git__strcasecmp(variable, "worktree");
+}
+
+typedef struct {
+	git_config_backend parent;
+	git_config_backend *inner;
+} gitkit_scope_backend;
+
+typedef struct {
+	git_config_iterator parent;
+	git_config_iterator *inner;
+} gitkit_scope_iterator;
+
+#define GITKIT_INNER(backend) (((gitkit_scope_backend *)(backend))->inner)
+
+static int gitkit_scope_backend_open(
+	git_config_backend *backend, git_config_level_t level, const git_repository *repo)
+{
+	return GITKIT_INNER(backend)->open(GITKIT_INNER(backend), level, repo);
+}
+
+static int gitkit_scope_backend_get(
+	git_config_backend *backend, const char *key, git_config_backend_entry **out)
+{
+	if (gitkit_repository_only(key))
+		return GIT_ENOTFOUND;
+	return GITKIT_INNER(backend)->get(GITKIT_INNER(backend), key, out);
+}
+
+static int gitkit_scope_backend_set(git_config_backend *backend, const char *key, const char *value)
+{
+	return GITKIT_INNER(backend)->set(GITKIT_INNER(backend), key, value);
+}
+
+static int gitkit_scope_backend_set_multivar(
+	git_config_backend *backend, const char *name, const char *regexp, const char *value)
+{
+	return GITKIT_INNER(backend)->set_multivar(GITKIT_INNER(backend), name, regexp, value);
+}
+
+static int gitkit_scope_backend_del(git_config_backend *backend, const char *key)
+{
+	return GITKIT_INNER(backend)->del(GITKIT_INNER(backend), key);
+}
+
+static int gitkit_scope_backend_del_multivar(
+	git_config_backend *backend, const char *key, const char *regexp)
+{
+	return GITKIT_INNER(backend)->del_multivar(GITKIT_INNER(backend), key, regexp);
+}
+
+static int gitkit_scope_iterator_next(git_config_backend_entry **out, git_config_iterator *iter)
+{
+	git_config_iterator *inner = ((gitkit_scope_iterator *)iter)->inner;
+	int error;
+
+	while ((error = inner->next(out, inner)) == 0 && gitkit_repository_only((*out)->entry.name))
+		;	/* the inner backend owns its entries */
+	return error;
+}
+
+static void gitkit_scope_iterator_free(git_config_iterator *iter)
+{
+	git_config_iterator *inner = ((gitkit_scope_iterator *)iter)->inner;
+
+	inner->free(inner);
+	git__free(iter);
+}
+
+static int gitkit_scope_backend_iterator(git_config_iterator **out, git_config_backend *backend)
+{
+	gitkit_scope_iterator *iter;
+	git_config_iterator *inner;
+	int error;
+
+	if ((error = GITKIT_INNER(backend)->iterator(&inner, GITKIT_INNER(backend))) < 0)
+		return error;
+
+	if ((iter = git__calloc(1, sizeof(*iter))) == NULL) {
+		inner->free(inner);
+		return -1;
+	}
+
+	iter->parent.backend = backend;
+	iter->parent.flags = inner->flags;
+	iter->parent.next = gitkit_scope_iterator_next;
+	iter->parent.free = gitkit_scope_iterator_free;
+	iter->inner = inner;
+	*out = &iter->parent;
+	return 0;
+}
+
+static int gitkit_scope_backend_wrap(git_config_backend **out, git_config_backend *inner);
+
+static int gitkit_scope_backend_snapshot(git_config_backend **out, git_config_backend *backend)
+{
+	git_config_backend *snapshot;
+	int error;
+
+	if ((error = GITKIT_INNER(backend)->snapshot(&snapshot, GITKIT_INNER(backend))) < 0)
+		return error;
+	return gitkit_scope_backend_wrap(out, snapshot);
+}
+
+static int gitkit_scope_backend_lock(git_config_backend *backend)
+{
+	return GITKIT_INNER(backend)->lock(GITKIT_INNER(backend));
+}
+
+static int gitkit_scope_backend_unlock(git_config_backend *backend, int success)
+{
+	return GITKIT_INNER(backend)->unlock(GITKIT_INNER(backend), success);
+}
+
+static void gitkit_scope_backend_free(git_config_backend *backend)
+{
+	if (!backend)
+		return;
+	GITKIT_INNER(backend)->free(GITKIT_INNER(backend));
+	git__free(backend);
+}
+
+/* Wraps `inner`, which it takes ownership of — freeing it on failure. */
+static int gitkit_scope_backend_wrap(git_config_backend **out, git_config_backend *inner)
+{
+	gitkit_scope_backend *backend;
+
+	if ((backend = git__calloc(1, sizeof(*backend))) == NULL) {
+		inner->free(inner);
+		return -1;
+	}
+
+	backend->parent.version = GIT_CONFIG_BACKEND_VERSION;
+	backend->parent.readonly = inner->readonly;
+	backend->parent.open = gitkit_scope_backend_open;
+	backend->parent.get = gitkit_scope_backend_get;
+	backend->parent.set = gitkit_scope_backend_set;
+	backend->parent.set_multivar = gitkit_scope_backend_set_multivar;
+	backend->parent.del = gitkit_scope_backend_del;
+	backend->parent.del_multivar = gitkit_scope_backend_del_multivar;
+	backend->parent.iterator = gitkit_scope_backend_iterator;
+	backend->parent.snapshot = gitkit_scope_backend_snapshot;
+	backend->parent.lock = gitkit_scope_backend_lock;
+	backend->parent.unlock = gitkit_scope_backend_unlock;
+	backend->parent.free = gitkit_scope_backend_free;
+	backend->inner = inner;
+	*out = &backend->parent;
+	return 0;
+}
+
 static int gitkit_scope_add_level(
 	git_config *cfg, const gitkit_config_scope_level *level, git_repository *repo)
 {
 	git_config_backend_memory_options options = GIT_CONFIG_BACKEND_MEMORY_OPTIONS_INIT;
-	git_config_backend *backend = NULL;
+	git_config_backend *inner = NULL, *backend = NULL;
+	struct stat st;
 	int error;
 
-	if (level->path)
-		return git_config_add_file_ondisk(cfg, level->path, level->level, repo, 1);
-
-	options.backend_type = level->backend_type;
-	if ((error = git_config_backend_from_string(&backend, level->text, level->text_len, &options)) < 0)
+	if (level->path) {
+		/* As git_config_add_file_ondisk(): a missing file reads as empty. */
+		if (p_stat(level->path, &st) < 0 && errno != ENOENT && errno != ENOTDIR) {
+			git_error_set(GIT_ERROR_CONFIG, "failed to stat '%s'", level->path);
+			return -1;
+		}
+		error = git_config_backend_from_file(&inner, level->path);
+	} else {
+		options.backend_type = level->backend_type;
+		error = git_config_backend_from_string(&inner, level->text, level->text_len, &options);
+	}
+	if (error < 0 || (error = gitkit_scope_backend_wrap(&backend, inner)) < 0)
 		return error;
 
 	if ((error = git_config_add_backend(cfg, backend, level->level, repo, 1)) < 0)
@@ -402,18 +601,23 @@ static int gitkit_repository_finish_config(
 	git_config *cfg, git_config_level_t *write_order, size_t len,
 	git_repository *repo)
 {
-	gitkit_config_scope *scope = gitkit_current_scope;
+	static const git_config_level_t levels[GITKIT_SCOPE_LEVELS] = {
+		GIT_CONFIG_LEVEL_SYSTEM, GIT_CONFIG_LEVEL_XDG,
+		GIT_CONFIG_LEVEL_GLOBAL, GIT_CONFIG_LEVEL_APP
+	};
+	const gitkit_config_scope_level *level;
 	size_t i, recorded;
 	int error;
 
-	if (scope) {
-		for (i = 0; i < scope->levels_len; i++) {
-			recorded = gitkit_scope_recorded();
-			if ((error = gitkit_scope_add_level(cfg, &scope->levels[i], repo)) < 0) {
-				if (gitkit_scope_recorded() == recorded)
-					gitkit_config_scope__record(error);
-				return error;
-			}
+	for (i = 0; i < GITKIT_SCOPE_LEVELS; i++) {
+		if ((level = gitkit_scope_effective_level(levels[i])) == NULL)
+			continue;
+
+		recorded = gitkit_scope_recorded();
+		if ((error = gitkit_scope_add_level(cfg, level, repo)) < 0) {
+			if (gitkit_scope_recorded() == recorded)
+				gitkit_config_scope__record(error);
+			return error;
 		}
 	}
 
