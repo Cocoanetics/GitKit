@@ -47,4 +47,5 @@ An added case is a major change, or the value belongs in a property or a new
 type. Refresh the file with `--update` only together with that release
 classification, and add a client to `clients/` for the new API. It uses
 SwiftPM's native build system, whose `dump-symbol-graph` works for this
-package, and covers the default traits (no `Archive`).
+package, and enables the `Archive` trait explicitly, so the trait-gated
+`GitArchiveFormat` cases are part of the inventory.

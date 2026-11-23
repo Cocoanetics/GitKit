@@ -14,7 +14,8 @@
 # ENUM_CASES_SCRATCH sets the build directory (default: $TMPDIR/GitKit-enum-cases).
 # Uses SwiftPM's native build system, whose dump-symbol-graph is the one that
 # works for this package. Exits 0 when the cases match, 1 when they differ,
-# 2 on a setup error. Covers the default traits (no Archive).
+# 2 on a setup error. The Archive trait is enabled explicitly, so the
+# trait-gated GitArchiveFormat, public API for its clients, is listed too.
 set -uo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -25,7 +26,7 @@ scratch="${ENUM_CASES_SCRATCH:-${TMPDIR:-/tmp}/GitKit-enum-cases}"
 # GitKitPackageTests module; that one failure is expected, any other is not.
 rm -rf "$scratch"/*/symbolgraph
 swift package --package-path "$root" --scratch-path "$scratch" --build-system native \
-    dump-symbol-graph --minimum-access-level public > "$scratch.log" 2>&1
+    --traits Archive dump-symbol-graph --minimum-access-level public > "$scratch.log" 2>&1
 if grep 'error:' "$scratch.log" | grep -qv "symbol graph for 'GitKitPackageTests'"; then
     grep 'error:' "$scratch.log" | head -20 >&2
     echo "symbol graph extraction failed (log: $scratch.log)" >&2
