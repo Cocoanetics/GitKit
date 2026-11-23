@@ -278,6 +278,52 @@ struct RepositoryPreparationTests {
         #expect(clone.isValid)
     }
 
+    @Test("a clone whose own init fails before the preparation removes what it created")
+    func failedInitRemovesClone() throws {
+        defer { fixtures.removeAll() }
+        let (source, _) = try makeSource()
+        let extra = fixtures.url("extra.config")
+        try "[test]\n\textra = 1\n".write(to: extra, atomically: true, encoding: .utf8)
+        // A level the new repository's open reads, with an include only that
+        // repository's git directory matches.
+        let global = fixtures.url("global.config")
+        try "[includeIf \"gitdir:**/probe-clone/\"]\n\tpath = \(extra.path)\n"
+            .write(to: global, atomically: true, encoding: .utf8)
+        func operation(allowing: Bool) -> OperationConfiguration {
+            OperationConfiguration(
+                levels: [.file(global, .global)],
+                includePolicy: ConfigIncludePolicy { _ in allowing })
+        }
+        let target = fixtures.url("probe-clone")
+        let existing = try fixtures.directory("existing/probe-clone")
+        var prepared = false
+
+        for directory in [target, existing] {
+            let error = #expect(throws: Libgit2Error.self) {
+                try Repository.withOperationConfiguration(operation(allowing: false)) {
+                    try Repository.clone(
+                        fromRemote: source.path, to: directory, progress: Self.silent,
+                        preparation: RepositoryPreparation { _ in prepared = true })
+                }
+            }
+            // libgit2's own error, as is.
+            #expect(error?.message.contains("not authorised") == true)
+        }
+        #expect(!prepared)
+        #expect(!FileManager.default.fileExists(atPath: target.path))
+        #expect(try Self.contents(of: existing) == [])
+
+        for directory in [target, existing] {
+            let clone = try Repository.withOperationConfiguration(operation(allowing: true)) {
+                try Repository.clone(
+                    fromRemote: source.path, to: directory, progress: Self.silent,
+                    preparation: RepositoryPreparation { _ in prepared = true })
+            }
+            #expect(try clone.configGet("test.extra") == "1")
+        }
+        #expect(prepared)
+    }
+
 }
 
 // MARK: Worktree
