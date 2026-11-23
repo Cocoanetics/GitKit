@@ -68,7 +68,12 @@ extension Repository {
     /// - Returns: The linked worktree's repository `preparation` was given.
     /// - Throws: What `preparation` or the checkout threw, as is, after
     ///   pruning the worktree (its git directory and working directory, both
-    ///   created by this call) and deleting `branch` if this call created it.
+    ///   created by this call) and deleting `branch` if this call created it
+    ///   and it still points there. When libgit2's own add fails after
+    ///   making the worktree — its open of the new worktree refusing an
+    ///   include, say — the worktree is removed only while both directories
+    ///   hold exactly the files the add wrote, unchanged; otherwise it is
+    ///   kept, and so is the branch.
     ///   Adds through GitKit take turns per repository for the whole call,
     ///   so another add on the same repository from inside `preparation` is
     ///   refused.
@@ -114,11 +119,12 @@ extension Repository {
         let name = try uniqueWorktreeName(preferred: preferredName)
 
         var branchRef: OpaquePointer?
-        var createdBranch = false
+        var createdBranch: CreatedBranch?
         let branchLookupRC = git_branch_lookup(&branchRef, repo, branch, GIT_BRANCH_LOCAL)
         if branchLookupRC == GIT_ENOTFOUND.rawValue {
-            branchRef = try createWorktreeBranch(named: branch, startPoint: startPoint)
-            createdBranch = true
+            let created = try createWorktreeBranch(named: branch, startPoint: startPoint)
+            branchRef = created.ref
+            createdBranch = created
         } else {
             try check(branchLookupRC)
         }
@@ -140,9 +146,11 @@ extension Repository {
                 | UInt32(GIT_CHECKOUT_DONT_UPDATE_INDEX.rawValue)
                 | UInt32(GIT_CHECKOUT_DONT_WRITE_INDEX.rawValue)
 
-        // libgit2 rolls nothing back when the add fails part way. What it
-        // may have made, of what isn't there now, is removed only while
-        // empty (see `CreatedWorktreePaths`).
+        // libgit2 rolls nothing back when the add fails part way. GitKit's
+        // add removes the worktree it made only while both directories hold
+        // exactly the files it wrote, unchanged (`gitkit_worktree_add`).
+        // What else it may have made, of what isn't there now, is removed
+        // only while empty (see `CreatedWorktreePaths`).
         let gitDir = adminDir.appendingPathComponent(name)
         let created = CreatedWorktreePaths(
             adminDir: Self.exists(adminDir) ? nil : adminDir,
@@ -150,6 +158,7 @@ extension Repository {
             workdir: Self.exists(path) ? nil : path)
 
         var worktree: OpaquePointer?
+        var made = Int32(GITKIT_WORKTREE_ADD_NOT_MADE)
         do {
             // libgit2 opens the new worktree's repository itself, reading
             // the shared config: this repository's include policy covers
@@ -159,14 +168,22 @@ extension Repository {
             defer { restoreThreadPolicy?() }
             try name.withCString { nameC in
                 try path.path.withCString { pathC in
-                    _ = try check(git_worktree_add(
-                        &worktree, repo, nameC, pathC, &opts))
+                    _ = try check(gitkit_worktree_add(
+                        &worktree, repo, nameC, pathC, &opts, &made))
                 }
             }
         } catch {
-            created.remove()
-            if createdBranch {
-                _ = git_branch_delete(branchRef)
+            // Once the add made the worktree, its two directories were
+            // rolled back with it, or kept; either way not touched here
+            // again: what now holds a kept one's name is someone else's.
+            if made == GITKIT_WORKTREE_ADD_NOT_MADE {
+                created.remove()
+            } else {
+                CreatedWorktreePaths(adminDir: created.adminDir, gitDir: nil, workdir: nil).remove()
+            }
+            // A worktree kept still has the branch checked out.
+            if let createdBranch, made != GITKIT_WORKTREE_ADD_KEPT {
+                deleteCreatedBranch(createdBranch)
             }
             throw error
         }
@@ -181,11 +198,26 @@ extension Repository {
             // directories: prune them as git does, then what is left empty.
             pruneCreatedWorktree(named: name)
             created.remove()
-            if createdBranch {
-                _ = git_branch_delete(branchRef)
+            if let createdBranch {
+                deleteCreatedBranch(createdBranch)
             }
             throw error
         }
+    }
+
+    /// A branch this add created, and the upstream config it wrote for it.
+    private struct CreatedBranch {
+        var ref: OpaquePointer?
+        var upstreamRemote: String?
+        var upstreamMerge: String?
+    }
+
+    /// Deletes a branch this add created, only while it still points where
+    /// the add created it: one moved meanwhile is someone else's work, and
+    /// keeps its config too. Of its config, only the upstream the add wrote
+    /// goes, and only while unchanged (`gitkit_branch_delete_created`).
+    private func deleteCreatedBranch(_ branch: CreatedBranch) {
+        _ = gitkit_branch_delete_created(branch.ref, branch.upstreamRemote, branch.upstreamMerge)
     }
 
     /// Opens the linked worktree at `path`, prepares it and checks it out.
@@ -314,7 +346,7 @@ extension Repository {
     private func createWorktreeBranch(
         named branch: String,
         startPoint: String
-    ) throws -> OpaquePointer? {
+    ) throws -> CreatedBranch {
         var startObject: OpaquePointer?
         try check(git_revparse_single(&startObject, repo, startPoint))
         defer { git_object_free(startObject) }
@@ -331,11 +363,15 @@ extension Repository {
         // remote-tracking branch (`branch.autoSetupMerge`'s default of
         // `true`); mirror that so `currentBranchUpstream()`/status/push
         // behave the same as `git worktree add -b <branch> <path> <ref>`.
+        var created = CreatedBranch(ref: branchRef)
         if let upstream = remoteTrackingShorthand(ofStartPoint: startPoint) {
             try check(git_branch_set_upstream(branchRef, upstream))
+            // What it wrote, for a rollback to remove exactly that.
+            created.upstreamRemote = try configGet("branch.\(branch).remote")
+            created.upstreamMerge = try configGet("branch.\(branch).merge")
         }
 
-        return branchRef
+        return created
     }
 
     /// If `startPoint` resolves (via the same DWIM rules git itself uses:

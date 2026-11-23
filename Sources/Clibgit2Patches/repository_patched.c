@@ -33,6 +33,11 @@
  * its entries set them, so an operation level never changes a repository's
  * format or layout.
  *
+ * Before each file is added there, and before each git_config_open_default()
+ * (an init's `init.defaultBranch`), gitkit_created_watch_notify() lets a
+ * GitKit init record what it wrote before the include policy can run
+ * (created_dir.c); outside such an init it does nothing.
+ *
  * With no scope on the calling thread both behave exactly as before. A
  * scope is pushed and popped by the thread it belongs to (LIFO, so a
  * nested scope restores the outer one). A level is the innermost pushed
@@ -86,6 +91,7 @@
 #include "worktree.h"
 #include "path.h"
 #include "../CGitKit/include/gitkit_libgit2.h"
+#include "gitkit_created_dir.h"
 
 #if defined(_MSC_VER)
 #  define GITKIT_THREAD_LOCAL __declspec(thread)
@@ -413,6 +419,8 @@ static int gitkit_repository_add_file(
 	size_t recorded;
 	int error;
 
+	/* Before this file's includes reach the host's include policy. */
+	gitkit_created_watch_notify();
 	if (gitkit_config_scope_has_level(level))
 		return 0;
 
@@ -663,10 +671,20 @@ static int gitkit_repository_finish_config(
 	return git_config_set_writeorder(cfg, write_order, len);
 }
 
+/* An init's own config reads (`init.defaultBranch`) reach the include
+ * policy too: what a GitKit init wrote is recorded before each. */
+static int gitkit_repository_config_open_default(git_config **out)
+{
+	gitkit_created_watch_notify();
+	return git_config_open_default(out);
+}
+
 #define git_config_add_file_ondisk(cfg, path, level, repo, force) \
 	gitkit_repository_add_file(cfg, path, level, repo, force)
+#define git_config_open_default(out) gitkit_repository_config_open_default(out)
 #define git_config_set_writeorder(cfg, order, len) \
 	gitkit_repository_finish_config(cfg, order, len, repo)
 #include "repository.c"
+#undef git_config_open_default
 #undef git_config_set_writeorder
 #undef git_config_add_file_ondisk

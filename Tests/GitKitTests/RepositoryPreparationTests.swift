@@ -278,6 +278,43 @@ struct RepositoryPreparationTests {
         #expect(clone.isValid)
     }
 
+    @Test("a clone whose own init fails before the preparation removes what it created")
+    func failedInitRemovesClone() throws {
+        defer { fixtures.removeAll() }
+        let (source, _) = try makeSource()
+        let extra = fixtures.url("extra.config")
+        try "[test]\n\textra = 1\n".write(to: extra, atomically: true, encoding: .utf8)
+        // A level the new repository's open reads, with an include only that
+        // repository's git directory matches.
+        let global = fixtures.url("global.config")
+        try "[includeIf \"gitdir:**/probe-clone/\"]\n\tpath = \(extra.path)\n"
+            .write(to: global, atomically: true, encoding: .utf8)
+        var prepared = false
+        func clone(into directory: URL, allowing: Bool) throws -> Repository {
+            try Repository.withOperationConfiguration(OperationConfiguration(
+                levels: [.file(global, .global)], includePolicy: ConfigIncludePolicy { _ in allowing })) {
+                try Repository.clone(
+                    fromRemote: source.path, to: directory, progress: Self.silent,
+                    preparation: RepositoryPreparation { _ in prepared = true })
+            }
+        }
+        let target = fixtures.url("probe-clone")
+        let existing = try fixtures.directory("existing/probe-clone")
+
+        for directory in [target, existing] {
+            let error = #expect(throws: Libgit2Error.self) { try clone(into: directory, allowing: false) }
+            #expect(error?.message.contains("not authorised") == true)  // libgit2's own, as is
+        }
+        #expect(!prepared)
+        #expect(!FileManager.default.fileExists(atPath: target.path))
+        #expect(try Self.contents(of: existing) == [])
+
+        for directory in [target, existing] {
+            #expect(try clone(into: directory, allowing: true).configGet("test.extra") == "1")
+        }
+        #expect(prepared)
+    }
+
 }
 
 // MARK: Worktree
@@ -450,6 +487,44 @@ extension RepositoryPreparationTests {
         // Once for libgit2's own open inside `git_worktree_add`, once for
         // the open that hands the worktree to the preparation.
         #expect(askedBeforePreparing == 2)
+    }
+
+    @Test("an add whose own open of the new worktree fails prunes it and the branch it created")
+    func failedNativeOpenPrunesWorktree() throws {
+        defer { fixtures.removeAll() }
+        let (source, _) = try makeSource()
+        let secret = fixtures.url("secret.config")
+        try "[test]\n\tsecret = 1\n".write(to: secret, atomically: true, encoding: .utf8)
+        let config = source.appendingPathComponent(".git/config")
+        try (try String(contentsOf: config, encoding: .utf8)
+            + "[includeIf \"gitdir:**/worktrees/linked\"]\n\tpath = \(secret.path)\n")
+            .write(to: config, atomically: true, encoding: .utf8)
+        let refusing = try Repository.open(at: source, includePolicy: ConfigIncludePolicy { _ in false })
+        let path = fixtures.url("linked")
+        let admin = source.appendingPathComponent(".git/worktrees")
+        var prepared = false
+
+        for preparation in [nil, RepositoryPreparation { _ in prepared = true }] {
+            let error = #expect(throws: Libgit2Error.self) {
+                if let preparation {
+                    try refusing.worktreeAdd(path: path, branch: "feature", preparation: preparation)
+                } else {
+                    try refusing.worktreeAdd(path: path, branch: "feature")
+                }
+            }
+            #expect(error?.message.contains("not authorised") == true)
+            #expect(!FileManager.default.fileExists(atPath: path.path))
+            #expect(!FileManager.default.fileExists(atPath: admin.path))
+            #expect(try refusing.localBranches() == ["main"])
+        }
+        #expect(!prepared)
+
+        let accepting = try Repository.open(at: source, includePolicy: ConfigIncludePolicy { _ in true })
+        let worktree = try accepting.worktreeAdd(
+            path: path, branch: "feature", preparation: RepositoryPreparation { _ in prepared = true })
+        #expect(prepared)
+        #expect(try accepting.linkedWorktreeList().map(\.name) == ["linked"])
+        #expect(try worktree.configGet("test.secret") == "1")
     }
 
     @Test("a failed native add removes only what it created and frees its name")

@@ -254,4 +254,63 @@ GIT_EXTERN(int) gitkit_config_scope_first_failure(
 	const gitkit_config_scope *scope, int *code, int *klass, const char **message);
 GIT_EXTERN(void) gitkit_config_scope_mark_reported(int klass, const char *message);
 
+/*
+ * A file's identity: device and inode, and its ctime, which any change to
+ * the file or its metadata moves. `present` is 0 when it couldn't be read.
+ */
+typedef struct {
+	int present;
+	uint64_t dev, ino;
+	int64_t ctime_sec, ctime_nsec;
+} gitkit_file_id;
+
+/*
+ * GitKit addition, implemented in Sources/Clibgit2Patches/worktree_patched.c:
+ * git_worktree_add(), which, when it fails after making the worktree's git
+ * and working directories, removes them if they still hold exactly the
+ * files it wrote there, unchanged, and keeps both otherwise. `*made` (when
+ * non-NULL) tells which: GITKIT_WORKTREE_ADD_NOT_MADE when the add made
+ * neither directory, _REMOVED when it made and removed them, _KEPT when
+ * they stay (the add succeeded, or they couldn't be proven its own).
+ */
+#define GITKIT_WORKTREE_ADD_NOT_MADE 0
+#define GITKIT_WORKTREE_ADD_REMOVED 1
+#define GITKIT_WORKTREE_ADD_KEPT 2
+GIT_EXTERN(int) gitkit_worktree_add(
+	git_worktree **out, git_repository *repo,
+	const char *name, const char *worktree,
+	const git_worktree_add_options *opts, int *made);
+
+/*
+ * GitKit addition, implemented in Sources/Clibgit2Patches/created_dir.c:
+ * git_repository_init(), refusing to reinitialise a repository, that makes
+ * the directory at `path` (when there is none) and its `.git` exclusively
+ * itself. When the init then fails — its open's config load refusing an
+ * include, say — what it made is removed if it holds nothing but what an
+ * init writes, and kept otherwise; libgit2's error is left as it was.
+ * Windows: git_repository_init(), keeping what it made.
+ */
+GIT_EXTERN(int) gitkit_repository_init_created(
+	git_repository **out, const char *path, unsigned bare);
+
+/*
+ * GitKit testing seam, implemented in Sources/Clibgit2Patches/created_dir.c:
+ * on the calling thread, `hook` (NULL clears it) runs with a rolled-back
+ * directory's path just before a kept one is renamed back there. Not a
+ * stable API.
+ */
+typedef void (*gitkit_created_restore_hook)(const char *path);
+GIT_EXTERN(void) gitkit_created_set_restore_hook(gitkit_created_restore_hook hook);
+
+/*
+ * GitKit addition, implemented in Sources/Clibgit2Patches/created_dir.c:
+ * git_branch_delete() for a branch the caller created, deleting the ref
+ * only while it still points where `branch` does (compare-and-delete).
+ * Once the ref is gone, of its `branch.<name>` config only the upstream the
+ * caller wrote — `remote` and `merge`, NULL for none — is removed, and only
+ * while it still holds those values; the rest is someone else's and stays.
+ */
+GIT_EXTERN(int) gitkit_branch_delete_created(
+	git_reference *branch, const char *remote, const char *merge);
+
 #endif /* GITKIT_LIBGIT2_H */
