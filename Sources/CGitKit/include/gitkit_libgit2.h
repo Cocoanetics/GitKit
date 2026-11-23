@@ -302,6 +302,14 @@ GIT_EXTERN(void) gitkit_created_set_restore_hook(gitkit_created_restore_hook hoo
 GIT_EXTERN(void) gitkit_created_set_delete_hook(gitkit_created_restore_hook hook);
 
 /*
+ * GitKit testing seam, implemented in Sources/Clibgit2Patches/created_dir.c:
+ * on the calling thread, `hook` (NULL clears it) runs with a GitKit init's
+ * git directory just before each config read of the init records or checks
+ * what it wrote. Not a stable API.
+ */
+GIT_EXTERN(void) gitkit_created_set_notify_hook(gitkit_created_restore_hook hook);
+
+/*
  * GitKit testing seam, implemented in Sources/Clibgit2Patches/created_dir.c
  * and created_dir_win32.c: why the identity and rollback checks on the
  * calling thread failed since the last call (Windows: source line and

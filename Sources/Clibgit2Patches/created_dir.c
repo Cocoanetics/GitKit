@@ -32,6 +32,7 @@
 #include "rand.h"
 #include "refs.h"
 #include "config.h"
+#include "filebuf.h"
 #include "git2/branch.h"
 #include "gitkit_created_dir.h"
 
@@ -386,24 +387,38 @@ static const gitkit_created_entry gitkit_init_layout[] = {
 #define GITKIT_INIT_LAYOUT_LEN ARRAY_SIZE(gitkit_init_layout)
 
 /*
- * What an init wrote, recorded each time it is about to read config, the
- * only point where it runs host code (the include policy; the repository.c
- * shim calls gitkit_created_watch_notify() there), and checked again as
- * soon as that read returns (gitkit_created_watch_settle()). What the
- * init itself writes between two reads — on Windows its symlink probe
- * reads the global config before it is done writing its own — is its
- * own, recorded at the next. A file changed, made or gone while host code
- * could run is no longer provably the init's, and never recorded again.
+ * What an init wrote, recorded at its first config read, the first point
+ * where it runs host code (the include policy; the repository.c shim calls
+ * gitkit_created_watch_notify() before each read, and
+ * gitkit_created_watch_settle() as each returns). From then on, every file
+ * is checked against its record at each read and at each of the init's
+ * own writes (its config on Windows, its HEAD), which go through
+ * gitkit_created_watch_commit(): the file it replaces must still be as
+ * recorded, and the file it leaves is recorded as the init's. Anything
+ * else that changed, appeared or went since — while host code ran, or by
+ * a writer it started, at any time — is no longer provably the init's,
+ * and never recorded again.
  */
 typedef struct {
 	const char *git_dir;
+	int recorded;	/* the first record is taken */
 	gitkit_file_id ids[GITKIT_INIT_LAYOUT_LEN];
 } gitkit_created_watch;
 
 static GITKIT_THREAD_LOCAL gitkit_created_watch *gitkit_current_watch;
 
-/* Each file of the layout as it is now, for `check` against its record. */
-static void gitkit_created_watch_visit(int check)
+static GITKIT_THREAD_LOCAL gitkit_created_restore_hook gitkit_notify_hook;
+
+void gitkit_created_set_notify_hook(gitkit_created_restore_hook hook)
+{
+	gitkit_notify_hook = hook;
+}
+
+/*
+ * Each file of the layout as it is now: recorded, the first time; else
+ * checked against its record, except the one the init just `written`.
+ */
+static void gitkit_created_watch_visit(const gitkit_file_id *written)
 {
 	gitkit_created_watch *watch = gitkit_current_watch;
 	gitkit_file_id now;
@@ -424,7 +439,8 @@ static void gitkit_created_watch_visit(int check)
 			continue;
 		}
 		gitkit_created_id(&now, path.ptr);
-		if (!check) {
+		if (!watch->recorded ||
+		    (written && !is_dir && gitkit_created_same(written, &now, 1))) {
 			*id = now;	/* the init's, or still absent */
 		} else if (id->present ? !gitkit_created_same(id, &now, !is_dir) :
 		           now.present || now.unprovable) {
@@ -432,17 +448,41 @@ static void gitkit_created_watch_visit(int check)
 			id->unprovable = 1;	/* changed, made or gone meanwhile */
 		}
 	}
+	watch->recorded = 1;
 	git_str_dispose(&path);
 }
 
 void gitkit_created_watch_notify(void)
 {
-	gitkit_created_watch_visit(0);
+	if (gitkit_current_watch && gitkit_notify_hook)
+		gitkit_notify_hook(gitkit_current_watch->git_dir);
+	gitkit_created_watch_visit(NULL);
 }
 
 void gitkit_created_watch_settle(void)
 {
-	gitkit_created_watch_visit(1);
+	if (gitkit_current_watch && gitkit_current_watch->recorded)
+		gitkit_created_watch_visit(NULL);
+}
+
+int gitkit_created_watch_commit(git_filebuf *file)
+{
+	git_str path = GIT_STR_INIT;
+	gitkit_file_id written;
+	int kept, error;
+
+	if (gitkit_current_watch == NULL || !gitkit_current_watch->recorded)
+		return git_filebuf_commit(file);
+	/* Not recorded as the init's if its path can't be kept. */
+	kept = git_str_sets(&path, file->path_original) == 0;
+	gitkit_created_watch_visit(NULL);
+	if ((error = git_filebuf_commit(file)) == 0 && kept) {
+		gitkit_created_id(&written, path.ptr);
+		if (written.present)
+			gitkit_created_watch_visit(&written);
+	}
+	git_str_dispose(&path);
+	return error;
 }
 
 int gitkit_repository_init_created(

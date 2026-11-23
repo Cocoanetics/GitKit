@@ -524,6 +524,47 @@ struct CreationRollbackTests {
 
 extension CreationRollbackTests {
 
+    @Test("a file a writer started during one config read rewrites before the next is not the init's")
+    func rewriteBetweenReadsKeepsClone() throws {
+        defer { fixtures.removeAll() }
+        let (source, _, _) = try makeSource()
+        Self.reads = [:]
+        Self.lateRewrites = 0
+        Self.rewriting = true
+        gitkit_created_set_notify_hook(Self.watchRead)
+        defer { gitkit_created_set_notify_hook(nil) }
+        let directories = try failingClones(source, meanwhile: { _ in })
+        gitkit_created_set_notify_hook(nil)
+
+        // Each init read config at least twice, and the writer got in between.
+        #expect(Self.reads.count == directories.count)
+        #expect(Self.reads.values.allSatisfy { $0.count >= 2 })
+        #expect(Self.lateRewrites == directories.count)
+        for directory in directories {
+            let description = directory.appendingPathComponent(".git/description")
+            #expect(try String(contentsOf: description, encoding: .utf8) == "theirs\n")
+            #expect(Self.exists(directory.appendingPathComponent(".git/HEAD")))
+        }
+    }
+
+    @Test("what the init itself writes between its config reads is its own: the clone is removed")
+    func initWritesBetweenReadsAreItsOwn() throws {
+        defer { fixtures.removeAll() }
+        let (source, _, _) = try makeSource()
+        Self.reads = [:]
+        Self.rewriting = false
+        gitkit_created_set_notify_hook(Self.watchRead)
+        defer { gitkit_created_set_notify_hook(nil) }
+        try expectRetriableClone(from: source, into: [
+            fixtures.url("probe-clone"), try fixtures.directory("existing/probe-clone")
+        ])
+        gitkit_created_set_notify_hook(nil)
+
+        // HEAD was written after one read and before another.
+        #expect(Self.reads.count == 2)
+        #expect(Self.reads.values.allSatisfy { $0.first == false && $0.contains(true) })
+    }
+
     /// Whether a test's setup inside the include policy ran to its end.
     final class SetupRan: @unchecked Sendable {
         private let lock = NSLock()
@@ -537,6 +578,43 @@ extension CreationRollbackTests {
         var ran: Bool {
             lock.lock(); defer { lock.unlock() }
             return value
+        }
+    }
+
+    /// Whether HEAD was there at each config read, by the init's git directory.
+    nonisolated(unsafe) static var reads: [String: [Bool]] = [:]
+    /// Whether `watchRead` starts a writer at an init's first config read
+    /// that rewrites its description once that read is over.
+    nonisolated(unsafe) static var rewriting = false
+    nonisolated(unsafe) static var lateRewrites = 0
+    nonisolated(unsafe) private static var go = DispatchSemaphore(value: 0)
+    nonisolated(unsafe) private static var done = DispatchSemaphore(value: 0)
+
+    /// Runs as an init is about to read config. The writer started at the
+    /// first read writes only when the second is about to begin, and that
+    /// read waits for it: after the first read's check, before the second.
+    static let watchRead: gitkit_created_restore_hook = { gitDir in
+        guard let gitDir else { return }
+        let key = String(cString: gitDir)
+        let dir = URL(fileURLWithPath: key)
+        reads[key, default: []].append(exists(dir.appendingPathComponent("HEAD")))
+        guard rewriting else { return }
+        switch reads[key]?.count {
+        case 1:
+            let (go, done) = (DispatchSemaphore(value: 0), DispatchSemaphore(value: 0))
+            (Self.go, Self.done) = (go, done)
+            Thread.detachNewThread {
+                if go.wait(timeout: .now() + 30) == .success,
+                   (try? Data("theirs\n".utf8).write(to: dir.appendingPathComponent("description"))) != nil {
+                    lateRewrites += 1
+                }
+                done.signal()
+            }
+        case 2:
+            go.signal()
+            _ = done.wait(timeout: .now() + 30)
+        default:
+            break
         }
     }
 

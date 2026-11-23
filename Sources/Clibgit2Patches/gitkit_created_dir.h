@@ -96,7 +96,8 @@ void gitkit_created_before_delete(const char *path);
 
 /*
  * Called before each config read on the calling thread: while a GitKit
- * init runs on it, records what the init wrote so far (created_dir.c).
+ * init runs on it, records what the init wrote so far, the first time,
+ * and after that checks it against the record (created_dir.c).
  */
 void gitkit_created_watch_notify(void);
 
@@ -105,5 +106,13 @@ void gitkit_created_watch_notify(void);
  * is no longer provably the init's (created_dir.c).
  */
 void gitkit_created_watch_settle(void);
+
+/*
+ * git_filebuf_commit(), for the repository.c and config_file.c shims:
+ * within a GitKit init, once recorded, what it replaces is checked first
+ * and the file it leaves is recorded as the init's (created_dir.c).
+ */
+struct git_filebuf;
+int gitkit_created_watch_commit(struct git_filebuf *file);
 
 #endif /* GITKIT_CREATED_DIR_H */

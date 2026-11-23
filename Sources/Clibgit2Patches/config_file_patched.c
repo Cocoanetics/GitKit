@@ -47,12 +47,19 @@
  * include that merely became unreadable crashes the same way.) The backend's
  * `get` is wrapped, from git_config_backend_from_file(), to clear `*out`
  * first.
+ *
+ * GitKit shim — a GitKit init's own config writes. Within config_file.c
+ * only, git_filebuf_commit() is routed through
+ * gitkit_created_watch_commit() (created_dir.c), so the config a GitKit
+ * init writes between its config reads is recorded as its own, and only
+ * that.
  */
 #include "common.h"
 #include "posix.h"
 #include "thread.h"
 #include "git2/sys/config.h"
 #include "../CGitKit/include/gitkit_libgit2.h"
+#include "gitkit_created_dir.h"
 
 /* One per thread: the include a refusal came from, and who named each depth. */
 #if defined(_MSC_VER)
@@ -260,7 +267,9 @@ static int gitkit_include_stat(
 #define git_config_list_get_unique gitkit_config_list_get_unique_own
 #define git_fs_path_set_error gitkit_fs_path_set_error
 #define git_config_backend_from_file gitkit_config_backend_from_file_unwrapped
+#define git_filebuf_commit(file) gitkit_created_watch_commit(file)
 #include "config_file.c"
+#undef git_filebuf_commit
 #undef git_config_backend_from_file
 #undef git_fs_path_set_error
 #undef git_config_list_get_unique

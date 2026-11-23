@@ -36,8 +36,10 @@
  * Before each file is added there, and before each git_config_open_default()
  * (an init's `init.defaultBranch`), gitkit_created_watch_notify() lets a
  * GitKit init record what it wrote before the include policy can run, and
- * gitkit_created_watch_settle() checks it again as each returns
- * (created_dir.c); outside such an init both do nothing.
+ * check it after, and gitkit_created_watch_settle() checks it again as each
+ * returns; git_filebuf_commit() (an init's HEAD) is routed through
+ * gitkit_created_watch_commit(), which records the init's own write
+ * (created_dir.c). Outside such an init all three do as before.
  *
  * With no scope on the calling thread both behave exactly as before. A
  * scope is pushed and popped by the thread it belongs to (LIFO, so a
@@ -674,8 +676,7 @@ static int gitkit_repository_finish_config(
 }
 
 /* An init's own config reads (`init.defaultBranch`) reach the include
- * policy too: what a GitKit init wrote is recorded before each, and
- * checked after. */
+ * policy too: what a GitKit init wrote is checked before and after each. */
 static int gitkit_repository_config_open_default(git_config **out)
 {
 	int error;
@@ -691,7 +692,9 @@ static int gitkit_repository_config_open_default(git_config **out)
 #define git_config_open_default(out) gitkit_repository_config_open_default(out)
 #define git_config_set_writeorder(cfg, order, len) \
 	gitkit_repository_finish_config(cfg, order, len, repo)
+#define git_filebuf_commit(file) gitkit_created_watch_commit(file)
 #include "repository.c"
+#undef git_filebuf_commit
 #undef git_config_open_default
 #undef git_config_set_writeorder
 #undef git_config_add_file_ondisk
