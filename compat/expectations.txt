@@ -1,0 +1,27 @@
+# Source-compatibility expectations for the external clients in clients/.
+# Each client is built in the Swift 5 and Swift 6 language modes against each
+# GitKit revision; "fail" lines name a diagnostic the build must report.
+# HEAD is the working tree under test.
+#
+# client                 revision  outcome  [diagnostic]
+ExhaustiveLevel          2.17.0    pass
+ExhaustiveLevel          2.18.0    fail     switch must be exhaustive
+ExhaustiveLevel          HEAD      pass
+TolerantLevel            2.17.0    pass
+TolerantLevel            2.18.0    pass
+TolerantLevel            HEAD      pass
+LegacyInitializer        2.17.0    pass
+LegacyInitializer        2.18.0    pass
+LegacyInitializer        HEAD      pass
+ConstructingOnly         2.17.0    pass
+ConstructingOnly         2.18.0    pass
+ConstructingOnly         HEAD      pass
+TypedLayers              2.17.0    fail     cannot find type 'ConfigLayer'
+TypedLayers              2.18.0    fail     extra argument 'layers'
+TypedLayers              HEAD      pass
+ExhaustiveConfigLayer    2.17.0    fail     cannot find type 'ConfigLayer'
+ExhaustiveConfigLayer    2.18.0    pass
+ExhaustiveConfigLayer    HEAD      pass
+LevelLayers218           2.17.0    fail     has no member 'layers'
+LevelLayers218           2.18.0    pass
+LevelLayers218           HEAD      fail     has no member 'layers'
