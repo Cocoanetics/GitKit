@@ -289,37 +289,28 @@ struct RepositoryPreparationTests {
         let global = fixtures.url("global.config")
         try "[includeIf \"gitdir:**/probe-clone/\"]\n\tpath = \(extra.path)\n"
             .write(to: global, atomically: true, encoding: .utf8)
-        func operation(allowing: Bool) -> OperationConfiguration {
-            OperationConfiguration(
-                levels: [.file(global, .global)],
-                includePolicy: ConfigIncludePolicy { _ in allowing })
+        var prepared = false
+        func clone(into directory: URL, allowing: Bool) throws -> Repository {
+            try Repository.withOperationConfiguration(OperationConfiguration(
+                levels: [.file(global, .global)], includePolicy: ConfigIncludePolicy { _ in allowing })) {
+                try Repository.clone(
+                    fromRemote: source.path, to: directory, progress: Self.silent,
+                    preparation: RepositoryPreparation { _ in prepared = true })
+            }
         }
         let target = fixtures.url("probe-clone")
         let existing = try fixtures.directory("existing/probe-clone")
-        var prepared = false
 
         for directory in [target, existing] {
-            let error = #expect(throws: Libgit2Error.self) {
-                try Repository.withOperationConfiguration(operation(allowing: false)) {
-                    try Repository.clone(
-                        fromRemote: source.path, to: directory, progress: Self.silent,
-                        preparation: RepositoryPreparation { _ in prepared = true })
-                }
-            }
-            // libgit2's own error, as is.
-            #expect(error?.message.contains("not authorised") == true)
+            let error = #expect(throws: Libgit2Error.self) { try clone(into: directory, allowing: false) }
+            #expect(error?.message.contains("not authorised") == true)  // libgit2's own, as is
         }
         #expect(!prepared)
         #expect(!FileManager.default.fileExists(atPath: target.path))
         #expect(try Self.contents(of: existing) == [])
 
         for directory in [target, existing] {
-            let clone = try Repository.withOperationConfiguration(operation(allowing: true)) {
-                try Repository.clone(
-                    fromRemote: source.path, to: directory, progress: Self.silent,
-                    preparation: RepositoryPreparation { _ in prepared = true })
-            }
-            #expect(try clone.configGet("test.extra") == "1")
+            #expect(try clone(into: directory, allowing: true).configGet("test.extra") == "1")
         }
         #expect(prepared)
     }
