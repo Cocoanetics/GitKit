@@ -33,6 +33,8 @@ import PackageDescription
 //     only the entries of the file being written, not those an `[include]`
 //     file repeats, as git does, and a host can authorise the `[include]`
 //     files libgit2 reads (ConfigIncludePolicy).
+//   • config.c is shimmed so a repository's command-line config levels
+//     (ConfigLayer) are replaced as one set, without disturbing the others.
 //   • filter.c is shimmed so a failed filter-list load cleans the payloads
 //     earlier filters returned from their check callbacks.
 //   • streams/openssl_dynamic.c is shimmed to hide its OpenSSL function-pointer
@@ -152,6 +154,10 @@ var excludes: [String] = [
     // Compiled via Sources/Clibgit2Patches/remote_patched.c, whose ref
     // updates honour negative fetch refspecs.
     "src/libgit2/remote.c",
+
+    // Compiled via Sources/Clibgit2Patches/config_patched.c, which adds
+    // the atomic replacement of a config's command-line levels.
+    "src/libgit2/config.c",
 
     // Compiled via Sources/Clibgit2Patches/config_file_patched.c, whose
     // set/unset consider only the entries of the file being written and
