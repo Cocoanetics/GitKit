@@ -101,6 +101,13 @@ struct CreationRollbackTests {
         ])
     }
 
+    @Test("a clone whose own open fails reading a command-line layer removes what it created")
+    func failedLayerRemovesClone() throws {
+        defer { fixtures.removeAll() }
+        let (source, _, _) = try makeSource()
+        try expectRetriableClone(from: source, into: [fixtures.url("probe-clone")], asLayer: true)
+    }
+
     @Test("a clone into a name outside the Basic Multilingual Plane is removed, and retried")
     func unicodeCloneIsRemoved() throws {
         defer { fixtures.removeAll() }
@@ -114,8 +121,10 @@ struct CreationRollbackTests {
     /// Clones into each of `directories` (new, or empty) twice: refused by
     /// the include policy in the new repository's own open, which removes
     /// what it made and keeps libgit2's error; then allowed, which succeeds.
+    /// `asLayer` reads the file as a command-line layer (`-c include.path`)
+    /// rather than the global level.
     func expectRetriableClone(
-        from source: URL, into directories: [URL], pattern: String = "probe-clone"
+        from source: URL, into directories: [URL], pattern: String = "probe-clone", asLayer: Bool = false
     ) throws {
         let extra = fixtures.url("extra.config")
         try "[test]\n\textra = 1\n".write(to: extra, atomically: true, encoding: .utf8)
@@ -124,10 +133,13 @@ struct CreationRollbackTests {
         let global = fixtures.url("global.config")
         try "[includeIf \"gitdir:**/\(pattern)/\"]\n\tpath = \(extra.path)\n"
             .write(to: global, atomically: true, encoding: .utf8)
+        let level: OperationConfiguration.Level = asLayer
+            ? .layers([.entries([ConfigEntry(name: "include.path", value: global.path)]), .file(global)])
+            : .file(global, .global)
         var prepared = false
         func clone(into directory: URL, allowing: Bool) throws -> Repository {
             try Repository.withOperationConfiguration(OperationConfiguration(
-                levels: [.file(global, .global)], includePolicy: ConfigIncludePolicy { _ in allowing })) {
+                levels: [level], includePolicy: ConfigIncludePolicy { _ in allowing })) {
                 try Repository.clone(
                     fromRemote: source.path, to: directory, progress: Self.silent,
                     preparation: RepositoryPreparation { _ in prepared = true })

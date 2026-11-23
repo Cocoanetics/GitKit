@@ -33,12 +33,25 @@ public struct OperationConfiguration: Sendable {
         case file(URL, ConfigLevel)
         /// `entries`, in order, as an in-memory `level`; `name` is the
         /// backend type reported for them (`git_config_entry.backend_type`).
-        /// An `include.path` among them is stored, not followed.
+        /// An `include.path` among them is stored, not followed; to read the
+        /// file in its place, as git's `-c include.path=<file>` does, use
+        /// ``layers(_:)``.
         case entries([ConfigEntry], ConfigLevel = .app, name: String = "command line")
+        /// The ``ConfigLevel/app`` level as ordered command-line layers:
+        /// layer `i` is read at `GIT_CONFIG_LEVEL_APP + i`, so a later layer
+        /// wins a single read over an earlier one. A file layer is read as a
+        /// ``file(_:_:)`` level is (missing: empty; unreadable: an error;
+        /// its includes through the include policy in force, its
+        /// repository-only settings skipped); an entries layer as an
+        /// ``entries(_:_:name:)`` level. No layers leave no command-line
+        /// config.
+        case layers([ConfigLayer])
     }
 
     /// The levels, applied in order; a later level replaces an earlier one
-    /// of the same ``ConfigLevel``.
+    /// of the same ``ConfigLevel``. ``Level/layers(_:)`` is the
+    /// ``ConfigLevel/app`` level: it replaces an `.app` file or entries
+    /// level, and the whole set is replaced by one.
     public var levels: [Level]
 
     /// The policy for the include files read by repositories opened during
@@ -68,13 +81,16 @@ extension Repository {
     /// when this returns or throws. Nested in an outer call, its levels
     /// replace the outer ones of the same ``ConfigLevel`` only; the outer
     /// call's other levels stay in force, as does its `includePolicy`
-    /// when `configuration` has none. Nothing global changes: no environment
+    /// when `configuration` has none; an inner `.app` level or
+    /// ``OperationConfiguration/Level/layers(_:)`` replaces the outer
+    /// call's whole command-line set. Nothing global changes: no environment
     /// variable, search path or config file is written; the levels are
     /// copied, so nothing the caller holds is lent to libgit2.
     ///
     /// It applies to opens only. A `Repository` opened before keeps the
     /// config it has; add the levels to it with
-    /// ``addConfigFile(at:level:)`` / ``addConfigEntries(_:level:name:)``.
+    /// ``addConfigFile(at:level:)`` / ``addConfigEntries(_:level:name:)`` /
+    /// ``addConfigLayers(_:)``.
     /// One opened during the operation keeps the levels after it (an
     /// explicit `.global` / `.system` ``ConfigScope`` then names the
     /// operation's file, as after ``addConfigFile(at:level:)``), and reads
@@ -134,15 +150,33 @@ final class OperationConfigurationScope {
             case let .file(url, level):
                 try check(gitkit_config_scope_add_file(pointer, level.libgit2, url.path))
             case let .entries(entries, level, name):
-                try Self.rejectRepositoryOnly(entries)
-                let text = try ConfigEntryText.serialize(entries)
-                guard !name.utf8.contains(0) else {
-                    throw ConfigEntryText.invalid("backend name contains a NUL character")
-                }
+                let text = try Self.entriesText(entries, name: name)
                 try check(gitkit_config_scope_add_entries(
                     pointer, level.libgit2, text, text.utf8.count, name))
+            case let .layers(layers):
+                try check(gitkit_config_scope_reset_layers(pointer))
+                for layer in layers {
+                    switch layer {
+                    case let .entries(entries, name):
+                        let text = try Self.entriesText(entries, name: name)
+                        try check(gitkit_config_scope_add_layer_entries(
+                            pointer, text, text.utf8.count, name))
+                    case let .file(url):
+                        guard url.isFileURL else {
+                            throw ConfigEntryText.invalid("config layer '\(url.absoluteString)' is not a file URL")
+                        }
+                        try check(gitkit_config_scope_add_layer_file(pointer, url.path))
+                    }
+                }
             }
         }
+    }
+
+    private static func entriesText(_ entries: [ConfigEntry], name: String) throws -> String {
+        try rejectRepositoryOnly(entries)
+        let text = try ConfigEntryText.serialize(entries)
+        try ConfigEntryText.checkBackendName(name)
+        return text
     }
 
     deinit {

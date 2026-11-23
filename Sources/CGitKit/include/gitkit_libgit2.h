@@ -216,6 +216,17 @@ GIT_EXTERN(void) gitkit_config_set_thread_include_callback(
 GIT_EXTERN(int) gitkit_repository_config_changed(git_repository *repo);
 
 /*
+ * GitKit addition, implemented in Sources/Clibgit2Patches/config_patched.c:
+ * removes every level of `live` at or above `from` and moves every level of
+ * `staged` (each at or above `from`, already opened) into it, leaving
+ * `staged` empty. Fails, changing neither, only when it cannot make room or
+ * a staged level is below `from`. The write order of the moved levels is
+ * their level: the caller sets the order it wants afterwards.
+ */
+GIT_EXTERN(int) gitkit_config_replace_levels_from(
+	git_config *live, git_config *staged, git_config_level_t from);
+
+/*
  * GitKit addition, implemented in Sources/Clibgit2Patches/repository_patched.c:
  * config levels for an operation, which every repository the calling thread
  * opens while the scope is pushed reads as part of its config from the open
@@ -237,7 +248,11 @@ GIT_EXTERN(int) gitkit_repository_config_changed(git_repository *repo);
  * marked as handed back (its message lives as long as the scope), and
  * _mark_reported marks the calling thread's newest record when it is the
  * error a call is returning. Only the SYSTEM, XDG, GLOBAL and APP levels can
- * be replaced. Used by GitKit's Swift layer; not a stable API.
+ * be replaced. APP is the whole command-line set, which may be layered:
+ * _reset_layers makes it an empty set, _add_layer_* append a layer, and an
+ * open adds layer i at APP + i, so a later layer wins a single read.
+ * _check_readable is the readability check a level's file gets: 0 when it
+ * is readable or missing. Used by GitKit's Swift layer; not a stable API.
  */
 typedef struct gitkit_config_scope gitkit_config_scope;
 GIT_EXTERN(int) gitkit_config_scope_new(gitkit_config_scope **out);
@@ -246,6 +261,11 @@ GIT_EXTERN(int) gitkit_config_scope_add_file(
 GIT_EXTERN(int) gitkit_config_scope_add_entries(
 	gitkit_config_scope *scope, git_config_level_t level,
 	const char *text, size_t len, const char *backend_type);
+GIT_EXTERN(int) gitkit_config_scope_reset_layers(gitkit_config_scope *scope);
+GIT_EXTERN(int) gitkit_config_scope_add_layer_file(gitkit_config_scope *scope, const char *path);
+GIT_EXTERN(int) gitkit_config_scope_add_layer_entries(
+	gitkit_config_scope *scope, const char *text, size_t len, const char *backend_type);
+GIT_EXTERN(int) gitkit_config_file_check_readable(const char *path);
 GIT_EXTERN(int) gitkit_config_scope_push(gitkit_config_scope *scope);
 GIT_EXTERN(int) gitkit_config_scope_pop(gitkit_config_scope *scope);
 GIT_EXTERN(void) gitkit_config_scope_free(gitkit_config_scope *scope);

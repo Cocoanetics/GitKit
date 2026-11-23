@@ -41,6 +41,11 @@
  * gitkit_created_watch_commit(), which records the init's own write
  * (created_dir.c). Outside such an init all three do as before.
  *
+ * The APP level is git's whole command-line config, which may be layered:
+ * entries, a file an `-c include.path=<file>` names, later entries. Its
+ * sources are added in order at APP, APP + 1, …, so a later one wins a
+ * single read; a scope naming APP replaces the whole set.
+ *
  * With no scope on the calling thread both behave exactly as before. A
  * scope is pushed and popped by the thread it belongs to (LIFO, so a
  * nested scope restores the outer one). A level is the innermost pushed
@@ -106,11 +111,17 @@
 #define GITKIT_SCOPE_LEVELS 4
 
 typedef struct {
-	git_config_level_t level;
-	char *path;		/* a file level, or NULL */
-	char *text;		/* an entries level: its config text */
+	char *path;		/* a file, or NULL */
+	char *text;		/* entries: their config text */
 	size_t text_len;
 	char *backend_type;
+} gitkit_config_scope_source;
+
+/* One source, or for APP the command-line layers in order (maybe none). */
+typedef struct {
+	git_config_level_t level;
+	gitkit_config_scope_source *sources;
+	size_t sources_len;
 } gitkit_config_scope_level;
 
 typedef struct {
@@ -145,9 +156,14 @@ int gitkit_config_scope_new(gitkit_config_scope **out)
 
 static void gitkit_scope_level_dispose(gitkit_config_scope_level *level)
 {
-	git__free(level->path);
-	git__free(level->text);
-	git__free(level->backend_type);
+	size_t i;
+
+	for (i = 0; i < level->sources_len; i++) {
+		git__free(level->sources[i].path);
+		git__free(level->sources[i].text);
+		git__free(level->sources[i].backend_type);
+	}
+	git__free(level->sources);
 	memset(level, 0, sizeof(*level));
 }
 
@@ -167,9 +183,12 @@ void gitkit_config_scope_free(gitkit_config_scope *scope)
 	git__free(scope);
 }
 
-/* The slot for `level`, replacing what the scope held for it. */
+/*
+ * The slot for `level`: emptied when `replace`, else kept as it is (an empty
+ * one when the scope had none).
+ */
 static gitkit_config_scope_level *gitkit_scope_slot(
-	gitkit_config_scope *scope, git_config_level_t level)
+	gitkit_config_scope *scope, git_config_level_t level, int replace)
 {
 	size_t i;
 
@@ -191,14 +210,71 @@ static gitkit_config_scope_level *gitkit_scope_slot(
 
 	for (i = 0; i < scope->levels_len; i++) {
 		if (scope->levels[i].level == level) {
-			gitkit_scope_level_dispose(&scope->levels[i]);
-			scope->levels[i].level = level;
+			if (replace) {
+				gitkit_scope_level_dispose(&scope->levels[i]);
+				scope->levels[i].level = level;
+			}
 			return &scope->levels[i];
 		}
 	}
 
 	scope->levels[scope->levels_len].level = level;
 	return &scope->levels[scope->levels_len++];
+}
+
+/* A new, empty source appended to `slot`. */
+static gitkit_config_scope_source *gitkit_scope_source_append(gitkit_config_scope_level *slot)
+{
+	gitkit_config_scope_source *grown;
+
+	grown = git__reallocarray(slot->sources, slot->sources_len + 1, sizeof(*grown));
+	if (!grown)
+		return NULL;
+	slot->sources = grown;
+	memset(&grown[slot->sources_len], 0, sizeof(*grown));
+	return &grown[slot->sources_len++];
+}
+
+static int gitkit_scope_source_set_file(gitkit_config_scope_level *slot, const char *path)
+{
+	gitkit_config_scope_source *source;
+	char *copy = git__strdup(path);
+
+	GIT_ERROR_CHECK_ALLOC(copy);
+	if ((source = gitkit_scope_source_append(slot)) == NULL) {
+		git__free(copy);
+		return -1;
+	}
+	source->path = copy;
+	return 0;
+}
+
+static int gitkit_scope_source_set_entries(
+	gitkit_config_scope_level *slot, const char *text, size_t len, const char *backend_type)
+{
+	gitkit_config_scope_source *source;
+	char *copy, *type = NULL;
+
+	/* An empty level still needs a text, to tell it from a file level. */
+	copy = git__malloc(len + 1);
+	GIT_ERROR_CHECK_ALLOC(copy);
+	if (len)
+		memcpy(copy, text, len);
+	copy[len] = '\0';
+
+	if (backend_type && (type = git__strdup(backend_type)) == NULL) {
+		git__free(copy);
+		return -1;
+	}
+	if ((source = gitkit_scope_source_append(slot)) == NULL) {
+		git__free(copy);
+		git__free(type);
+		return -1;
+	}
+	source->text = copy;
+	source->text_len = len;
+	source->backend_type = type;
+	return 0;
 }
 
 /*
@@ -218,6 +294,13 @@ static int gitkit_scope_file_readable(const char *path)
 	return -1;
 }
 
+int gitkit_config_file_check_readable(const char *path)
+{
+	GIT_ASSERT_ARG(path);
+
+	return gitkit_scope_file_readable(path);
+}
+
 int gitkit_config_scope_add_file(
 	gitkit_config_scope *scope, git_config_level_t level, const char *path)
 {
@@ -230,12 +313,9 @@ int gitkit_config_scope_add_file(
 	if (gitkit_scope_file_readable(path) < 0)
 		return -1;
 
-	if ((slot = gitkit_scope_slot(scope, level)) == NULL)
+	if ((slot = gitkit_scope_slot(scope, level, 1)) == NULL)
 		return -1;
-
-	slot->path = git__strdup(path);
-	GIT_ERROR_CHECK_ALLOC(slot->path);
-	return 0;
+	return gitkit_scope_source_set_file(slot, path);
 }
 
 int gitkit_config_scope_add_entries(
@@ -247,22 +327,43 @@ int gitkit_config_scope_add_entries(
 	GIT_ASSERT_ARG(scope);
 	GIT_ASSERT_ARG(text || !len);
 
-	if ((slot = gitkit_scope_slot(scope, level)) == NULL)
+	if ((slot = gitkit_scope_slot(scope, level, 1)) == NULL)
 		return -1;
+	return gitkit_scope_source_set_entries(slot, text, len, backend_type);
+}
 
-	/* An empty level still needs a text, to tell it from a file level. */
-	slot->text = git__malloc(len + 1);
-	GIT_ERROR_CHECK_ALLOC(slot->text);
-	if (len)
-		memcpy(slot->text, text, len);
-	slot->text[len] = '\0';
-	slot->text_len = len;
+int gitkit_config_scope_reset_layers(gitkit_config_scope *scope)
+{
+	GIT_ASSERT_ARG(scope);
 
-	if (backend_type) {
-		slot->backend_type = git__strdup(backend_type);
-		GIT_ERROR_CHECK_ALLOC(slot->backend_type);
-	}
-	return 0;
+	return gitkit_scope_slot(scope, GIT_CONFIG_LEVEL_APP, 1) ? 0 : -1;
+}
+
+int gitkit_config_scope_add_layer_file(gitkit_config_scope *scope, const char *path)
+{
+	gitkit_config_scope_level *slot;
+
+	GIT_ASSERT_ARG(scope);
+	GIT_ASSERT_ARG(path);
+
+	if (gitkit_scope_file_readable(path) < 0)
+		return -1;
+	if ((slot = gitkit_scope_slot(scope, GIT_CONFIG_LEVEL_APP, 0)) == NULL)
+		return -1;
+	return gitkit_scope_source_set_file(slot, path);
+}
+
+int gitkit_config_scope_add_layer_entries(
+	gitkit_config_scope *scope, const char *text, size_t len, const char *backend_type)
+{
+	gitkit_config_scope_level *slot;
+
+	GIT_ASSERT_ARG(scope);
+	GIT_ASSERT_ARG(text || !len);
+
+	if ((slot = gitkit_scope_slot(scope, GIT_CONFIG_LEVEL_APP, 0)) == NULL)
+		return -1;
+	return gitkit_scope_source_set_entries(slot, text, len, backend_type);
 }
 
 int gitkit_config_scope_push(gitkit_config_scope *scope)
@@ -611,8 +712,9 @@ static int gitkit_scope_backend_wrap(git_config_backend **out, git_config_backen
 	return 0;
 }
 
-static int gitkit_scope_add_level(
-	git_config *cfg, const gitkit_config_scope_level *level, git_repository *repo)
+static int gitkit_scope_add_source(
+	git_config *cfg, const gitkit_config_scope_source *level,
+	git_config_level_t at, git_repository *repo)
 {
 	git_config_backend_memory_options options = GIT_CONFIG_BACKEND_MEMORY_OPTIONS_INIT;
 	git_config_backend *inner = NULL, *backend = NULL;
@@ -630,7 +732,7 @@ static int gitkit_scope_add_level(
 	if (error < 0 || (error = gitkit_scope_backend_wrap(&backend, inner)) < 0)
 		return error;
 
-	if ((error = git_config_add_backend(cfg, backend, level->level, repo, 1)) < 0)
+	if ((error = git_config_add_backend(cfg, backend, at, repo, 1)) < 0)
 		backend->free(backend);	/* not owned by the config yet */
 
 	/*
@@ -656,18 +758,23 @@ static int gitkit_repository_finish_config(
 		GIT_CONFIG_LEVEL_GLOBAL, GIT_CONFIG_LEVEL_APP
 	};
 	const gitkit_config_scope_level *level;
-	size_t i, recorded;
+	git_config_level_t at;
+	size_t i, j, recorded;
 	int error;
 
 	for (i = 0; i < GITKIT_SCOPE_LEVELS; i++) {
 		if ((level = gitkit_scope_effective_level(levels[i])) == NULL)
 			continue;
 
-		recorded = gitkit_scope_recorded();
-		if ((error = gitkit_scope_add_level(cfg, level, repo)) < 0) {
-			if (gitkit_scope_recorded() == recorded)
-				gitkit_config_scope__record(error);
-			return error;
+		/* The command-line layers go at APP, APP + 1, …, in order. */
+		for (j = 0; j < level->sources_len; j++) {
+			at = (git_config_level_t)((int)level->level + (int)j);
+			recorded = gitkit_scope_recorded();
+			if ((error = gitkit_scope_add_source(cfg, &level->sources[j], at, repo)) < 0) {
+				if (gitkit_scope_recorded() == recorded)
+					gitkit_config_scope__record(error);
+				return error;
+			}
 		}
 	}
 
