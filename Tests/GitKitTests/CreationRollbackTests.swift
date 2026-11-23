@@ -133,13 +133,14 @@ struct CreationRollbackTests {
         let global = fixtures.url("global.config")
         try "[includeIf \"gitdir:**/\(pattern)/\"]\n\tpath = \(extra.path)\n"
             .write(to: global, atomically: true, encoding: .utf8)
-        let level: OperationConfiguration.Level = asLayer
-            ? .layers([.entries([ConfigEntry(name: "include.path", value: global.path)]), .file(global)])
-            : .file(global, .global)
+        let layers: [ConfigLayer]? = asLayer
+            ? [.entries([ConfigEntry(name: "include.path", value: global.path)]), .file(global)]
+            : nil
         var prepared = false
         func clone(into directory: URL, allowing: Bool) throws -> Repository {
             try Repository.withOperationConfiguration(OperationConfiguration(
-                levels: [level], includePolicy: ConfigIncludePolicy { _ in allowing })) {
+                levels: asLayer ? [] : [.file(global, .global)], layers: layers,
+                includePolicy: ConfigIncludePolicy { _ in allowing })) {
                 try Repository.clone(
                     fromRemote: source.path, to: directory, progress: Self.silent,
                     preparation: RepositoryPreparation { _ in prepared = true })

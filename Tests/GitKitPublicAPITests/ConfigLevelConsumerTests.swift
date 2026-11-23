@@ -46,6 +46,24 @@ struct ConfigLevelConsumerTests {
         return (dir, repo)
     }
 
+    /// The 2.17 contract a client compiled against: `Level` has exactly
+    /// these cases (an exhaustive switch with no default compiles), and the
+    /// original initializer is still a `(levels:includePolicy:)` function.
+    @Test("Level keeps the 2.17 cases and initializer")
+    func stableLevelContract() {
+        func describe(_ level: OperationConfiguration.Level) -> String {
+            switch level {
+            case .file: "file"
+            case .entries: "entries"
+            }
+        }
+        let make: ([OperationConfiguration.Level], ConfigIncludePolicy?) -> OperationConfiguration =
+            OperationConfiguration.init(levels:includePolicy:)
+        let configuration = make([.entries([]), .file(url("x"), .global)], nil)
+        #expect(configuration.levels.map(describe) == ["entries", "file"])
+        #expect(configuration.layers == nil)
+    }
+
     @Test("command-line layers read an included file in its place, live and in an operation")
     func commandLineLayers() throws {
         defer { cleanUp() }
@@ -62,8 +80,7 @@ struct ConfigLevelConsumerTests {
         #expect(try repo.configGet("user.name") == "Included")
         #expect(try repo.configGet("user.email") == "a@b")
 
-        let level = OperationConfiguration.Level.layers(layers)
-        let opened = try Repository.withOperationConfiguration(OperationConfiguration(levels: [level])) {
+        let opened = try Repository.withOperationConfiguration(OperationConfiguration(layers: layers)) {
             try Repository.open(at: source)
         }
         #expect(try opened.configGet("user.name") == "Included")
