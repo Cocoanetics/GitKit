@@ -388,9 +388,12 @@ static const gitkit_created_entry gitkit_init_layout[] = {
 /*
  * What an init wrote, recorded each time it is about to read config, the
  * only point where it runs host code (the include policy; the repository.c
- * shim calls gitkit_created_watch_notify() there). A file is the init's
- * as first recorded, before any host code could touch it; changed or gone
- * at a later record, it is no longer provably the init's.
+ * shim calls gitkit_created_watch_notify() there), and checked again as
+ * soon as that read returns (gitkit_created_watch_settle()). What the
+ * init itself writes between two reads — on Windows its symlink probe
+ * reads the global config before it is done writing its own — is its
+ * own, recorded at the next. A file changed, made or gone while host code
+ * could run is no longer provably the init's, and never recorded again.
  */
 typedef struct {
 	const char *git_dir;
@@ -399,7 +402,8 @@ typedef struct {
 
 static GITKIT_THREAD_LOCAL gitkit_created_watch *gitkit_current_watch;
 
-void gitkit_created_watch_notify(void)
+/* Each file of the layout as it is now, for `check` against its record. */
+static void gitkit_created_watch_visit(int check)
 {
 	gitkit_created_watch *watch = gitkit_current_watch;
 	gitkit_file_id now;
@@ -420,14 +424,25 @@ void gitkit_created_watch_notify(void)
 			continue;
 		}
 		gitkit_created_id(&now, path.ptr);
-		if (!id->present) {
-			*id = now;	/* first seen now, or still absent */
-		} else if (!gitkit_created_same(id, &now, !is_dir)) {
+		if (!check) {
+			*id = now;	/* the init's, or still absent */
+		} else if (id->present ? !gitkit_created_same(id, &now, !is_dir) :
+		           now.present || now.unprovable) {
 			memset(id, 0, sizeof(*id));
-			id->unprovable = 1;	/* changed since */
+			id->unprovable = 1;	/* changed, made or gone meanwhile */
 		}
 	}
 	git_str_dispose(&path);
+}
+
+void gitkit_created_watch_notify(void)
+{
+	gitkit_created_watch_visit(0);
+}
+
+void gitkit_created_watch_settle(void)
+{
+	gitkit_created_watch_visit(1);
 }
 
 int gitkit_repository_init_created(

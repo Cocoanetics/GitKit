@@ -136,7 +136,10 @@ Operations are synchronous, `throws` (typed ``Libgit2Error``), and return
   directories of a clone target are kept. On Windows identity is the
   volume serial number and file ID, checked by handle; where a volume
   can't open by file ID (FAT/exFAT, network shares) everything is kept, and
-  a retry at the same location still fails. A prepared
+  a retry at the same location still fails. (libgit2 itself refuses a
+  Windows repository path longer than `MAX_PATH` less 92, whatever
+  `core.longpaths` says, so a clone or worktree that deep fails before
+  any of this.) A prepared
   worktree whose preparation or checkout fails was made by this add, and
   is pruned. A branch the add created is deleted only while it still
   points where it was created (one moved, or deleted and made again

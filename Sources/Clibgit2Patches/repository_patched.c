@@ -35,8 +35,9 @@
  *
  * Before each file is added there, and before each git_config_open_default()
  * (an init's `init.defaultBranch`), gitkit_created_watch_notify() lets a
- * GitKit init record what it wrote before the include policy can run
- * (created_dir.c); outside such an init it does nothing.
+ * GitKit init record what it wrote before the include policy can run, and
+ * gitkit_created_watch_settle() checks it again as each returns
+ * (created_dir.c); outside such an init both do nothing.
  *
  * With no scope on the calling thread both behave exactly as before. A
  * scope is pushed and popped by the thread it belongs to (LIFO, so a
@@ -419,13 +420,14 @@ static int gitkit_repository_add_file(
 	size_t recorded;
 	int error;
 
-	/* Before this file's includes reach the host's include policy. */
-	gitkit_created_watch_notify();
 	if (gitkit_config_scope_has_level(level))
 		return 0;
 
 	recorded = gitkit_scope_recorded();
+	/* Around this file's includes reaching the host's include policy. */
+	gitkit_created_watch_notify();
 	error = git_config_add_file_ondisk(cfg, path, level, repo, force);
+	gitkit_created_watch_settle();
 
 	/* A refused include recorded itself already. */
 	if (error < 0 && error != GIT_ENOTFOUND && gitkit_scope_recorded() == recorded)
@@ -672,11 +674,16 @@ static int gitkit_repository_finish_config(
 }
 
 /* An init's own config reads (`init.defaultBranch`) reach the include
- * policy too: what a GitKit init wrote is recorded before each. */
+ * policy too: what a GitKit init wrote is recorded before each, and
+ * checked after. */
 static int gitkit_repository_config_open_default(git_config **out)
 {
+	int error;
+
 	gitkit_created_watch_notify();
-	return git_config_open_default(out);
+	error = git_config_open_default(out);
+	gitkit_created_watch_settle();
+	return error;
 }
 
 #define git_config_add_file_ondisk(cfg, path, level, repo, force) \

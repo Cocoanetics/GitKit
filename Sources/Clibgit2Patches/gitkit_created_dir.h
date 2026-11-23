@@ -100,4 +100,10 @@ void gitkit_created_before_delete(const char *path);
  */
 void gitkit_created_watch_notify(void);
 
+/*
+ * Called as each such config read returns: what changed since the record
+ * is no longer provably the init's (created_dir.c).
+ */
+void gitkit_created_watch_settle(void);
+
 #endif /* GITKIT_CREATED_DIR_H */

@@ -17,11 +17,13 @@
  *   neither delete nor rename, checked through that handle and renamed by
  *   it to a private name next to where it is, never replacing anything.
  *   A directory with a named data stream is not provable either.
- *   Its entries are listed through the handle, each opened by its file ID
- *   (sharing neither write nor delete) and checked; then the listing must
- *   be unchanged. Only when every directory checks out is anything
- *   deleted, children first, each through the handle it was checked by; a
- *   directory that isn't empty by then stays. Otherwise every pin is
+ *   Its entries are listed through the handle, each opened by its listed
+ *   name relative to that handle (sharing neither write nor delete, never
+ *   following a reparse point), must be the file ID listed and is checked;
+ *   then the listing must be unchanged. (NTFS deletes nothing through a
+ *   handle opened by file ID.) Only when every directory checks out is
+ *   anything deleted, children first, each through the handle it was
+ *   checked by; a directory that isn't empty by then stays. Otherwise every pin is
  *   closed and each directory renamed back, kept; one whose name was taken
  *   meanwhile stays under its private name.
  */
@@ -43,7 +45,6 @@
 #define GITKIT_FileIdExtdDirectoryInfo ((FILE_INFO_BY_HANDLE_CLASS)19)
 #define GITKIT_FileIdExtdDirectoryRestartInfo ((FILE_INFO_BY_HANDLE_CLASS)20)
 #define GITKIT_FileDispositionInfoEx ((FILE_INFO_BY_HANDLE_CLASS)21)
-#define GITKIT_ExtendedFileIdType ((FILE_ID_TYPE)2)
 #define GITKIT_DISPOSITION_DELETE 0x1
 #define GITKIT_DISPOSITION_POSIX_SEMANTICS 0x2
 #define GITKIT_SUPPORTS_OPEN_BY_FILE_ID 0x01000000
@@ -66,15 +67,39 @@ typedef struct {
 	WCHAR FileName[1];
 } gitkit_id_extd_dir_info;		/* FILE_ID_EXTD_DIR_INFO */
 
+/* NtCreateFile() (winternl.h, wdm.h), for an open relative to a handle. */
 typedef struct {
-	DWORD dwSize;
-	FILE_ID_TYPE Type;
+	USHORT Length, MaximumLength;
+	PWSTR Buffer;
+} gitkit_unicode_string;		/* UNICODE_STRING */
+
+typedef struct {
+	ULONG Length;
+	HANDLE RootDirectory;
+	gitkit_unicode_string *ObjectName;
+	ULONG Attributes;
+	PVOID SecurityDescriptor, SecurityQualityOfService;
+} gitkit_object_attributes;		/* OBJECT_ATTRIBUTES */
+
+typedef struct {
 	union {
-		LARGE_INTEGER FileId;
-		GUID ObjectId;
-		BYTE ExtendedFileId[16];
+		LONG Status;
+		PVOID Pointer;
 	} u;
-} gitkit_id_descriptor;			/* FILE_ID_DESCRIPTOR */
+	ULONG_PTR Information;
+} gitkit_io_status_block;		/* IO_STATUS_BLOCK */
+
+typedef LONG (NTAPI *gitkit_nt_create_file)(
+	HANDLE *, ACCESS_MASK, gitkit_object_attributes *, gitkit_io_status_block *,
+	LARGE_INTEGER *, ULONG, ULONG, ULONG, ULONG, PVOID, ULONG);
+typedef ULONG (NTAPI *gitkit_rtl_nt_status_to_dos_error)(LONG);
+
+#define GITKIT_FILE_OPEN 0x1
+#define GITKIT_FILE_DIRECTORY_FILE 0x1
+#define GITKIT_FILE_SYNCHRONOUS_IO_NONALERT 0x20
+#define GITKIT_FILE_NON_DIRECTORY_FILE 0x40
+#define GITKIT_FILE_OPEN_FOR_BACKUP_INTENT 0x4000
+#define GITKIT_FILE_OPEN_REPARSE_POINT 0x00200000
 
 /* Bounded retries for what an indexer or virus scanner holds briefly:
  * they only delay, never change what is removed. */
@@ -165,7 +190,7 @@ static int gitkit_digest(unsigned char out[32], HANDLE h, uint64_t size)
 	LARGE_INTEGER start = { 0 };
 	unsigned char *data, extra;
 	DWORD got, read = 0;
-	int error = GITKIT_NOTE() - 1;
+	int error = -1;
 
 	if (size > GITKIT_DIGEST_MAX ||
 	    !SetFilePointerEx(h, start, NULL, FILE_BEGIN) ||
@@ -306,24 +331,57 @@ static HANDLE gitkit_pin_path(const wchar_t *path)
 	return h;
 }
 
-static HANDLE gitkit_pin_id(HANDLE hint, const BYTE file_id[16], int is_dir)
+/*
+ * The entry `name` (one component, as listed) of the directory open at
+ * `dir`, of the type listed and never followed, pinned like a directory
+ * or, for a file, sharing neither write nor delete. Opened by name, not
+ * by file ID: NTFS refuses a delete (ERROR_INVALID_PARAMETER) through a
+ * handle opened by ID; the caller checks it is the ID listed.
+ */
+static HANDLE gitkit_pin_child(HANDLE dir, const WCHAR *name, USHORT name_bytes, int is_dir)
 {
-	gitkit_id_descriptor descriptor;
-	HANDLE h;
+	HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+	gitkit_nt_create_file create = NULL;
+	gitkit_rtl_nt_status_to_dos_error to_error = NULL;
+	gitkit_unicode_string object_name;
+	gitkit_object_attributes attributes;
+	gitkit_io_status_block status;
+	HANDLE h = INVALID_HANDLE_VALUE;
+	LONG nt;
 	int tries = 0;
 
-	memset(&descriptor, 0, sizeof(descriptor));
-	descriptor.dwSize = sizeof(descriptor);
-	descriptor.Type = GITKIT_ExtendedFileIdType;
-	memcpy(descriptor.u.ExtendedFileId, file_id, sizeof(descriptor.u.ExtendedFileId));
-	while ((h = OpenFileById(hint, (LPFILE_ID_DESCRIPTOR)&descriptor,
-	                         DELETE | FILE_READ_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
-	                         is_dir ? FILE_SHARE_READ | FILE_SHARE_WRITE : FILE_SHARE_READ,
-	                         NULL, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT))
-	           == INVALID_HANDLE_VALUE &&
-	       gitkit_transient(GetLastError()) && ++tries < GITKIT_RETRIES)
+	if (ntdll) {
+		create = (gitkit_nt_create_file)(void *)GetProcAddress(ntdll, "NtCreateFile");
+		to_error = (gitkit_rtl_nt_status_to_dos_error)(void *)
+			GetProcAddress(ntdll, "RtlNtStatusToDosError");
+	}
+	if (create == NULL || to_error == NULL) {
+		SetLastError(ERROR_PROC_NOT_FOUND);
+		return INVALID_HANDLE_VALUE;
+	}
+	object_name.Length = object_name.MaximumLength = name_bytes;
+	object_name.Buffer = (PWSTR)name;
+	memset(&attributes, 0, sizeof(attributes));
+	attributes.Length = sizeof(attributes);
+	attributes.RootDirectory = dir;
+	attributes.ObjectName = &object_name;
+	for (;;) {
+		memset(&status, 0, sizeof(status));
+		nt = create(&h, DELETE | FILE_READ_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+		            &attributes, &status, NULL, 0,
+		            is_dir ? FILE_SHARE_READ | FILE_SHARE_WRITE : FILE_SHARE_READ,
+		            GITKIT_FILE_OPEN,
+		            GITKIT_FILE_OPEN_REPARSE_POINT | GITKIT_FILE_SYNCHRONOUS_IO_NONALERT |
+		            GITKIT_FILE_OPEN_FOR_BACKUP_INTENT |
+		            (is_dir ? GITKIT_FILE_DIRECTORY_FILE : GITKIT_FILE_NON_DIRECTORY_FILE),
+		            NULL, 0);
+		if (nt >= 0)
+			return h;
+		SetLastError(to_error(nt));
+		if (!gitkit_transient(GetLastError()) || ++tries >= GITKIT_RETRIES)
+			return INVALID_HANDLE_VALUE;
 		Sleep(GITKIT_RETRY_MS);
-	return h;
+	}
 }
 
 /*
@@ -396,6 +454,8 @@ static int gitkit_delete(HANDLE h)
 /* One entry of a directory listing. */
 typedef struct {
 	char *name;
+	WCHAR *wide;
+	USHORT wide_bytes;
 	BYTE file_id[16];
 	ULONG attributes;
 } gitkit_listed;
@@ -409,8 +469,10 @@ static void gitkit_listing_dispose(gitkit_listing *listing)
 {
 	size_t i;
 
-	for (i = 0; i < listing->len; i++)
+	for (i = 0; i < listing->len; i++) {
 		git__free(listing->entries[i].name);
+		git__free(listing->entries[i].wide);
+	}
 	git__free(listing->entries);
 	memset(listing, 0, sizeof(*listing));
 }
@@ -441,6 +503,13 @@ static int gitkit_listing_add(gitkit_listing *listing, const gitkit_id_extd_dir_
 		return GITKIT_NOTE() - 1;
 	}
 	entry->name[len] = '\0';
+	if (info->FileNameLength > USHRT_MAX ||
+	    (entry->wide = git__malloc(info->FileNameLength ? info->FileNameLength : 1)) == NULL) {
+		git__free(entry->name);
+		return GITKIT_NOTE() - 1;
+	}
+	memcpy(entry->wide, info->FileName, info->FileNameLength);
+	entry->wide_bytes = (USHORT)info->FileNameLength;
 	memcpy(entry->file_id, info->FileId, sizeof(entry->file_id));
 	entry->attributes = info->FileAttributes;
 	listing->len++;
@@ -541,10 +610,10 @@ static const gitkit_created_entry *gitkit_find_entry(
 
 /*
  * Checks the directory open at `dir` (at `prefix`): each entry, pinned by
- * its file ID into `pins`, must be one the list names, of its type and,
- * when the list records it, that very file, unchanged; and the listing
- * must still be the same once all are pinned. 0 when it all is the
- * operation's.
+ * its listed name into `pins` and still the file ID listed, must be one
+ * the list names, of its type and, when the list records it, that very
+ * file, unchanged; and the listing must still be the same once all are
+ * pinned. 0 when it all is the operation's.
  */
 static int gitkit_walk(
 	HANDLE dir, const char *prefix,
@@ -570,7 +639,7 @@ static int gitkit_walk(
 		    ((entry = gitkit_find_entry(entries, len, path.ptr)) == NULL && !GITKIT_NOTE()) ||
 		    ((listed->attributes & FILE_ATTRIBUTE_REPARSE_POINT) && !GITKIT_NOTE()) ||
 		    (entry->is_dir != is_dir && !GITKIT_NOTE()) ||
-		    (h = gitkit_pin_id(dir, listed->file_id, is_dir)) == INVALID_HANDLE_VALUE) {
+		    (h = gitkit_pin_child(dir, listed->wide, listed->wide_bytes, is_dir)) == INVALID_HANDLE_VALUE) {
 			error = GITKIT_NOTE() - 1;
 			break;
 		}
