@@ -441,15 +441,54 @@ int gitkit_remove_created_dirs(const gitkit_created_dir *dirs, size_t len)
 #endif /* GIT_WIN32 */
 
 /*
- * git_branch_delete(), for a branch the operation created, in the other
- * order: it removes `branch.<name>.*` before its compare-and-delete of the
- * ref, so a branch someone moved meanwhile kept its ref but lost its
- * config. Here the ref goes first, only while it still points where
- * `branch` does, and the config only after that.
+ * Deletes `branch.<short>.<var>` only where it still is `value` — under
+ * the config file's lock, which the write takes and re-reads the file in.
+ * Gone or changed meanwhile, it is someone else's and stays.
  */
-int gitkit_branch_delete_created(git_reference *branch)
+static int gitkit_delete_written_var(
+	git_config *config, const char *short_name, const char *var, const char *value)
 {
-	git_str section = GIT_STR_INIT;
+	git_str key = GIT_STR_INIT, regexp = GIT_STR_INIT;
+	const char *c;
+	int error;
+
+	if ((error = git_str_printf(&key, "branch.%s.%s", short_name, var)) < 0 ||
+	    (error = git_str_putc(&regexp, '^')) < 0)
+		goto done;
+	for (c = value; !error && *c; c++) {
+		if (strchr("\\^$.|?*+()[]{}", *c))
+			error = git_str_putc(&regexp, '\\');
+		if (!error)
+			error = git_str_putc(&regexp, *c);
+	}
+	if (error || (error = git_str_putc(&regexp, '$')) < 0)
+		goto done;
+	error = git_config_delete_multivar(config, key.ptr, regexp.ptr);
+	if (error == GIT_ENOTFOUND) {
+		git_error_clear();
+		error = 0;
+	}
+done:
+	git_str_dispose(&key);
+	git_str_dispose(&regexp);
+	return error;
+}
+
+/*
+ * git_branch_delete(), for a branch the operation created, in the other
+ * order and narrower: it removes all of `branch.<name>.*` before its
+ * compare-and-delete of the ref, so a branch someone moved meanwhile kept
+ * its ref but lost its config, and config someone else wrote for the
+ * branch went with it. Here the ref goes first, only while it still points
+ * where `branch` does; after that only the upstream the operation wrote
+ * (`remote`, `merge`; NULL when it wrote none) is removed, and only while
+ * it still holds those values.
+ */
+int gitkit_branch_delete_created(
+	git_reference *branch, const char *remote, const char *merge)
+{
+	git_config *config;
+	const char *short_name;
 	int error;
 
 	GIT_ASSERT_ARG(branch);
@@ -466,10 +505,15 @@ int gitkit_branch_delete_created(git_reference *branch)
 	}
 	if ((error = git_reference_delete(branch)) < 0)
 		return error;
+	if (remote == NULL && merge == NULL)
+		return 0;
 
-	if ((error = git_str_join(&section, '.', "branch",
-	                          git_reference_name(branch) + strlen(GIT_REFS_HEADS_DIR))) == 0)
-		error = git_config_rename_section(git_reference_owner(branch), section.ptr, NULL);
-	git_str_dispose(&section);
+	short_name = git_reference_name(branch) + strlen(GIT_REFS_HEADS_DIR);
+	if ((error = git_repository_config__weakptr(&config, git_reference_owner(branch))) < 0)
+		return error;
+	if (remote && (error = gitkit_delete_written_var(config, short_name, "remote", remote)) < 0)
+		return error;
+	if (merge)
+		error = gitkit_delete_written_var(config, short_name, "merge", merge);
 	return error;
 }

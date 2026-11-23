@@ -119,11 +119,12 @@ extension Repository {
         let name = try uniqueWorktreeName(preferred: preferredName)
 
         var branchRef: OpaquePointer?
-        var createdBranch = false
+        var createdBranch: CreatedBranch?
         let branchLookupRC = git_branch_lookup(&branchRef, repo, branch, GIT_BRANCH_LOCAL)
         if branchLookupRC == GIT_ENOTFOUND.rawValue {
-            branchRef = try createWorktreeBranch(named: branch, startPoint: startPoint)
-            createdBranch = true
+            let created = try createWorktreeBranch(named: branch, startPoint: startPoint)
+            branchRef = created.ref
+            createdBranch = created
         } else {
             try check(branchLookupRC)
         }
@@ -174,8 +175,8 @@ extension Repository {
         } catch {
             created.remove()
             // A worktree kept still has the branch checked out.
-            if createdBranch, made != GITKIT_WORKTREE_ADD_KEPT {
-                deleteCreatedBranch(branchRef)
+            if let createdBranch, made != GITKIT_WORKTREE_ADD_KEPT {
+                deleteCreatedBranch(createdBranch)
             }
             throw error
         }
@@ -190,18 +191,26 @@ extension Repository {
             // directories: prune them as git does, then what is left empty.
             pruneCreatedWorktree(named: name)
             created.remove()
-            if createdBranch {
-                deleteCreatedBranch(branchRef)
+            if let createdBranch {
+                deleteCreatedBranch(createdBranch)
             }
             throw error
         }
     }
 
+    /// A branch this add created, and the upstream config it wrote for it.
+    private struct CreatedBranch {
+        var ref: OpaquePointer?
+        var upstreamRemote: String?
+        var upstreamMerge: String?
+    }
+
     /// Deletes a branch this add created, only while it still points where
     /// the add created it: one moved meanwhile is someone else's work, and
-    /// keeps its config too (`gitkit_branch_delete_created`).
-    private func deleteCreatedBranch(_ branchRef: OpaquePointer?) {
-        _ = gitkit_branch_delete_created(branchRef)
+    /// keeps its config too. Of its config, only the upstream the add wrote
+    /// goes, and only while unchanged (`gitkit_branch_delete_created`).
+    private func deleteCreatedBranch(_ branch: CreatedBranch) {
+        _ = gitkit_branch_delete_created(branch.ref, branch.upstreamRemote, branch.upstreamMerge)
     }
 
     /// Opens the linked worktree at `path`, prepares it and checks it out.
@@ -330,7 +339,7 @@ extension Repository {
     private func createWorktreeBranch(
         named branch: String,
         startPoint: String
-    ) throws -> OpaquePointer? {
+    ) throws -> CreatedBranch {
         var startObject: OpaquePointer?
         try check(git_revparse_single(&startObject, repo, startPoint))
         defer { git_object_free(startObject) }
@@ -347,11 +356,15 @@ extension Repository {
         // remote-tracking branch (`branch.autoSetupMerge`'s default of
         // `true`); mirror that so `currentBranchUpstream()`/status/push
         // behave the same as `git worktree add -b <branch> <path> <ref>`.
+        var created = CreatedBranch(ref: branchRef)
         if let upstream = remoteTrackingShorthand(ofStartPoint: startPoint) {
             try check(git_branch_set_upstream(branchRef, upstream))
+            // What it wrote, for a rollback to remove exactly that.
+            created.upstreamRemote = try configGet("branch.\(branch).remote")
+            created.upstreamMerge = try configGet("branch.\(branch).merge")
         }
 
-        return branchRef
+        return created
     }
 
     /// If `startPoint` resolves (via the same DWIM rules git itself uses:

@@ -296,9 +296,12 @@ GIT_EXTERN(int) gitkit_repository_init_created(
 /*
  * GitKit addition, implemented in Sources/Clibgit2Patches/created_dir.c:
  * git_branch_delete() for a branch the caller created, deleting the ref
- * only while it still points where `branch` does (compare-and-delete), and
- * its `branch.<name>` config only once the ref is gone.
+ * only while it still points where `branch` does (compare-and-delete).
+ * Once the ref is gone, of its `branch.<name>` config only the upstream the
+ * caller wrote — `remote` and `merge`, NULL for none — is removed, and only
+ * while it still holds those values; the rest is someone else's and stays.
  */
-GIT_EXTERN(int) gitkit_branch_delete_created(git_reference *branch);
+GIT_EXTERN(int) gitkit_branch_delete_created(
+	git_reference *branch, const char *remote, const char *merge);
 
 #endif /* GITKIT_LIBGIT2_H */

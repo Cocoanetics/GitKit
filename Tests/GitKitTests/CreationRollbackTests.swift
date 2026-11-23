@@ -37,13 +37,21 @@ struct CreationRollbackTests {
         try (try String(contentsOf: config, encoding: .utf8)
             + "[includeIf \"gitdir:**/worktrees/linked\"]\n\tpath = \(secret.path)\n")
             .write(to: config, atomically: true, encoding: .utf8)
+        // An `origin/main` to start a tracking branch from.
+        try repo.configSet("remote.origin.url", dir.path)
+        try repo.configSet("remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
+        let tracking = dir.appendingPathComponent(".git/refs/remotes/origin/main")
+        try FileManager.default.createDirectory(
+            at: tracking.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("\(shas[1])\n".utf8).write(to: tracking)
         return (dir, secret, shas[1])
     }
 
-    /// Adds `linked` on a new branch `feature` at `main~1`; the policy runs
+    /// Adds `linked` on a new branch `feature` at `startPoint`; the policy runs
     /// `meanwhile` once, then refuses the include.
     private func failingAdd(
-        _ source: URL, secret: URL, meanwhile: @escaping @Sendable (_ path: URL) throws -> Void
+        _ source: URL, secret: URL, startPoint: String = "main~1",
+        meanwhile: @escaping @Sendable (_ path: URL) throws -> Void
     ) throws -> (Repository, URL) {
         let path = fixtures.url("linked")
         let primary = try Repository.open(at: source, includePolicy: ConfigIncludePolicy { include in
@@ -52,7 +60,7 @@ struct CreationRollbackTests {
         })
         #expect(throws: Libgit2Error.self) {
             try primary.worktreeAdd(
-                path: path, branch: "feature", startPoint: "main~1",
+                path: path, branch: "feature", startPoint: startPoint,
                 preparation: RepositoryPreparation { _ in Issue.record("prepared") })
         }
         return (primary, path)
@@ -148,6 +156,57 @@ struct CreationRollbackTests {
         #expect(try String(contentsOf: config, encoding: .utf8).contains("note = mine"))
     }
 
+    @Test("config someone writes for the created branch stays, though the branch is deleted")
+    func foreignBranchConfigIsKept() throws {
+        defer { fixtures.removeAll() }
+        let (source, secret, _) = try makeSource()
+        let config = source.appendingPathComponent(".git/config")
+        let (primary, path) = try failingAdd(source, secret: secret) { _ in
+            let text = try String(contentsOf: config, encoding: .utf8)
+            try (text + "[branch \"feature\"]\n\tnote = mine\n").write(to: config, atomically: true, encoding: .utf8)
+        }
+        #expect(!Self.exists(path))
+        #expect(try primary.localBranches() == ["main"])
+        #expect(try primary.configGet("branch.feature.note") == "mine")
+    }
+
+    @Test("the upstream the add wrote goes with its branch; one changed meanwhile stays")
+    func writtenUpstreamIsRemoved() throws {
+        defer { fixtures.removeAll() }
+        let (source, secret, _) = try makeSource()
+        var (primary, _) = try failingAdd(source, secret: secret, startPoint: "origin/main") { _ in }
+        #expect(try primary.localBranches() == ["main"])
+        #expect(try primary.configGet("branch.feature.remote") == nil)
+        #expect(try primary.configGet("branch.feature.merge") == nil)
+
+        let config = source.appendingPathComponent(".git/config")
+        (primary, _) = try failingAdd(source, secret: secret, startPoint: "origin/main") { _ in
+            let text = try String(contentsOf: config, encoding: .utf8)
+            try text.replacingOccurrences(of: "merge = refs/heads/main", with: "merge = refs/heads/other")
+                .write(to: config, atomically: true, encoding: .utf8)
+        }
+        #expect(try primary.localBranches() == ["main"])
+        #expect(try primary.configGet("branch.feature.remote") == nil)
+        #expect(try primary.configGet("branch.feature.merge") == "refs/heads/other")
+    }
+
+    @Test("a branch deleted and made again under the same name meanwhile is kept, with its config")
+    func recreatedBranchIsKept() throws {
+        defer { fixtures.removeAll() }
+        let (source, secret, main) = try makeSource()
+        let ref = source.appendingPathComponent(".git/refs/heads/feature")
+        let config = source.appendingPathComponent(".git/config")
+        let (primary, path) = try failingAdd(source, secret: secret) { _ in
+            try FileManager.default.removeItem(at: ref)
+            try Data("\(main)\n".utf8).write(to: ref)
+            let text = try String(contentsOf: config, encoding: .utf8)
+            try (text + "[branch \"feature\"]\n\tnote = mine\n").write(to: config, atomically: true, encoding: .utf8)
+        }
+        #expect(!Self.exists(path))
+        #expect(try primary.localBranches().sorted() == ["feature", "main"])
+        #expect(try primary.configGet("branch.feature.note") == "mine")
+    }
+
     /// Clones into a new and an existing empty `probe-clone`; the refused
     /// include's policy, in the new repository's open, runs `meanwhile` on
     /// each first.
@@ -203,6 +262,21 @@ struct CreationRollbackTests {
             let config = try String(contentsOf: directory.appendingPathComponent(".git/config"), encoding: .utf8)
             #expect(config.contains("y = z"))
             #expect(Self.exists(directory.appendingPathComponent(".git/HEAD")))
+        }
+    }
+
+    @Test("a clone HEAD someone replaces meanwhile, same text, is not the init's: the clone is kept")
+    func replacedHeadKeepsClone() throws {
+        defer { fixtures.removeAll() }
+        let (source, _, _) = try makeSource()
+        for directory in try failingClones(source, meanwhile: { directory in
+            let head = directory.appendingPathComponent(".git/HEAD")
+            let text = try String(contentsOf: head, encoding: .utf8)
+            try FileManager.default.removeItem(at: head)
+            try text.write(to: head, atomically: false, encoding: .utf8)
+        }) {
+            #expect(Self.exists(directory.appendingPathComponent(".git/HEAD")))
+            #expect(Self.exists(directory.appendingPathComponent(".git/config")))
         }
     }
 }
