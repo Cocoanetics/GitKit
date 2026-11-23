@@ -22,12 +22,16 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 inventory="$root/compat/public-enum-cases.txt"
 scratch="${ENUM_CASES_SCRATCH:-${TMPDIR:-/tmp}/GitKit-enum-cases}"
 
-# dump-symbol-graph covers every module and cannot load SwiftPM's synthesized
-# GitKitPackageTests module; that one failure is expected, any other is not.
+# dump-symbol-graph covers every module and cannot load the test modules
+# SwiftPM synthesizes: GitKitPackageTests, and on Linux also
+# GitKitPackageDiscoveredTests (test discovery). Those failures are expected,
+# any other is not.
 rm -rf "$scratch"/*/symbolgraph
 swift package --package-path "$root" --scratch-path "$scratch" --build-system native \
     --traits Archive dump-symbol-graph --minimum-access-level public > "$scratch.log" 2>&1
-if grep 'error:' "$scratch.log" | grep -qv "symbol graph for 'GitKitPackageTests'"; then
+if grep 'error:' "$scratch.log" \
+    | grep -Ev "^error: Failed to emit symbol graph for '(GitKitPackageTests|GitKitPackageDiscoveredTests)': " \
+    | grep -q .; then
     grep 'error:' "$scratch.log" | head -20 >&2
     echo "symbol graph extraction failed (log: $scratch.log)" >&2
     exit 2
