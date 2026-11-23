@@ -4,7 +4,8 @@
 # (no library evolution), and checks every outcome against
 # compat/expectations.txt. A revision other than HEAD is the working tree with
 # Package.swift, Sources and Tests taken from that tag or commit (the vendored
-# libgit2 is reused); HEAD is the working tree itself.
+# libgit2 is reused, and must be the commit that revision pins); HEAD is the
+# working tree itself.
 #
 #   Scripts/check-source-compat.sh [revision ...]    # default: every revision in the file
 #
@@ -31,6 +32,14 @@ prepare_gitkit() {
     rm -rf "$dest" && mkdir -p "$dest"
     rsync -a --exclude .git --exclude .build --exclude .swiftpm --exclude compat "$root/" "$dest/" || return 1
     if [ "$rev" != HEAD ]; then
+        # The reused libgit2 must be the one that revision pins.
+        local pinned checked_out
+        pinned="$(git -C "$root" rev-parse "$rev:vendor/libgit2")" || return 1
+        checked_out="$(git -C "$root/vendor/libgit2" rev-parse HEAD)" || return 1
+        if [ "$pinned" != "$checked_out" ]; then
+            echo "$rev pins vendor/libgit2 at $pinned, the working tree has $checked_out" >&2
+            return 1
+        fi
         rm -rf "$dest/Package.swift" "$dest/Sources" "$dest/Tests"
         git -C "$root" archive "$rev" -- Package.swift Sources Tests | tar -x -C "$dest" || return 1
     fi
@@ -63,8 +72,16 @@ prepare_client() {
 }
 
 mismatches=0
+outcomes=0
 summary=()
 for rev in "${revisions[@]}"; do
+    # An expectation whose client is missing would otherwise never be built.
+    while read -r client; do
+        if [ ! -d "$compat/clients/$client" ]; then
+            echo "no client for the expectation $client at $rev" >&2
+            mismatches=$((mismatches + 1))
+        fi
+    done < <(grep -v '^#' "$expectations" | awk -v r="$rev" 'NF && $2 == r { print $1 }')
     work="$scratch/$rev"
     prepare_gitkit "$rev" "$work/gitkit" || { echo "cannot prepare GitKit at $rev" >&2; exit 2; }
     prepare_client "$work/gitkit" "$work/client"
@@ -82,6 +99,7 @@ for rev in "${revisions[@]}"; do
             swift build --package-path "$work/client" --scratch-path "$work/build" \
                 --target "${client}_swift$mode" 2>&1 | sed $'s/\x1b\\[[0-9;]*m//g' > "$log"
             code=${PIPESTATUS[0]}
+            outcomes=$((outcomes + 1))
             actual=pass
             [ $code -ne 0 ] && actual=fail
             verdict=ok
@@ -105,7 +123,7 @@ done
 
 echo
 if [ $mismatches -eq 0 ]; then
-    echo "source compatibility: every outcome matches compat/expectations.txt"
+    echo "source compatibility: all $outcomes outcomes match compat/expectations.txt"
     exit 0
 fi
 echo "source compatibility: $mismatches outcome(s) differ from compat/expectations.txt" >&2

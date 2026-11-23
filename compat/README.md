@@ -5,8 +5,9 @@ its clients see its public API as source: a new case in a public enum breaks
 a client that switches over it exhaustively. 2.18.0 did exactly that with
 `OperationConfiguration.Level.layers`; 2.19 restores 2.17's `Level` (see the
 README's Versioning section). Two scripts keep that from passing as a minor
-change again. Neither is wired into CI here; both run on a developer's Mac or
-a CI job that has the tags (`git fetch --tags`).
+change again. CI runs both in the macOS and Linux jobs (`.github/workflows/ci.yml`),
+whose checkouts fetch the full history and tags; locally they need the tags
+too (`git fetch --tags`).
 
 ## `Scripts/check-source-compat.sh` — the compile probes
 
