@@ -9,8 +9,8 @@ import CGitKit
 
 extension CreationRollbackTests {
 
-    /// Clones into `directory`, refused by the include policy in the new
-    /// repository's own open.
+    /// Clones into `directory` with a preparation, refused by the include
+    /// policy in the new repository's own open.
     func expectFailingClone(from source: URL, into directory: URL) throws {
         let extra = fixtures.url("extra.config")
         try "[test]\n\textra = 1\n".write(to: extra, atomically: true, encoding: .utf8)
@@ -21,7 +21,10 @@ extension CreationRollbackTests {
         #expect(throws: Libgit2Error.self) {
             try Repository.withOperationConfiguration(OperationConfiguration(
                 levels: [.file(global, .global)], includePolicy: ConfigIncludePolicy { _ in false })) {
-                try Repository.clone(fromRemote: source.path, to: directory, progress: Self.silent)
+                // Prepared, so the clone's init is GitKit's own, which rolls back.
+                try Repository.clone(
+                    fromRemote: source.path, to: directory, progress: Self.silent,
+                    preparation: RepositoryPreparation { _ in Issue.record("prepared") })
             }
         }
     }
