@@ -153,6 +153,27 @@ Operations are synchronous, `throws` (typed ``Libgit2Error``), and return
   level belongs to that `Repository` only; add it from a preparation to
   govern a clone or worktree's first checkout. Which files and entries to
   add is the host's policy.
+- **Operation configuration** — `Repository.withOperationConfiguration(_:_:)`
+  gives the same levels (`OperationConfiguration.Level.file` /
+  `.entries`) to every repository opened on the calling thread while its
+  synchronous body runs, from the open on, including those libgit2 opens
+  itself: each submodule during `status` / `diff`, submodule sync, a staged
+  gitlink, worktree checks, a local clone. A replaced level's search-path file
+  is not read; writes keep going to each repository's own file; nothing global
+  changes; a nested call replaces only the levels it names, and its end
+  restores the outer scope. Its optional
+  `includePolicy` authorises those repositories' includes. libgit2 clears the
+  error of a submodule it fails to open; such a failure (a refused include,
+  an unreadable level) is recorded and thrown after a body that returned
+  normally, unless a GitKit call already threw it to the body. Repositories
+  opened earlier keep their config. Entries git reads from the repository's
+  own config only (`core.repositoryformatversion`, `core.bare`,
+  `core.worktree`, `extensions.*`) are refused, and skipped in a file level
+  and the files it includes. A level's missing file reads as empty; one that
+  exists but cannot be read is thrown before the body runs, and fails any open
+  that later finds it unreadable. Not covered: configs libgit2
+  reads without opening a repository (an init's template directory and
+  `init.defaultBranch`, a detached remote).
 - **Work** — `add`, `commitDetailed`, `amendDetailed`, `status`, `diff`,
   `checkout`, `checkoutNewBranch`, `checkoutPaths`, `reset`,
   `move`/`remove` (git mv/rm).

@@ -40,6 +40,9 @@ import PackageDescription
 //   • refdb_fs.c is shimmed so compare-and-delete preserves reflogs on a
 //     mismatch, uses the right linked-worktree path, and serializes packed-ref
 //     read-modify-write cycles across repository handles.
+//   • repository.c is shimmed so every repository a thread opens — the ones
+//     libgit2 opens internally, like a submodule's during status, too —
+//     reads the levels of the thread's operation configuration scope.
 //   • Consumers only import `GitKit`.
 // =============================================================================
 
@@ -161,6 +164,10 @@ var excludes: [String] = [
     // Compiled via Sources/Clibgit2Patches/refdb_fs_patched.c, whose guarded
     // delete fixes reflog ordering, linked-worktree paths and packed locking.
     "src/libgit2/refdb_fs.c",
+
+    // Compiled via Sources/Clibgit2Patches/repository_patched.c, whose config
+    // load adds the calling thread's operation configuration levels.
+    "src/libgit2/repository.c",
 ]
 
 // Header search paths for the .c compilation, relative to Clibgit2's path

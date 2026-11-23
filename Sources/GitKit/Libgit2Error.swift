@@ -46,6 +46,7 @@ public struct Libgit2Error: Error, LocalizedError, Sendable {
 func check(_ rc: Int32) throws -> Int32 {
     if rc < 0 {
         let error = Libgit2Error.last(code: rc)
+        OperationConfigurationScope.markReported(error)
         if let filterError = PendingFilterError.take(matching: error) { throw filterError }
         throw error
     }

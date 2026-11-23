@@ -215,4 +215,43 @@ GIT_EXTERN(void) gitkit_config_set_thread_include_callback(
  */
 GIT_EXTERN(int) gitkit_repository_config_changed(git_repository *repo);
 
+/*
+ * GitKit addition, implemented in Sources/Clibgit2Patches/repository_patched.c:
+ * config levels for an operation, which every repository the calling thread
+ * opens while the scope is pushed reads as part of its config from the open
+ * on — the ones libgit2 opens internally (a submodule's, during status) too.
+ * A level replaces the search-path file of the same level, which is then not
+ * read; the open's write target stays the repository's own config file. A
+ * level never yields core.repositoryformatversion, core.bare, core.worktree
+ * or extensions.* (git reads them from the repository's own config only),
+ * nor do the files it includes. A level's file reads as empty when missing;
+ * _add_file refuses one that exists but cannot be read, and an open that
+ * finds it unreadable later fails (it does not open with no config).
+ *
+ * Build a scope with _new and _add_* (each copies its arguments; adding a
+ * level again replaces it), push it on the thread that runs the operation,
+ * pop it on that thread (innermost first; popping restores the scope the push
+ * found), then free it. While nested, a level is the innermost scope's that
+ * has it; the outer scopes' other levels stay in force. A failure to read a level or a refused include while
+ * the scope is pushed is recorded: _first_failure returns the first one not
+ * marked as handed back (its message lives as long as the scope), and
+ * _mark_reported marks the calling thread's newest record when it is the
+ * error a call is returning. Only the SYSTEM, XDG, GLOBAL and APP levels can
+ * be replaced. Used by GitKit's Swift layer; not a stable API.
+ */
+typedef struct gitkit_config_scope gitkit_config_scope;
+GIT_EXTERN(int) gitkit_config_scope_new(gitkit_config_scope **out);
+GIT_EXTERN(int) gitkit_config_scope_add_file(
+	gitkit_config_scope *scope, git_config_level_t level, const char *path);
+GIT_EXTERN(int) gitkit_config_scope_add_entries(
+	gitkit_config_scope *scope, git_config_level_t level,
+	const char *text, size_t len, const char *backend_type);
+GIT_EXTERN(int) gitkit_config_scope_push(gitkit_config_scope *scope);
+GIT_EXTERN(int) gitkit_config_scope_pop(gitkit_config_scope *scope);
+GIT_EXTERN(void) gitkit_config_scope_free(gitkit_config_scope *scope);
+GIT_EXTERN(int) gitkit_config_scope_has_level(git_config_level_t level);
+GIT_EXTERN(int) gitkit_config_scope_first_failure(
+	const gitkit_config_scope *scope, int *code, int *klass, const char **message);
+GIT_EXTERN(void) gitkit_config_scope_mark_reported(int klass, const char *message);
+
 #endif /* GITKIT_LIBGIT2_H */
