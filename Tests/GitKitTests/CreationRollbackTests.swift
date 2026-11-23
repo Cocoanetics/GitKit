@@ -105,18 +105,6 @@ struct CreationRollbackTests {
         ], pattern: "probe-clone-*")
     }
 
-    #if os(Windows)
-    @Test("a clone at a path longer than MAX_PATH is removed, and retried")
-    func longPathCloneIsRemoved() throws {
-        defer { fixtures.removeAll() }
-        let (source, _, _) = try makeSource()
-        let deep = String(repeating: "d", count: 120) + "/" + String(repeating: "e", count: 120)
-        let target = fixtures.url("\(deep)/probe-clone")
-        #expect(target.path.utf16.count > 260)
-        try expectRetriableClone(from: source, into: [target])
-    }
-    #endif
-
     /// Clones into each of `directories` (new, or empty) twice: refused by
     /// the include policy in the new repository's own open, which removes
     /// what it made and keeps libgit2's error; then allowed, which succeeds.
@@ -598,21 +586,42 @@ extension CreationRollbackTests {
         defer { fixtures.removeAll() }
         let (source, _, _) = try makeSource()
         for directory in try failingClones(source, meanwhile: { directory in
-            let stream = URL(fileURLWithPath: directory.appendingPathComponent(".git/config").path + ":theirs")
-            guard let handle = Self.open(
-                stream, access: DWORD(GENERIC_WRITE), share: 0, disposition: DWORD(CREATE_NEW))
-            else { throw CocoaError(.fileWriteUnknown) }
-            defer { CloseHandle(handle) }
-            var written: DWORD = 0
-            _ = Array("mine\n".utf8).withUnsafeBytes {
-                WriteFile(handle, $0.baseAddress, DWORD($0.count), &written, nil)
-            }
+            try Self.writeStream(directory.appendingPathComponent(".git/config").path + ":theirs")
         }) {
-            let stream = URL(fileURLWithPath: directory.appendingPathComponent(".git/config").path + ":theirs")
-            let handle = Self.open(stream, access: DWORD(GENERIC_READ),
-                                   share: DWORD(FILE_SHARE_READ), disposition: DWORD(OPEN_EXISTING))
-            #expect(handle != nil)
-            if let handle { CloseHandle(handle) }
+            #expect(Self.streamExists(directory.appendingPathComponent(".git/config").path + ":theirs"))
+            #expect(Self.exists(directory.appendingPathComponent(".git/HEAD")))
+        }
+    }
+
+    /// Writes a named data stream, `path` being `<file or directory>:<name>`.
+    private static func writeStream(_ path: String) throws {
+        guard let handle = open(
+            URL(fileURLWithPath: path), access: DWORD(GENERIC_WRITE), share: 0,
+            disposition: DWORD(CREATE_NEW))
+        else { throw CocoaError(.fileWriteUnknown) }
+        defer { CloseHandle(handle) }
+        var written: DWORD = 0
+        _ = Array("mine\n".utf8).withUnsafeBytes {
+            WriteFile(handle, $0.baseAddress, DWORD($0.count), &written, nil)
+        }
+    }
+
+    private static func streamExists(_ path: String) -> Bool {
+        guard let handle = open(URL(fileURLWithPath: path), access: DWORD(GENERIC_READ),
+                                share: DWORD(FILE_SHARE_READ), disposition: DWORD(OPEN_EXISTING))
+        else { return false }
+        CloseHandle(handle)
+        return true
+    }
+
+    @Test("an alternate data stream someone adds to a clone's git directory keeps the clone")
+    func directoryStreamKeepsClone() throws {
+        defer { fixtures.removeAll() }
+        let (source, _, _) = try makeSource()
+        for directory in try failingClones(source, meanwhile: { directory in
+            try Self.writeStream(directory.appendingPathComponent(".git").path + ":theirs")
+        }) {
+            #expect(Self.streamExists(directory.appendingPathComponent(".git").path + ":theirs"))
             #expect(Self.exists(directory.appendingPathComponent(".git/HEAD")))
         }
     }

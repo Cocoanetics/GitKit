@@ -15,7 +15,8 @@
  *   one: there everything is kept.
  * - A directory to remove is opened (pinned) with delete access, sharing
  *   neither delete nor rename, checked through that handle and renamed by
- *   it to a private name in its own directory, never replacing anything.
+ *   it to a private name next to where it is, never replacing anything.
+ *   A directory with a named data stream is not provable either.
  *   Its entries are listed through the handle, each opened by its file ID
  *   (sharing neither write nor delete) and checked; then the listing must
  *   be unchanged. Only when every directory checks out is anything
@@ -113,6 +114,22 @@ static int gitkit_only_data_stream(HANDLE h)
 		memcmp(info->StreamName, data, sizeof(data) - sizeof(WCHAR)) == 0;
 }
 
+/*
+ * A directory with no data stream: a named one (`dir:name`) is data the
+ * listing of its entries doesn't show, and deleting the directory would
+ * take it along.
+ */
+static int gitkit_no_streams(HANDLE h)
+{
+	union { LONGLONG align; BYTE bytes[1024]; } buf;
+	const FILE_STREAM_INFO *info = (const FILE_STREAM_INFO *)buf.bytes;
+
+	memset(&buf, 0, sizeof(buf));
+	if (!GetFileInformationByHandleEx(h, FileStreamInfo, &buf, sizeof(buf)))
+		return GetLastError() == ERROR_HANDLE_EOF;
+	return info->NextEntryOffset == 0 && info->StreamNameLength == 0;
+}
+
 /* SHA-256 of the `size` bytes of the file open at `h`, from its start. */
 static int gitkit_digest(unsigned char out[32], HANDLE h, uint64_t size)
 {
@@ -167,7 +184,7 @@ static void gitkit_id_from_handle(gitkit_file_id *out, HANDLE h)
 	    standard.DeletePending ||
 	    GetFileInformationByHandleEx(h, GITKIT_FileRemoteProtocolInfo, &remote, sizeof(remote)))
 		return;
-	if (!standard.Directory &&
+	if (standard.Directory ? !gitkit_no_streams(h) :
 	    (standard.NumberOfLinks != 1 || !gitkit_only_data_stream(h) ||
 	     gitkit_digest(out->digest, h, (uint64_t)standard.EndOfFile.QuadPart) < 0))
 		return;
@@ -275,7 +292,11 @@ static HANDLE gitkit_pin_id(HANDLE hint, const BYTE file_id[16], int is_dir)
 	return h;
 }
 
-/* Renames what `h` is open on within its directory, replacing nothing. */
+/*
+ * Renames what `h` is open on to the full path `name`, replacing nothing.
+ * (A bare name would be taken relative to the current directory, not the
+ * file's own.)
+ */
 static int gitkit_rename(HANDLE h, const wchar_t *name)
 {
 	size_t bytes = wcslen(name) * sizeof(wchar_t);
@@ -522,33 +543,35 @@ static int gitkit_walk(
 	return error;
 }
 
-/* One directory being rolled back: pinned, its name, its private name. */
+/*
+ * One directory being rolled back: pinned, and its full path and the full
+ * private path next to it, both `\\?\`-prefixed.
+ */
 typedef struct {
 	HANDLE dir;
-	wchar_t name[MAX_PATH];
-	wchar_t quarantine[MAX_PATH];
+	wchar_t *name;
+	wchar_t *quarantine;
 	int moved;
 	gitkit_pins pins;
 } gitkit_quarantine;
 
-/* Its own name, as it is on disk, from the handle. */
-static int gitkit_leaf_name(wchar_t *out, size_t cap, HANDLE h)
+#define GITKIT_FINAL_PATH_MAX 32768
+
+/* Where what `h` is open on is now, as on disk: `\\?\C:\...`. */
+static wchar_t *gitkit_final_path(HANDLE h)
 {
-	const DWORD size = 32768;
-	wchar_t *path = git__malloc(size * sizeof(wchar_t)), *leaf;
+	wchar_t *path = git__malloc(GITKIT_FINAL_PATH_MAX * sizeof(wchar_t));
 	DWORD len;
-	int error = -1;
 
 	if (path == NULL)
-		return -1;
-	len = GetFinalPathNameByHandleW(h, path, size, FILE_NAME_NORMALIZED | VOLUME_NAME_NONE);
-	if (len > 0 && len < size && (leaf = wcsrchr(path, L'\\')) != NULL &&
-	    leaf[1] != L'\0' && wcslen(leaf + 1) < cap) {
-		wcscpy(out, leaf + 1);
-		error = 0;
+		return NULL;
+	len = GetFinalPathNameByHandleW(h, path, GITKIT_FINAL_PATH_MAX,
+	                                FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+	if (len == 0 || len >= GITKIT_FINAL_PATH_MAX) {
+		git__free(path);
+		return NULL;
 	}
-	git__free(path);
-	return error;
+	return path;
 }
 
 /* Pins `dir` and renames it to a private name if it still is `dir->id`. */
@@ -556,25 +579,38 @@ static int gitkit_quarantine_dir(gitkit_quarantine *q, const gitkit_created_dir 
 {
 	git_win32_path wide;
 	gitkit_file_id now;
-	size_t keep;
+	wchar_t *leaf, *moved;
+	size_t keep, parent_len, cap;
+	int same;
 
 	if (!dir->id->present || gitkit_wide_path(wide, dir->path) < 0 ||
 	    (q->dir = gitkit_pin_path(wide)) == INVALID_HANDLE_VALUE)
 		return -1;
 	gitkit_id_from_handle(&now, q->dir);
 	if (!gitkit_is_dir(&now) || !gitkit_created_same(dir->id, &now, 0) ||
-	    gitkit_leaf_name(q->name, ARRAY_SIZE(q->name), q->dir) < 0)
+	    (q->name = gitkit_final_path(q->dir)) == NULL ||
+	    (leaf = wcsrchr(q->name, L'\\')) == NULL || leaf[1] == L'\0')
 		return -1;
+	leaf++;
+	parent_len = (size_t)(leaf - q->name);
 	/* At most 200 units of the name, not splitting a surrogate pair. */
-	keep = wcslen(q->name);
+	keep = wcslen(leaf);
 	if (keep > 200)
-		keep = IS_HIGH_SURROGATE(q->name[199]) ? 199 : 200;
-	if (_snwprintf(q->quarantine, ARRAY_SIZE(q->quarantine), L".%.*ls.gitkit-rollback-%016llx",
-	               (int)keep, q->name, (unsigned long long)git_rand_next()) < 0 ||
+		keep = IS_HIGH_SURROGATE(leaf[199]) ? 199 : 200;
+	cap = parent_len + keep + 64;
+	if ((q->quarantine = git__calloc(cap, sizeof(wchar_t))) == NULL ||
+	    _snwprintf(q->quarantine, cap, L"%.*ls.%.*ls.gitkit-rollback-%016llx",
+	               (int)parent_len, q->name, (int)keep, leaf,
+	               (unsigned long long)git_rand_next()) < 0 ||
 	    gitkit_rename(q->dir, q->quarantine) < 0)
 		return -1;
 	q->moved = 1;
-	return 0;
+	/* Where it went, which only a link in the path could change. */
+	if ((moved = gitkit_final_path(q->dir)) == NULL)
+		return -1;
+	same = wcscmp(moved, q->quarantine) == 0;
+	git__free(moved);
+	return same ? 0 : -1;
 }
 
 /* Deletes what the walk pinned, children first, then the directory. */
@@ -640,6 +676,8 @@ int gitkit_remove_created_dirs(const gitkit_created_dir *dirs, size_t len)
 		}
 		if (q[i].dir != INVALID_HANDLE_VALUE)
 			CloseHandle(q[i].dir);
+		git__free(q[i].name);
+		git__free(q[i].quarantine);
 	}
 	if (error && result == GITKIT_CREATED_REMOVED)
 		result = GITKIT_CREATED_KEPT;
