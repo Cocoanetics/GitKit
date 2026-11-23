@@ -133,8 +133,10 @@ Operations are synchronous, `throws` (typed ``Libgit2Error``), and return
   aside in one step and removed, all or none, only if they are still those
   directories and hold nothing but what the init or add wrote, unchanged;
   otherwise they are moved back and kept, with the branch. Missing parent
-  directories of a clone target are kept, and Windows keeps everything
-  (there a retry at the same location still fails). A prepared
+  directories of a clone target are kept. On Windows identity is the
+  volume serial number and file ID, checked by handle; where a volume
+  can't open by file ID (FAT/exFAT, network shares) everything is kept, and
+  a retry at the same location still fails. A prepared
   worktree whose preparation or checkout fails was made by this add, and
   is pruned. A branch the add created is deleted only while it still
   points where it was created (one moved, or deleted and made again
