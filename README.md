@@ -169,9 +169,18 @@ Operations are synchronous, `throws` (typed ``Libgit2Error``), and return
   level belongs to that `Repository` only; add it from a preparation to
   govern a clone or worktree's first checkout. Which files and entries to
   add is the host's policy.
+- **Command-line config layers** — `addConfigLayers(_:)` reads git's
+  `-c a=1 -c include.path=<file> -c b=2` in order, as `ConfigLayer`s
+  (`.entries([...])`, `.file(url)`, `.entries([...])`) at consecutive levels
+  from `.app` up: a later layer wins a single read, the included file is the
+  origin of its entries, and its own includes go through the include policy.
+  The whole set is read before it replaces the previous one (an `.app` add
+  replaces it too), a missing layer file reads as empty and an unreadable one
+  is an error; writes keep going to the repository's own file. The host
+  resolves the include's path and keeps `include.path` among the entries.
 - **Operation configuration** — `Repository.withOperationConfiguration(_:_:)`
   gives the same levels (`OperationConfiguration.Level.file` /
-  `.entries`) to every repository opened on the calling thread while its
+  `.entries`, and `.layers` for the command-line layers) to every repository opened on the calling thread while its
   synchronous body runs, from the open on, including those libgit2 opens
   itself: each submodule during `status` / `diff`, submodule sync, a staged
   gitlink, worktree checks, a local clone. A replaced level's search-path file

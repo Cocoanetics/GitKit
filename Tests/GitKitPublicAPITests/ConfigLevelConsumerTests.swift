@@ -46,6 +46,30 @@ struct ConfigLevelConsumerTests {
         return (dir, repo)
     }
 
+    @Test("command-line layers read an included file in its place, live and in an operation")
+    func commandLineLayers() throws {
+        defer { cleanUp() }
+        let (source, repo) = try makeSource()
+        let inc = try write("[user]\n\tname = Included\n", to: "inc.cfg")
+        let layers: [ConfigLayer] = [
+            .entries([ConfigEntry(name: "user.name", value: "Before"),
+                      ConfigEntry(name: "include.path", value: inc.path)]),
+            .file(inc),
+            .entries([ConfigEntry(name: "user.email", value: "a@b")], name: "command line")
+        ]
+
+        try repo.addConfigLayers(layers)
+        #expect(try repo.configGet("user.name") == "Included")
+        #expect(try repo.configGet("user.email") == "a@b")
+
+        let level = OperationConfiguration.Level.layers(layers)
+        let opened = try Repository.withOperationConfiguration(OperationConfiguration(levels: [level])) {
+            try Repository.open(at: source)
+        }
+        #expect(try opened.configGet("user.name") == "Included")
+        #expect(try opened.configGet("user.email") == "a@b")
+    }
+
     @Test("a prepared clone fetches, checks out and writes through the added levels")
     func preparedClone() throws {
         defer { cleanUp() }

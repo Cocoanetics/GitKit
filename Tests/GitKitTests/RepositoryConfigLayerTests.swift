@@ -196,7 +196,7 @@ struct RepositoryConfigLayerTests {
     func replacement() throws {
         defer { fixtures.removeAll() }
         let (_, repo) = try makeRepository()
-        let level = { (offset: Int32) in git_config_level_t(rawValue: GIT_CONFIG_LEVEL_APP.rawValue + numericCast(offset)) }
+        let level = { (offset: Int) in ConfigLayer.level(offset) }
         let global = try write("[t]\n\tglobal = 1\n", to: "global")
         try repo.addConfigFile(at: global, level: .global)
 
@@ -271,7 +271,8 @@ struct RepositoryConfigLayerTests {
         let error = #expect(throws: Libgit2Error.self) {
             try repo.addConfigLayers([Self.entries([("t.new", "1")]), .file(unreadable)])
         }
-        #expect(error?.message == "failed to read config file '\(unreadable.path)': \(String(cString: strerror(EACCES)))")
+        let reason = String(cString: strerror(EACCES))
+        #expect(error?.message == "failed to read config file '\(unreadable.path)': \(reason)")
         #expect(throws: Libgit2Error.self) { try repo.addConfigFile(at: unreadable, level: .app) }
         #expect(try repo.configGet("t.new") == nil)
         #expect(try repo.configGet("t.after") == "1")

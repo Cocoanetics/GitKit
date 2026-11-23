@@ -12,7 +12,7 @@ import Testing
 @Suite("Operation configuration", .serialized)
 struct OperationConfigurationTests {
 
-    private let fixtures = TemporaryRepositories()
+    let fixtures = TemporaryRepositories()
 
     private static let lf = Data("a\nb\n".utf8)
     private static let crlf = Data("a\r\nb\r\n".utf8)
@@ -20,11 +20,11 @@ struct OperationConfigurationTests {
         [ConfigEntry(name: "core.autocrlf", value: "true")])
     /// The host's system and XDG files left out, so that a test's own
     /// levels decide, whatever the machine's config says.
-    private static let hostIsolated: [OperationConfiguration.Level] = [
+    static let hostIsolated: [OperationConfiguration.Level] = [
         .entries([], .system, name: "isolated"), .entries([], .xdg, name: "isolated")
     ]
     /// No global level at all: the control for a test's global level.
-    private static let noGlobal = OperationConfiguration(
+    static let noGlobal = OperationConfiguration(
         levels: hostIsolated + [.entries([], .global, name: "isolated")])
 
     private struct Failure: Error, CustomStringConvertible {
@@ -62,7 +62,7 @@ struct OperationConfigurationTests {
         return dir
     }
 
-    private struct Fixture {
+    struct Fixture {
         let outer: URL
         /// outer/middle-sub/inner-sub: the checked-out leaf.
         let inner: URL
@@ -75,7 +75,7 @@ struct OperationConfigurationTests {
     /// `core.autocrlf=true` writes — and indexed so, while the leaf's own
     /// config says `core.autocrlf=false`. Its stat data no longer matches the
     /// index, so whoever compares it hashes it again under its config.
-    private func makeFixture() throws -> Fixture {
+    func makeFixture() throws -> Fixture {
         let leaf = try makeRepo("leaf-source")
         let middleSource = try makeRepo("middle-source")
         try git(["submodule", "add", "-q", leaf.path, "inner-sub"], in: middleSource)
@@ -100,7 +100,7 @@ struct OperationConfigurationTests {
     }
 
     /// Every config file and `.gitmodules` of the fixture, with its bytes.
-    private func configBytes(_ fixture: Fixture, plus extra: [URL] = []) throws -> [String: Data] {
+    func configBytes(_ fixture: Fixture, plus extra: [URL] = []) throws -> [String: Data] {
         var files = extra
         let gitDir = fixture.outer.appendingPathComponent(".git")
         let walk = FileManager.default.enumerator(at: gitDir, includingPropertiesForKeys: nil)
@@ -113,7 +113,7 @@ struct OperationConfigurationTests {
         return bytes
     }
 
-    private func write(_ text: String, to name: String) throws -> URL {
+    func write(_ text: String, to name: String) throws -> URL {
         let url = fixtures.url(name)
         try Data(text.utf8).write(to: url)
         return url
