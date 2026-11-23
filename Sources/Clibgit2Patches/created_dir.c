@@ -21,7 +21,11 @@
  * elsewhere nothing is renamed): if something took the name meanwhile, it
  * stays, and the creation stays under its private name. Entries are
  * opened relative to their directory and never through a symlink, and a
- * directory is removed only while empty. Windows keeps everything.
+ * directory is removed only while empty.
+ *
+ * Here: what an init records and when, the init itself and the created
+ * branch's removal, and the POSIX identity and removal. Windows has its
+ * own identity and removal, by handle and file ID (created_dir_win32.c).
  */
 #include "common.h"
 #include "repository.h"
@@ -30,6 +34,19 @@
 #include "config.h"
 #include "git2/branch.h"
 #include "gitkit_created_dir.h"
+
+static GITKIT_THREAD_LOCAL gitkit_created_restore_hook gitkit_restore_hook;
+
+void gitkit_created_set_restore_hook(gitkit_created_restore_hook hook)
+{
+	gitkit_restore_hook = hook;
+}
+
+void gitkit_created_before_restore(const char *path)
+{
+	if (gitkit_restore_hook)
+		gitkit_restore_hook(path);
+}
 
 #ifndef GIT_WIN32
 #include <dirent.h>
@@ -47,8 +64,6 @@
 #endif
 
 #define GITKIT_DIR_FLAGS (O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-
-#define GITKIT_THREAD_LOCAL __thread
 
 #if defined(__linux__) || defined(__ANDROID__)
 #  include <sys/syscall.h>
@@ -78,13 +93,6 @@ static int gitkit_rename_noreplace(int fromfd, const char *from, int tofd, const
 #endif
 }
 
-static GITKIT_THREAD_LOCAL gitkit_created_restore_hook gitkit_restore_hook;
-
-void gitkit_created_set_restore_hook(gitkit_created_restore_hook hook)
-{
-	gitkit_restore_hook = hook;
-}
-
 static void gitkit_id_from_stat(gitkit_file_id *out, const struct stat *st)
 {
 	out->present = 1;
@@ -101,6 +109,16 @@ void gitkit_created_id(gitkit_file_id *out, const char *path)
 	memset(out, 0, sizeof(*out));
 	if (lstat(path, &st) == 0)
 		gitkit_id_from_stat(out, &st);
+	else if (errno != ENOENT && errno != ENOTDIR)
+		out->unprovable = 1;
+}
+
+int gitkit_created_same(const gitkit_file_id *id, const gitkit_file_id *now, int with_change)
+{
+	return id->present && now->present &&
+		now->dev == id->dev && now->ino == id->ino &&
+		(!with_change ||
+		 (now->ctime_sec == id->ctime_sec && now->ctime_nsec == id->ctime_nsec));
 }
 
 /* A directory's ctime changes with its entries, and with the rename. */
@@ -318,8 +336,7 @@ int gitkit_remove_created_dirs(const gitkit_created_dir *dirs, size_t len)
 		if (q[i].moved) {
 			if (result == GITKIT_CREATED_REMOVED)
 				result = GITKIT_CREATED_KEPT;
-			if (gitkit_restore_hook)
-				gitkit_restore_hook(dirs[i].path);
+			gitkit_created_before_restore(dirs[i].path);
 			/* Whatever took its name meanwhile is not replaced: it stays,
 			 * and so does this, under its private name. */
 			if (gitkit_rename_noreplace(q[i].parent, q[i].quarantine,
@@ -334,6 +351,8 @@ int gitkit_remove_created_dirs(const gitkit_created_dir *dirs, size_t len)
 	git_error_restore(saved);
 	return result;
 }
+
+#endif /* GIT_WIN32 */
 
 /* What git_repository_init() writes in a new git directory: its internal
  * template (repo_template.h), then the config and HEAD. */
@@ -374,20 +393,19 @@ void gitkit_created_watch_notify(void)
 		gitkit_file_id *id = &watch->ids[i];
 		int is_dir = gitkit_init_layout[i].is_dir;
 
+		if (id->unprovable)
+			continue;
 		if (git_str_joinpath(&path, watch->git_dir, gitkit_init_layout[i].path) < 0) {
 			memset(id, 0, sizeof(*id));
-			id->dev = 1;	/* not provable: never recorded again */
+			id->unprovable = 1;	/* never recorded again */
 			continue;
 		}
 		gitkit_created_id(&now, path.ptr);
-		if (!id->present && id->dev == 0 && id->ino == 0) {
+		if (!id->present) {
 			*id = now;	/* first seen now, or still absent */
-		} else if (id->present &&
-		           (!now.present || now.dev != id->dev || now.ino != id->ino ||
-		            (!is_dir && (now.ctime_sec != id->ctime_sec ||
-		                         now.ctime_nsec != id->ctime_nsec)))) {
+		} else if (!gitkit_created_same(id, &now, !is_dir)) {
 			memset(id, 0, sizeof(*id));
-			id->dev = 1;	/* changed since: not provable */
+			id->unprovable = 1;	/* changed since */
 		}
 	}
 	git_str_dispose(&path);
@@ -412,14 +430,14 @@ int gitkit_repository_init_created(
 		opts.flags |= GIT_REPOSITORY_INIT_BARE;
 
 	/* The directories the init would make, made here, exclusively. */
-	if (lstat(path, &st) < 0 && errno == ENOENT) {
+	if (p_lstat(path, &st) < 0 && errno == ENOENT) {
 		if (git_fs_path_dirname_r(&parent, path) >= 0)
 			git_futils_mkdir(parent.ptr, 0777, GIT_MKDIR_PATH);
-		if (mkdir(path, 0777) == 0)
+		if (p_mkdir(path, 0777) == 0)
 			gitkit_created_id(&root_id, path);
 	}
 	if (!bare && git_str_joinpath(&dotgit, path, ".git") == 0 &&
-	    mkdir(dotgit.ptr, 0777) == 0)
+	    p_mkdir(dotgit.ptr, 0777) == 0)
 		gitkit_created_id(&dotgit_id, dotgit.ptr);
 	git_error_clear();
 
@@ -456,38 +474,6 @@ int gitkit_repository_init_created(
 	git_str_dispose(&dotgit);
 	return error;
 }
-
-#else /* GIT_WIN32 */
-
-void gitkit_created_watch_notify(void)
-{
-}
-
-void gitkit_created_set_restore_hook(gitkit_created_restore_hook hook)
-{
-	GIT_UNUSED(hook);
-}
-
-int gitkit_repository_init_created(
-	git_repository **out, const char *path, unsigned bare)
-{
-	return git_repository_init(out, path, bare);
-}
-
-void gitkit_created_id(gitkit_file_id *out, const char *path)
-{
-	GIT_UNUSED(path);
-	memset(out, 0, sizeof(*out));
-}
-
-int gitkit_remove_created_dirs(const gitkit_created_dir *dirs, size_t len)
-{
-	GIT_UNUSED(dirs);
-	GIT_UNUSED(len);
-	return GITKIT_CREATED_KEPT;
-}
-
-#endif /* GIT_WIN32 */
 
 /*
  * Deletes `branch.<short>.<var>` only where it still is `value` — under

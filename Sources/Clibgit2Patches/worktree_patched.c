@@ -23,12 +23,6 @@
 #include "repository.h"
 #include "gitkit_created_dir.h"
 
-#if defined(_MSC_VER)
-#  define GITKIT_THREAD_LOCAL __declspec(thread)
-#else
-#  define GITKIT_THREAD_LOCAL __thread
-#endif
-
 typedef struct {
 	int opened;
 	git_str gitdir;
