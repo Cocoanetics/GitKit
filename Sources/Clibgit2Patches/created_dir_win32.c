@@ -100,6 +100,35 @@ static int gitkit_all(const BYTE *bytes, size_t len, BYTE value)
 	return 1;
 }
 
+/*
+ * Why the last checks on this thread failed: source line and Win32 error
+ * of each, for the tests to report (gitkit_created_trace()).
+ */
+static GITKIT_THREAD_LOCAL char gitkit_trace_buf[1024];
+
+static int gitkit_note(int line)
+{
+	DWORD error = GetLastError();
+	size_t len = strlen(gitkit_trace_buf);
+
+	if (len + 32 < sizeof(gitkit_trace_buf))
+		_snprintf(gitkit_trace_buf + len, sizeof(gitkit_trace_buf) - len, " %d:%lu",
+		          line, (unsigned long)error);
+	SetLastError(error);
+	return 0;
+}
+
+#define GITKIT_NOTE() gitkit_note(__LINE__)
+
+void gitkit_created_trace(char *out, size_t len)
+{
+	if (out && len) {
+		_snprintf(out, len, "%s", gitkit_trace_buf);
+		out[len - 1] = '\0';
+	}
+	gitkit_trace_buf[0] = '\0';
+}
+
 /* Exactly the unnamed data stream, and nothing else. */
 static int gitkit_only_data_stream(HANDLE h)
 {
@@ -136,12 +165,12 @@ static int gitkit_digest(unsigned char out[32], HANDLE h, uint64_t size)
 	LARGE_INTEGER start = { 0 };
 	unsigned char *data, extra;
 	DWORD got, read = 0;
-	int error = -1;
+	int error = GITKIT_NOTE() - 1;
 
 	if (size > GITKIT_DIGEST_MAX ||
 	    !SetFilePointerEx(h, start, NULL, FILE_BEGIN) ||
 	    (data = git__malloc(size ? (size_t)size : 1)) == NULL)
-		return -1;
+		return GITKIT_NOTE() - 1;
 	while (read < size && ReadFile(h, data + read, (DWORD)size - read, &got, NULL) && got > 0)
 		read += got;
 	/* All of it, and no more than the size read with it. */
@@ -169,24 +198,25 @@ static void gitkit_id_from_handle(gitkit_file_id *out, HANDLE h)
 
 	memset(out, 0, sizeof(*out));
 	out->unprovable = 1;
-	if (!GetFileInformationByHandleEx(h, GITKIT_FileIdInfo, &id, sizeof(id)) ||
-	    !GetFileInformationByHandleEx(h, FileBasicInfo, &basic, sizeof(basic)) ||
-	    !GetFileInformationByHandleEx(h, FileStandardInfo, &standard, sizeof(standard)) ||
-	    !GetFileInformationByHandleEx(h, FileAttributeTagInfo, &tag, sizeof(tag)) ||
-	    !GetVolumeInformationByHandleW(h, NULL, 0, NULL, NULL, &flags, NULL, 0))
+	if ((!GetFileInformationByHandleEx(h, GITKIT_FileIdInfo, &id, sizeof(id)) && !GITKIT_NOTE()) ||
+	    (!GetFileInformationByHandleEx(h, FileBasicInfo, &basic, sizeof(basic)) && !GITKIT_NOTE()) ||
+	    (!GetFileInformationByHandleEx(h, FileStandardInfo, &standard, sizeof(standard)) && !GITKIT_NOTE()) ||
+	    (!GetFileInformationByHandleEx(h, FileAttributeTagInfo, &tag, sizeof(tag)) && !GITKIT_NOTE()) ||
+	    (!GetVolumeInformationByHandleW(h, NULL, 0, NULL, NULL, &flags, NULL, 0) && !GITKIT_NOTE()))
 		return;
-	if (id.VolumeSerialNumber == 0 ||
-	    gitkit_all(id.FileId, sizeof(id.FileId), 0) ||
-	    gitkit_all(id.FileId, sizeof(id.FileId), 0xff) ||
-	    !(flags & GITKIT_SUPPORTS_OPEN_BY_FILE_ID) ||
-	    (basic.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) ||
-	    (tag.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) ||
-	    standard.DeletePending ||
-	    GetFileInformationByHandleEx(h, GITKIT_FileRemoteProtocolInfo, &remote, sizeof(remote)))
+	if (((id.VolumeSerialNumber == 0 ||
+	      gitkit_all(id.FileId, sizeof(id.FileId), 0) ||
+	      gitkit_all(id.FileId, sizeof(id.FileId), 0xff)) && !GITKIT_NOTE()) ||
+	    (!(flags & GITKIT_SUPPORTS_OPEN_BY_FILE_ID) && !GITKIT_NOTE()) ||
+	    (((basic.FileAttributes | tag.FileAttributes) & FILE_ATTRIBUTE_REPARSE_POINT) && !GITKIT_NOTE()) ||
+	    (standard.DeletePending && !GITKIT_NOTE()) ||
+	    (GetFileInformationByHandleEx(h, GITKIT_FileRemoteProtocolInfo, &remote, sizeof(remote)) &&
+	     !GITKIT_NOTE()))
 		return;
-	if (standard.Directory ? !gitkit_no_streams(h) :
-	    (standard.NumberOfLinks != 1 || !gitkit_only_data_stream(h) ||
-	     gitkit_digest(out->digest, h, (uint64_t)standard.EndOfFile.QuadPart) < 0))
+	if (standard.Directory ? (!gitkit_no_streams(h) && !GITKIT_NOTE()) :
+	    ((standard.NumberOfLinks != 1 && !GITKIT_NOTE()) ||
+	     (!gitkit_only_data_stream(h) && !GITKIT_NOTE()) ||
+	     (gitkit_digest(out->digest, h, (uint64_t)standard.EndOfFile.QuadPart) < 0 && !GITKIT_NOTE())))
 		return;
 
 	out->dev = (uint64_t)id.VolumeSerialNumber;
@@ -305,7 +335,7 @@ static int gitkit_rename(HANDLE h, const wchar_t *name)
 	int tries = 0, ok;
 
 	if (info == NULL)
-		return -1;
+		return GITKIT_NOTE() - 1;
 	info->ReplaceIfExists = FALSE;
 	info->RootDirectory = NULL;
 	info->FileNameLength = (DWORD)bytes;
@@ -314,7 +344,7 @@ static int gitkit_rename(HANDLE h, const wchar_t *name)
 	       gitkit_transient(GetLastError()) && ++tries < GITKIT_RETRIES)
 		Sleep(GITKIT_RETRY_MS);
 	git__free(info);
-	return ok ? 0 : -1;
+	return ok ? 0 : GITKIT_NOTE() - 1;
 }
 
 /* Deletes what `h` is open on; a directory only while it is empty. */
@@ -330,8 +360,9 @@ static int gitkit_delete(HANDLE h)
 	error = GetLastError();
 	if (error != ERROR_INVALID_PARAMETER && error != ERROR_NOT_SUPPORTED &&
 	    error != ERROR_INVALID_FUNCTION)
-		return -1;
-	return SetFileInformationByHandle(h, FileDispositionInfo, &classic, sizeof(classic)) ? 0 : -1;
+		return GITKIT_NOTE() - 1;
+	return SetFileInformationByHandle(h, FileDispositionInfo, &classic, sizeof(classic))
+		? 0 : GITKIT_NOTE() - 1;
 }
 
 /* One entry of a directory listing. */
@@ -367,7 +398,7 @@ static int gitkit_listing_add(gitkit_listing *listing, const gitkit_id_extd_dir_
 	if (listing->len == listing->cap) {
 		listing->cap = listing->cap ? listing->cap * 2 : 16;
 		if ((grown = git__reallocarray(listing->entries, listing->cap, sizeof(*grown))) == NULL)
-			return -1;
+			return GITKIT_NOTE() - 1;
 		listing->entries = grown;
 	}
 	entry = &listing->entries[listing->len];
@@ -375,11 +406,11 @@ static int gitkit_listing_add(gitkit_listing *listing, const gitkit_id_extd_dir_
 	if ((len = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, info->FileName, wide_len,
 	                               NULL, 0, NULL, NULL)) <= 0 ||
 	    (entry->name = git__malloc((size_t)len + 1)) == NULL)
-		return -1;
+		return GITKIT_NOTE() - 1;
 	if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, info->FileName, wide_len,
 	                        entry->name, len, NULL, NULL) != len) {
 		git__free(entry->name);
-		return -1;
+		return GITKIT_NOTE() - 1;
 	}
 	entry->name[len] = '\0';
 	memcpy(entry->file_id, info->FileId, sizeof(entry->file_id));
@@ -400,11 +431,11 @@ static int gitkit_list(gitkit_listing *out, HANDLE dir)
 
 	memset(out, 0, sizeof(*out));
 	if (buf == NULL)
-		return -1;
+		return GITKIT_NOTE() - 1;
 	while (!error) {
 		if (!GetFileInformationByHandleEx(dir, klass, buf, (DWORD)size)) {
 			if (GetLastError() != ERROR_NO_MORE_FILES)
-				error = -1;
+				error = GITKIT_NOTE() - 1;
 			break;
 		}
 		klass = GITKIT_FileIdExtdDirectoryInfo;
@@ -452,7 +483,7 @@ static int gitkit_pins_add(gitkit_pins *pins, HANDLE h)
 	if (pins->len == pins->cap) {
 		pins->cap = pins->cap ? pins->cap * 2 : 16;
 		if ((grown = git__reallocarray(pins->handles, pins->cap, sizeof(*grown))) == NULL)
-			return -1;
+			return GITKIT_NOTE() - 1;
 		pins->handles = grown;
 	}
 	pins->handles[pins->len++] = h;
@@ -500,7 +531,7 @@ static int gitkit_walk(
 	int error;
 
 	if (gitkit_list(&before, dir) < 0)
-		return -1;
+		return GITKIT_NOTE() - 1;
 	for (i = 0, error = 0; !error && i < before.len; i++) {
 		const gitkit_listed *listed = &before.entries[i];
 		int is_dir = (listed->attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
@@ -508,33 +539,34 @@ static int gitkit_walk(
 		git_str_clear(&path);
 		if ((*prefix && git_str_printf(&path, "%s/", prefix) < 0) ||
 		    git_str_puts(&path, listed->name) < 0 ||
-		    (entry = gitkit_find_entry(entries, len, path.ptr)) == NULL ||
-		    (listed->attributes & FILE_ATTRIBUTE_REPARSE_POINT) ||
-		    entry->is_dir != is_dir ||
+		    ((entry = gitkit_find_entry(entries, len, path.ptr)) == NULL && !GITKIT_NOTE()) ||
+		    ((listed->attributes & FILE_ATTRIBUTE_REPARSE_POINT) && !GITKIT_NOTE()) ||
+		    (entry->is_dir != is_dir && !GITKIT_NOTE()) ||
 		    (h = gitkit_pin_id(dir, listed->file_id, is_dir)) == INVALID_HANDLE_VALUE) {
-			error = -1;
+			error = GITKIT_NOTE() - 1;
 			break;
 		}
 		gitkit_id_from_handle(&now, h);
-		if (!now.present || gitkit_is_dir(&now) != is_dir ||
-		    memcmp(&now.ino, listed->file_id, sizeof(now.ino)) ||
-		    memcmp(&now.ino_hi, listed->file_id + sizeof(now.ino), sizeof(now.ino_hi)) ||
-		    (entry->id && !gitkit_created_same(entry->id, &now, !is_dir)) ||
+		if ((!now.present && !GITKIT_NOTE()) || (gitkit_is_dir(&now) != is_dir && !GITKIT_NOTE()) ||
+		    ((memcmp(&now.ino, listed->file_id, sizeof(now.ino)) ||
+		      memcmp(&now.ino_hi, listed->file_id + sizeof(now.ino), sizeof(now.ino_hi))) &&
+		     !GITKIT_NOTE()) ||
+		    (entry->id && !gitkit_created_same(entry->id, &now, !is_dir) && !GITKIT_NOTE()) ||
 		    (is_dir && gitkit_walk(h, path.ptr, entries, len, pins) < 0)) {
 			CloseHandle(h);
-			error = -1;
+			error = GITKIT_NOTE() - 1;
 		} else if (gitkit_pins_add(pins, h) < 0) {
 			CloseHandle(h);
-			error = -1;
+			error = GITKIT_NOTE() - 1;
 		}
 	}
 	/* With every entry pinned, nothing listed can go or be replaced. */
 	if (!error) {
 		if (gitkit_list(&after, dir) < 0)
-			error = -1;
+			error = GITKIT_NOTE() - 1;
 		else {
 			if (!gitkit_same_listing(&before, &after))
-				error = -1;
+				error = GITKIT_NOTE() - 1;
 			gitkit_listing_dispose(&after);
 		}
 	}
@@ -583,14 +615,15 @@ static int gitkit_quarantine_dir(gitkit_quarantine *q, const gitkit_created_dir 
 	size_t keep, parent_len, cap;
 	int same;
 
-	if (!dir->id->present || gitkit_wide_path(wide, dir->path) < 0 ||
+	if ((!dir->id->present && !GITKIT_NOTE()) || gitkit_wide_path(wide, dir->path) < 0 ||
 	    (q->dir = gitkit_pin_path(wide)) == INVALID_HANDLE_VALUE)
-		return -1;
+		return GITKIT_NOTE() - 1;
 	gitkit_id_from_handle(&now, q->dir);
-	if (!gitkit_is_dir(&now) || !gitkit_created_same(dir->id, &now, 0) ||
+	if ((!gitkit_is_dir(&now) && !GITKIT_NOTE()) ||
+	    (!gitkit_created_same(dir->id, &now, 0) && !GITKIT_NOTE()) ||
 	    (q->name = gitkit_final_path(q->dir)) == NULL ||
 	    (leaf = wcsrchr(q->name, L'\\')) == NULL || leaf[1] == L'\0')
-		return -1;
+		return GITKIT_NOTE() - 1;
 	leaf++;
 	parent_len = (size_t)(leaf - q->name);
 	/* At most 200 units of the name, not splitting a surrogate pair. */
@@ -603,11 +636,11 @@ static int gitkit_quarantine_dir(gitkit_quarantine *q, const gitkit_created_dir 
 	               (int)parent_len, q->name, (int)keep, leaf,
 	               (unsigned long long)git_rand_next()) < 0 ||
 	    gitkit_rename(q->dir, q->quarantine) < 0)
-		return -1;
+		return GITKIT_NOTE() - 1;
 	q->moved = 1;
 	/* Where it went, which only a link in the path could change. */
 	if ((moved = gitkit_final_path(q->dir)) == NULL)
-		return -1;
+		return GITKIT_NOTE() - 1;
 	same = wcscmp(moved, q->quarantine) == 0;
 	git__free(moved);
 	return same ? 0 : -1;
@@ -622,13 +655,13 @@ static int gitkit_delete_quarantined(gitkit_quarantine *q)
 	for (i = 0; i < q->pins.len; i++) {
 		/* Closing a deleted entry's handle takes its name. */
 		if (!error && gitkit_delete(q->pins.handles[i]) < 0)
-			error = -1;
+			error = GITKIT_NOTE() - 1;
 		CloseHandle(q->pins.handles[i]);
 	}
 	q->pins.len = 0;
 	gitkit_pins_close(&q->pins);
 	if (error || gitkit_delete(q->dir) < 0)
-		return -1;
+		return GITKIT_NOTE() - 1;
 	CloseHandle(q->dir);
 	q->dir = INVALID_HANDLE_VALUE;
 	return 0;
@@ -658,7 +691,7 @@ int gitkit_remove_created_dirs(const gitkit_created_dir *dirs, size_t len)
 		if (gitkit_delete_quarantined(&q[i]) == 0)
 			q[i].moved = 0;
 		else
-			error = -1;
+			error = GITKIT_NOTE() - 1;
 	}
 
 	/* A directory can't be renamed while anything in it is open. */

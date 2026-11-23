@@ -84,6 +84,15 @@ struct CreationRollbackTests {
 
     private static func silent(_: String) {}
 
+    /// Why the native checks on this thread failed since the last call
+    /// (Windows only), for a failed expectation's message.
+    private static func trace() -> Comment {
+        var buffer = [CChar](repeating: 0, count: 1024)
+        gitkit_created_trace(&buffer, buffer.count)
+        let bytes = buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
+        return Comment(rawValue: "rollback trace:" + String(decoding: bytes, as: UTF8.self))
+    }
+
     // MARK: What the creation provably made goes
 
     @Test("a clone whose own init fails before the preparation removes what it created")
@@ -129,18 +138,18 @@ struct CreationRollbackTests {
         }
         let existed = directories.map(Self.exists)
 
-        for directory in directories {
+        for (directory, existed) in zip(directories, existed) {
+            _ = Self.trace()
             let error = #expect(throws: Libgit2Error.self) { try clone(into: directory, allowing: false) }
             #expect(error?.message.contains("not authorised") == true)  // libgit2's own, as is
-        }
-        #expect(!prepared)
-        for (directory, existed) in zip(directories, existed) {
+            let trace = Self.trace()
             if existed {
-                #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path) == [])
+                #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path) == [], trace)
             } else {
-                #expect(!Self.exists(directory))
+                #expect(!Self.exists(directory), trace)
             }
         }
+        #expect(!prepared)
 
         for directory in directories {
             #expect(try clone(into: directory, allowing: true).configGet("test.extra") == "1")
@@ -158,6 +167,7 @@ struct CreationRollbackTests {
         var prepared = false
 
         for preparation in [nil, RepositoryPreparation { _ in prepared = true }] {
+            _ = Self.trace()
             let error = #expect(throws: Libgit2Error.self) {
                 if let preparation {
                     try refusing.worktreeAdd(path: path, branch: "feature", preparation: preparation)
@@ -166,7 +176,7 @@ struct CreationRollbackTests {
                 }
             }
             #expect(error?.message.contains("not authorised") == true)
-            #expect(!Self.exists(path))
+            #expect(!Self.exists(path), Self.trace())
             #expect(!Self.exists(admin))
             #expect(try refusing.localBranches() == ["main"])
         }

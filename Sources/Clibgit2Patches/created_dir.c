@@ -352,6 +352,12 @@ int gitkit_remove_created_dirs(const gitkit_created_dir *dirs, size_t len)
 	return result;
 }
 
+void gitkit_created_trace(char *out, size_t len)
+{
+	if (out && len)
+		out[0] = '\0';
+}
+
 #endif /* GIT_WIN32 */
 
 /* What git_repository_init() writes in a new git directory: its internal

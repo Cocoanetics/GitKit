@@ -294,6 +294,15 @@ typedef void (*gitkit_created_restore_hook)(const char *path);
 GIT_EXTERN(void) gitkit_created_set_restore_hook(gitkit_created_restore_hook hook);
 
 /*
+ * GitKit testing seam, implemented in Sources/Clibgit2Patches/created_dir.c
+ * and created_dir_win32.c: why the identity and rollback checks on the
+ * calling thread failed since the last call (Windows: source line and
+ * Win32 error of each; elsewhere empty), copied to `out` and cleared. Not
+ * a stable API.
+ */
+GIT_EXTERN(void) gitkit_created_trace(char *out, size_t len);
+
+/*
  * GitKit addition, implemented in Sources/Clibgit2Patches/created_dir.c:
  * git_branch_delete() for a branch the caller created, deleting the ref
  * only while it still points where `branch` does (compare-and-delete).
