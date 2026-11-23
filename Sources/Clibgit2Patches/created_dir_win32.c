@@ -287,7 +287,11 @@ int gitkit_created_same(const gitkit_file_id *id, const gitkit_file_id *now, int
 		  memcmp(now->digest, id->digest, sizeof(id->digest)) == 0));
 }
 
-/* A pinned directory or file: no one else can write, rename or delete it. */
+/*
+ * A pinned directory: no one else can rename or delete it, or open it to
+ * do so, while the pin is held. (Another of its streams can still be
+ * opened by whoever shares delete; gitkit_delete() checks for those.)
+ */
 static HANDLE gitkit_pin_path(const wchar_t *path)
 {
 	HANDLE h;
@@ -347,22 +351,46 @@ static int gitkit_rename(HANDLE h, const wchar_t *name)
 	return ok ? 0 : GITKIT_NOTE() - 1;
 }
 
-/* Deletes what `h` is open on; a directory only while it is empty. */
+/* Takes back a delete set on `h` before it closes. */
+static void gitkit_undelete(HANDLE h)
+{
+	DWORD flags = 0;
+	FILE_DISPOSITION_INFO classic = { FALSE };
+
+	if (!SetFileInformationByHandle(h, GITKIT_FileDispositionInfoEx, &flags, sizeof(flags)))
+		SetFileInformationByHandle(h, FileDispositionInfo, &classic, sizeof(classic));
+}
+
+/*
+ * Deletes what `h` is open on; a directory only while it is empty, and
+ * either only while it has no stream it wasn't checked with. A pin denies
+ * others delete access, but another stream (`dir:name`) can still be
+ * opened while it is held by whoever shares delete; once the delete is
+ * pending nothing can be opened on it any more, so a stream made before
+ * shows up here, and the delete is taken back.
+ */
 static int gitkit_delete(HANDLE h)
 {
 	DWORD flags = GITKIT_DISPOSITION_DELETE | GITKIT_DISPOSITION_POSIX_SEMANTICS;
 	FILE_DISPOSITION_INFO classic = { TRUE };
+	FILE_STANDARD_INFO standard;
 	DWORD error;
 
-	/* Its name goes as the handle closes, even if others have it open. */
-	if (SetFileInformationByHandle(h, GITKIT_FileDispositionInfoEx, &flags, sizeof(flags)))
-		return 0;
-	error = GetLastError();
-	if (error != ERROR_INVALID_PARAMETER && error != ERROR_NOT_SUPPORTED &&
-	    error != ERROR_INVALID_FUNCTION)
+	if (!GetFileInformationByHandleEx(h, FileStandardInfo, &standard, sizeof(standard)))
 		return GITKIT_NOTE() - 1;
-	return SetFileInformationByHandle(h, FileDispositionInfo, &classic, sizeof(classic))
-		? 0 : GITKIT_NOTE() - 1;
+	/* Its name goes as the handle closes, even if others have it open. */
+	if (!SetFileInformationByHandle(h, GITKIT_FileDispositionInfoEx, &flags, sizeof(flags))) {
+		error = GetLastError();
+		if (error != ERROR_INVALID_PARAMETER && error != ERROR_NOT_SUPPORTED &&
+		    error != ERROR_INVALID_FUNCTION)
+			return GITKIT_NOTE() - 1;
+		if (!SetFileInformationByHandle(h, FileDispositionInfo, &classic, sizeof(classic)))
+			return GITKIT_NOTE() - 1;
+	}
+	if (standard.Directory ? gitkit_no_streams(h) : gitkit_only_data_stream(h))
+		return 0;
+	gitkit_undelete(h);
+	return GITKIT_NOTE() - 1;
 }
 
 /* One entry of a directory listing. */
@@ -650,7 +678,16 @@ static int gitkit_quarantine_dir(gitkit_quarantine *q, const gitkit_created_dir 
 static int gitkit_delete_quarantined(gitkit_quarantine *q)
 {
 	size_t i;
-	int error = 0;
+	int error = 0, len;
+	char *path;
+
+	/* The testing seam: something done after the check, before the delete. */
+	if ((len = WideCharToMultiByte(CP_UTF8, 0, q->quarantine, -1, NULL, 0, NULL, NULL)) > 0 &&
+	    (path = git__malloc((size_t)len)) != NULL) {
+		if (WideCharToMultiByte(CP_UTF8, 0, q->quarantine, -1, path, len, NULL, NULL) == len)
+			gitkit_created_before_delete(path);
+		git__free(path);
+	}
 
 	for (i = 0; i < q->pins.len; i++) {
 		/* Closing a deleted entry's handle takes its name. */

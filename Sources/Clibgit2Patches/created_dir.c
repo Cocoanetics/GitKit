@@ -48,6 +48,19 @@ void gitkit_created_before_restore(const char *path)
 		gitkit_restore_hook(path);
 }
 
+static GITKIT_THREAD_LOCAL gitkit_created_restore_hook gitkit_delete_hook;
+
+void gitkit_created_set_delete_hook(gitkit_created_restore_hook hook)
+{
+	gitkit_delete_hook = hook;
+}
+
+void gitkit_created_before_delete(const char *path)
+{
+	if (gitkit_delete_hook)
+		gitkit_delete_hook(path);
+}
+
 #ifndef GIT_WIN32
 #include <dirent.h>
 #include <errno.h>

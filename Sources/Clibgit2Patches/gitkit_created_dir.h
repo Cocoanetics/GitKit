@@ -91,6 +91,9 @@ int gitkit_remove_created_dirs(const gitkit_created_dir *dirs, size_t len);
 /* Runs the calling thread's restore hook, if any, for `path`. */
 void gitkit_created_before_restore(const char *path);
 
+/* Runs the calling thread's delete hook, if any, for `path`. */
+void gitkit_created_before_delete(const char *path);
+
 /*
  * Called before each config read on the calling thread: while a GitKit
  * init runs on it, records what the init wrote so far (created_dir.c).

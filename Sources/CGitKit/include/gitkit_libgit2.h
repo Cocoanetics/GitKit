@@ -294,6 +294,14 @@ typedef void (*gitkit_created_restore_hook)(const char *path);
 GIT_EXTERN(void) gitkit_created_set_restore_hook(gitkit_created_restore_hook hook);
 
 /*
+ * GitKit testing seam, implemented in Sources/Clibgit2Patches/created_dir.c:
+ * on the calling thread, `hook` (NULL clears it) runs with a rolled-back
+ * directory's private path once it has been checked, just before what it
+ * holds is deleted. Windows only; not a stable API.
+ */
+GIT_EXTERN(void) gitkit_created_set_delete_hook(gitkit_created_restore_hook hook);
+
+/*
  * GitKit testing seam, implemented in Sources/Clibgit2Patches/created_dir.c
  * and created_dir_win32.c: why the identity and rollback checks on the
  * calling thread failed since the last call (Windows: source line and
