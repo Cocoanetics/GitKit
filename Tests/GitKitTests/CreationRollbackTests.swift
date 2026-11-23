@@ -75,6 +75,30 @@ struct CreationRollbackTests {
         #expect(try primary.localBranches().sorted() == ["feature", "main"])
     }
 
+    @Test("an add of another repository's worktree from the policy leaves this add's rollback intact")
+    func nestedAddKeepsOuterRollback() throws {
+        defer { fixtures.removeAll() }
+        let (source, secret, _) = try makeSource()
+        let other = try fixtures.directory("other")
+        let otherRepo = try Repository.initialize(at: other, initialBranch: "main")
+        try otherRepo.configSet("user.name", "T")
+        try otherRepo.configSet("user.email", "t@example.com")
+        try Data("o\n".utf8).write(to: other.appendingPathComponent("o.txt"))
+        try otherRepo.add(paths: [])
+        _ = try otherRepo.commitDetailed(
+            message: "o", author: Signature(name: "T", email: "t@example.com"),
+            allowEmpty: false, env: [:], sign: .noSign)
+        let nested = fixtures.url("nested")
+        let (primary, path) = try failingAdd(source, secret: secret) { _ in
+            guard !Self.exists(nested) else { return }
+            try Repository.open(at: other).worktreeAdd(path: nested, branch: "inner")
+        }
+        #expect(Self.exists(nested.appendingPathComponent("o.txt")))
+        #expect(!Self.exists(path))
+        #expect(!Self.exists(source.appendingPathComponent(".git/worktrees")))
+        #expect(try primary.localBranches() == ["main"])
+    }
+
     @Test("a metadata file rewritten meanwhile is not the add's: the worktree is kept")
     func rewrittenFileKeepsWorktree() throws {
         defer { fixtures.removeAll() }
