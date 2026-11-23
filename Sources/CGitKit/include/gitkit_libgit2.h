@@ -254,4 +254,16 @@ GIT_EXTERN(int) gitkit_config_scope_first_failure(
 	const gitkit_config_scope *scope, int *code, int *klass, const char **message);
 GIT_EXTERN(void) gitkit_config_scope_mark_reported(int klass, const char *message);
 
+/*
+ * GitKit addition, implemented in Sources/Clibgit2Patches/worktree_patched.c:
+ * git_worktree_add(), also setting `*created` (when non-NULL) to 1 once the
+ * add has made the worktree's git and working directories and their files
+ * and goes on to open it, else 0. A failed add with `*created` set left
+ * both directories behind, made by this call.
+ */
+GIT_EXTERN(int) gitkit_worktree_add(
+	git_worktree **out, git_repository *repo,
+	const char *name, const char *worktree,
+	const git_worktree_add_options *opts, int *created);
+
 #endif /* GITKIT_LIBGIT2_H */

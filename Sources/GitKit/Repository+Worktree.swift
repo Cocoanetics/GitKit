@@ -66,9 +66,10 @@ extension Repository {
     /// repository's include policy.
     ///
     /// - Returns: The linked worktree's repository `preparation` was given.
-    /// - Throws: What `preparation` or the checkout threw, as is, after
-    ///   pruning the worktree (its git directory and working directory, both
-    ///   created by this call) and deleting `branch` if this call created it.
+    /// - Throws: What `preparation`, the checkout or an open of the new
+    ///   worktree (a refused include, say) threw, as is, after pruning the
+    ///   worktree (its git directory and working directory, both created by
+    ///   this call) and deleting `branch` if this call created it.
     ///   Adds through GitKit take turns per repository for the whole call,
     ///   so another add on the same repository from inside `preparation` is
     ///   refused.
@@ -140,9 +141,10 @@ extension Repository {
                 | UInt32(GIT_CHECKOUT_DONT_UPDATE_INDEX.rawValue)
                 | UInt32(GIT_CHECKOUT_DONT_WRITE_INDEX.rawValue)
 
-        // libgit2 rolls nothing back when the add fails part way. What it
-        // may have made, of what isn't there now, is removed only while
-        // empty (see `CreatedWorktreePaths`).
+        // libgit2 rolls nothing back when the add fails part way. Unless it
+        // got as far as opening the worktree it made, what it may have made,
+        // of what isn't there now, is removed only while empty (see
+        // `CreatedWorktreePaths`).
         let gitDir = adminDir.appendingPathComponent(name)
         let created = CreatedWorktreePaths(
             adminDir: Self.exists(adminDir) ? nil : adminDir,
@@ -150,6 +152,7 @@ extension Repository {
             workdir: Self.exists(path) ? nil : path)
 
         var worktree: OpaquePointer?
+        var madeWorktree: Int32 = 0
         do {
             // libgit2 opens the new worktree's repository itself, reading
             // the shared config: this repository's include policy covers
@@ -159,11 +162,17 @@ extension Repository {
             defer { restoreThreadPolicy?() }
             try name.withCString { nameC in
                 try path.path.withCString { pathC in
-                    _ = try check(git_worktree_add(
-                        &worktree, repo, nameC, pathC, &opts))
+                    _ = try check(gitkit_worktree_add(
+                        &worktree, repo, nameC, pathC, &opts, &madeWorktree))
                 }
             }
         } catch {
+            // Failing in or after its own open of the new worktree (a
+            // refused include, the checkout), the add made both directories
+            // and their files: prune them as below.
+            if madeWorktree != 0 {
+                pruneCreatedWorktree(named: name)
+            }
             created.remove()
             if createdBranch {
                 _ = git_branch_delete(branchRef)
