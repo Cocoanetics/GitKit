@@ -33,12 +33,19 @@ extension Repository {
     /// caller that resolved and authorized `location` connects there
     /// and nowhere else. A push connects to the push URL when there is
     /// one (`git_remote__urlfordirection`), but libgit2's local transport
-    /// opens the URL to push to a path, so a push replaces both.
+    /// opens the URL to push to a path, so a push replaces both. For the
+    /// same reason, a push without `location` connects the URL to the
+    /// push URL, as libgit2 resolved it (`pushInsteadOf` included).
     ///
     /// - Returns: `location`, or `nil` when there's none to connect to.
     @discardableResult
     func connect(_ handle: OpaquePointer?, to location: String?, for direction: git_direction) throws -> String? {
-        guard let location else { return nil }
+        guard let location else {
+            if direction == GIT_DIRECTION_PUSH, let pushURL = git_remote_pushurl(handle) {
+                try check(git_remote_set_instance_url(handle, pushURL))
+            }
+            return nil
+        }
         try check(git_remote_set_instance_url(handle, location))
         if direction == GIT_DIRECTION_PUSH, git_remote_pushurl(handle) != nil {
             try check(git_remote_set_instance_pushurl(handle, location))
