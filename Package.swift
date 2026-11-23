@@ -45,7 +45,8 @@ import PackageDescription
 //     reads the levels of the thread's operation configuration scope.
 //   • worktree.c is shimmed so a worktree add that fails after making the
 //     new worktree removes it, only while it holds exactly what the add
-//     wrote (Clibgit2Patches/created_dir.c).
+//     wrote (Clibgit2Patches/created_dir.c; on Windows, by handle and file
+//     ID, created_dir_win32.c, which compiles to nothing elsewhere).
 //   • Consumers only import `GitKit`.
 // =============================================================================
 

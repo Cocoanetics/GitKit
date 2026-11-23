@@ -1,7 +1,8 @@
-// What a clone or worktree add whose own init/open fails leaves behind when
-// something else touched it meanwhile — gated to Apple/Linux like the other
-// suites that lay out repositories on disk (Windows keeps everything).
-#if os(macOS) || os(Linux)
+// What a clone or worktree add whose own init/open fails leaves behind: all
+// of it, once proven its own, so a retry succeeds; or, when something else
+// touched it meanwhile, nothing. Runs on Windows too, where the rollback
+// works by handle and file ID.
+#if os(macOS) || os(Linux) || os(Windows)
 import Foundation
 import Testing
 import CGitKit
@@ -13,11 +14,11 @@ import CGitKit
 @Suite("Rollback of a creation whose own open fails", .serialized)
 struct CreationRollbackTests {
 
-    private let fixtures = TemporaryRepositories()
+    let fixtures = TemporaryRepositories()
 
     /// A primary repository on `main` with two commits; its config includes
     /// `secret` for the git directory of a linked worktree named `linked`.
-    private func makeSource() throws -> (source: URL, secret: URL, main: String) {
+    func makeSource() throws -> (source: URL, secret: URL, main: String) {
         let dir = try fixtures.directory("source")
         let repo = try Repository.initialize(at: dir, initialBranch: "main")
         try repo.configSet("user.name", "T")
@@ -50,13 +51,13 @@ struct CreationRollbackTests {
 
     /// Adds `linked` on a new branch `feature` at `startPoint`; the policy runs
     /// `meanwhile` once, then refuses the include.
-    private func failingAdd(
+    func failingAdd(
         _ source: URL, secret: URL, startPoint: String = "main~1",
         meanwhile: @escaping @Sendable (_ path: URL) throws -> Void
     ) throws -> (Repository, URL) {
         let path = fixtures.url("linked")
         let primary = try Repository.open(at: source, includePolicy: ConfigIncludePolicy { include in
-            if include.path == secret.path { try? meanwhile(path) }
+            if Self.isFile(include.path, secret) { try? meanwhile(path) }
             return false
         })
         #expect(throws: Libgit2Error.self) {
@@ -67,9 +68,126 @@ struct CreationRollbackTests {
         return (primary, path)
     }
 
-    private static func exists(_ url: URL) -> Bool {
+    static func exists(_ url: URL) -> Bool {
         FileManager.default.fileExists(atPath: url.path)
     }
+
+    /// Whether libgit2's spelling of an include path names `file` (on
+    /// Windows it may be the long form of a short temporary directory).
+    static func isFile(_ path: String, _ file: URL) -> Bool {
+        path.split(whereSeparator: { $0 == "/" || $0 == "\\" }).last.map(String.init)
+            == file.lastPathComponent
+    }
+
+    static func silent(_: String) {}
+
+    /// Why the native checks on this thread failed since the last call
+    /// (Windows only), for a failed expectation's message.
+    static func trace() -> Comment {
+        var buffer = [CChar](repeating: 0, count: 1024)
+        gitkit_created_trace(&buffer, buffer.count)
+        let bytes = buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
+        return Comment(rawValue: "rollback trace:" + String(decoding: bytes, as: UTF8.self))
+    }
+
+    // MARK: What the creation provably made goes
+
+    @Test("a clone whose own init fails before the preparation removes what it created")
+    func failedInitRemovesClone() throws {
+        defer { fixtures.removeAll() }
+        let (source, _, _) = try makeSource()
+        try expectRetriableClone(from: source, into: [
+            fixtures.url("probe-clone"), try fixtures.directory("existing/probe-clone")
+        ])
+    }
+
+    @Test("a clone into a name outside the Basic Multilingual Plane is removed, and retried")
+    func unicodeCloneIsRemoved() throws {
+        defer { fixtures.removeAll() }
+        let (source, _, _) = try makeSource()
+        try expectRetriableClone(from: source, into: [
+            fixtures.url("probe-clone-\u{FC}\u{6F22}\u{1F600}"),
+            try fixtures.directory("existing/probe-clone-\u{FC}\u{6F22}\u{1F600}")
+        ], pattern: "probe-clone-*")
+    }
+
+    /// Clones into each of `directories` (new, or empty) twice: refused by
+    /// the include policy in the new repository's own open, which removes
+    /// what it made and keeps libgit2's error; then allowed, which succeeds.
+    func expectRetriableClone(
+        from source: URL, into directories: [URL], pattern: String = "probe-clone"
+    ) throws {
+        let extra = fixtures.url("extra.config")
+        try "[test]\n\textra = 1\n".write(to: extra, atomically: true, encoding: .utf8)
+        // A level the new repository's open reads, with an include only that
+        // repository's git directory matches.
+        let global = fixtures.url("global.config")
+        try "[includeIf \"gitdir:**/\(pattern)/\"]\n\tpath = \(extra.path)\n"
+            .write(to: global, atomically: true, encoding: .utf8)
+        var prepared = false
+        func clone(into directory: URL, allowing: Bool) throws -> Repository {
+            try Repository.withOperationConfiguration(OperationConfiguration(
+                levels: [.file(global, .global)], includePolicy: ConfigIncludePolicy { _ in allowing })) {
+                try Repository.clone(
+                    fromRemote: source.path, to: directory, progress: Self.silent,
+                    preparation: RepositoryPreparation { _ in prepared = true })
+            }
+        }
+        let existed = directories.map(Self.exists)
+
+        for (directory, existed) in zip(directories, existed) {
+            _ = Self.trace()
+            let error = #expect(throws: Libgit2Error.self) { try clone(into: directory, allowing: false) }
+            #expect(error?.message.contains("not authorised") == true)  // libgit2's own, as is
+            let trace = Self.trace()
+            if existed {
+                #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path) == [], trace)
+            } else {
+                #expect(!Self.exists(directory), trace)
+            }
+        }
+        #expect(!prepared)
+
+        for directory in directories {
+            #expect(try clone(into: directory, allowing: true).configGet("test.extra") == "1")
+        }
+        #expect(prepared)
+    }
+
+    @Test("an add whose own open of the new worktree fails prunes it and the branch it created")
+    func failedNativeOpenPrunesWorktree() throws {
+        defer { fixtures.removeAll() }
+        let (source, _, _) = try makeSource()
+        let refusing = try Repository.open(at: source, includePolicy: ConfigIncludePolicy { _ in false })
+        let path = fixtures.url("linked")
+        let admin = source.appendingPathComponent(".git/worktrees")
+        var prepared = false
+
+        for preparation in [nil, RepositoryPreparation { _ in prepared = true }] {
+            _ = Self.trace()
+            let error = #expect(throws: Libgit2Error.self) {
+                if let preparation {
+                    try refusing.worktreeAdd(path: path, branch: "feature", preparation: preparation)
+                } else {
+                    try refusing.worktreeAdd(path: path, branch: "feature")
+                }
+            }
+            #expect(error?.message.contains("not authorised") == true)
+            #expect(!Self.exists(path), Self.trace())
+            #expect(!Self.exists(admin))
+            #expect(try refusing.localBranches() == ["main"])
+        }
+        #expect(!prepared)
+
+        let accepting = try Repository.open(at: source, includePolicy: ConfigIncludePolicy { _ in true })
+        let worktree = try accepting.worktreeAdd(
+            path: path, branch: "feature", preparation: RepositoryPreparation { _ in prepared = true })
+        #expect(prepared)
+        #expect(try accepting.linkedWorktreeList().map(\.name) == ["linked"])
+        #expect(try worktree.configGet("test.secret") == "1")
+    }
+
+    // MARK: What it can't prove its own stays
 
     @Test("a file someone adds to the new worktree keeps the worktree and its branch")
     func addedFileKeepsWorktree() throws {
@@ -125,17 +243,22 @@ struct CreationRollbackTests {
     /// The inode of the directory `takeName` made, for the C hook.
     nonisolated(unsafe) private static var takenInode: UInt64 = 0
 
-    /// Another writer making an empty directory at the working directory's
-    /// name just before the kept worktree is renamed back there.
+    /// Another writer making a directory at the working directory's name
+    /// just before the kept worktree is renamed back there.
     private static let takeName: gitkit_created_restore_hook = { path in
         guard let path, String(cString: path).hasSuffix("/linked") else { return }
         let url = URL(fileURLWithPath: String(cString: path))
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
+        try? Data("theirs\n".utf8).write(to: url.appendingPathComponent("theirs.txt"))
+        #if !os(Windows)
         let inode = (try? FileManager.default.attributesOfItem(atPath: url.path)[.systemFileNumber]) as? UInt64
         takenInode = inode ?? 0
+        #else
+        takenInode = 1
+        #endif
     }
 
-    @Test("an empty directory that takes the kept worktree's name is not replaced by it")
+    @Test("a directory that takes the kept worktree's name is not replaced by it")
     func takenNameIsNotReplaced() throws {
         defer { fixtures.removeAll() }
         let (source, secret, _) = try makeSource()
@@ -152,9 +275,12 @@ struct CreationRollbackTests {
         gitkit_created_set_restore_hook(nil)
 
         // The other writer's directory, as it made it.
+        #expect(Self.takenInode != 0)
+        #if !os(Windows)
         let inode = try FileManager.default.attributesOfItem(atPath: path.path)[.systemFileNumber] as? UInt64
-        #expect(Self.takenInode != 0 && inode == Self.takenInode)
-        #expect(try FileManager.default.contentsOfDirectory(atPath: path.path).isEmpty)
+        #expect(inode == Self.takenInode)
+        #endif
+        #expect(try FileManager.default.contentsOfDirectory(atPath: path.path) == ["theirs.txt"])
         // The worktree, kept whole under its private name; its git directory back.
         let parent = path.deletingLastPathComponent()
         let kept = try FileManager.default.contentsOfDirectory(atPath: parent.path)
@@ -164,21 +290,93 @@ struct CreationRollbackTests {
         #expect(Self.exists(head))
     }
 
-    @Test("a worktree directory replaced by a symlink leaves its target and the original alone")
-    func replacedDirectoryIsLeftAlone() throws {
-        defer { fixtures.removeAll() }
+    /// The working directory moved away while the add's open runs, and
+    /// something else put in its place by `replace`.
+    func expectReplacedWorktreeLeftAlone(
+        replace: @escaping @Sendable (_ path: URL, _ elsewhere: URL) throws -> Void,
+        check: (_ path: URL) throws -> Void
+    ) throws {
         let (source, secret, _) = try makeSource()
         let elsewhere = try fixtures.directory("elsewhere")
         try Data("gitdir: somewhere\n".utf8).write(to: elsewhere.appendingPathComponent(".git"))
         let moved = fixtures.url("moved")
         let (_, path) = try failingAdd(source, secret: secret) { path in
             try FileManager.default.moveItem(at: path, to: moved)
-            try FileManager.default.createSymbolicLink(at: path, withDestinationURL: elsewhere)
+            try replace(path, elsewhere)
         }
         #expect(try Data(contentsOf: elsewhere.appendingPathComponent(".git")) == Data("gitdir: somewhere\n".utf8))
         #expect(Self.exists(moved.appendingPathComponent(".git")))
-        #expect((try? FileManager.default.destinationOfSymbolicLink(atPath: path.path)) != nil)
         #expect(Self.exists(source.appendingPathComponent(".git/worktrees/linked/HEAD")))
+        try check(path)
+    }
+
+    @Test("a worktree directory replaced by another directory leaves both alone")
+    func directoryReplacedByDirectoryIsLeftAlone() throws {
+        defer { fixtures.removeAll() }
+        try expectReplacedWorktreeLeftAlone(replace: { path, _ in
+            try FileManager.default.createDirectory(at: path, withIntermediateDirectories: false)
+            try Data("gitdir: elsewhere\n".utf8).write(to: path.appendingPathComponent(".git"))
+        }, check: { path in
+            #expect((try? Data(contentsOf: path.appendingPathComponent(".git"))) == Data("gitdir: elsewhere\n".utf8))
+        })
+    }
+
+    /// Whether this process may make symlinks (on Windows, that takes
+    /// SeCreateSymbolicLinkPrivilege or Developer Mode).
+    private static let symlinksAvailable: Bool = {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("GitKitTests-symlink-probe-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: false)
+            try FileManager.default.createSymbolicLink(
+                at: dir.appendingPathComponent("link"), withDestinationURL: dir)
+            return true
+        } catch {
+            return false
+        }
+    }()
+
+    @Test("a worktree directory replaced by a symlink leaves its target and the original alone",
+          .enabled(if: Self.symlinksAvailable, "this process may not create symlinks"))
+    func replacedDirectoryIsLeftAlone() throws {
+        defer { fixtures.removeAll() }
+        try expectReplacedWorktreeLeftAlone(replace: { path, elsewhere in
+            try FileManager.default.createSymbolicLink(at: path, withDestinationURL: elsewhere)
+        }, check: { path in
+            #expect((try? FileManager.default.destinationOfSymbolicLink(atPath: path.path)) != nil)
+        })
+    }
+
+    @Test("a metadata file hard-linked from elsewhere meanwhile is not the add's: the worktree is kept")
+    func hardLinkedFileKeepsWorktree() throws {
+        defer { fixtures.removeAll() }
+        let (source, secret, _) = try makeSource()
+        let head = source.appendingPathComponent(".git/worktrees/linked/HEAD")
+        let link = fixtures.url("HEAD-link")
+        let linked = SetupRan()
+        let (_, path) = try failingAdd(source, secret: secret) { _ in
+            try Self.makeHardLink(link, to: head)
+            linked.mark()
+        }
+        #expect(linked.ran, "the hard link was made while the add's open ran")
+        #expect(Self.exists(head))
+        #expect(Self.exists(path.appendingPathComponent(".git")))
+        #expect(try Data(contentsOf: link) == (try Data(contentsOf: head)))
+    }
+
+    @Test("a metadata file renamed away and back meanwhile is not the add's: the worktree is kept")
+    func renamedBackFileKeepsWorktree() throws {
+        defer { fixtures.removeAll() }
+        let (source, secret, _) = try makeSource()
+        let head = source.appendingPathComponent(".git/worktrees/linked/HEAD")
+        let aside = source.appendingPathComponent(".git/worktrees/linked/HEAD.aside")
+        let (_, path) = try failingAdd(source, secret: secret) { _ in
+            try FileManager.default.moveItem(at: head, to: aside)
+            try FileManager.default.moveItem(at: aside, to: head)
+        }
+        #expect(Self.exists(head))
+        #expect(Self.exists(path.appendingPathComponent(".git")))
     }
 
     @Test("a branch moved meanwhile is kept, with its config, though the worktree is removed")
@@ -253,7 +451,7 @@ struct CreationRollbackTests {
     /// Clones into a new and an existing empty `probe-clone`; the refused
     /// include's policy, in the new repository's open, runs `meanwhile` on
     /// each first.
-    private func failingClones(
+    func failingClones(
         _ source: URL, meanwhile: @escaping @Sendable (_ directory: URL) throws -> Void
     ) throws -> [URL] {
         let extra = fixtures.url("extra.config")
@@ -264,7 +462,7 @@ struct CreationRollbackTests {
         let directories = [fixtures.url("probe-clone"), try fixtures.directory("existing/probe-clone")]
         for directory in directories {
             let policy = ConfigIncludePolicy { include in
-                if include.path == extra.path { try? meanwhile(directory) }
+                if Self.isFile(include.path, extra) { try? meanwhile(directory) }
                 return false
             }
             #expect(throws: Libgit2Error.self) {
@@ -323,4 +521,108 @@ struct CreationRollbackTests {
         }
     }
 }
+
+extension CreationRollbackTests {
+
+    @Test("a file a writer started during one config read rewrites before the next is not the init's")
+    func rewriteBetweenReadsKeepsClone() throws {
+        defer { fixtures.removeAll() }
+        let (source, _, _) = try makeSource()
+        Self.reads = [:]
+        Self.lateRewrites = 0
+        Self.rewriting = true
+        gitkit_created_set_notify_hook(Self.watchRead)
+        defer { gitkit_created_set_notify_hook(nil) }
+        let directories = try failingClones(source, meanwhile: { _ in })
+        gitkit_created_set_notify_hook(nil)
+
+        // Each init read config at least twice, and the writer got in between.
+        #expect(Self.reads.count == directories.count)
+        #expect(Self.reads.values.allSatisfy { $0.count >= 2 })
+        #expect(Self.lateRewrites == directories.count)
+        for directory in directories {
+            let description = directory.appendingPathComponent(".git/description")
+            #expect(try String(contentsOf: description, encoding: .utf8) == "theirs\n")
+            #expect(Self.exists(directory.appendingPathComponent(".git/HEAD")))
+        }
+    }
+
+    @Test("what the init itself writes between its config reads is its own: the clone is removed")
+    func initWritesBetweenReadsAreItsOwn() throws {
+        defer { fixtures.removeAll() }
+        let (source, _, _) = try makeSource()
+        Self.reads = [:]
+        Self.rewriting = false
+        gitkit_created_set_notify_hook(Self.watchRead)
+        defer { gitkit_created_set_notify_hook(nil) }
+        try expectRetriableClone(from: source, into: [
+            fixtures.url("probe-clone"), try fixtures.directory("existing/probe-clone")
+        ])
+        gitkit_created_set_notify_hook(nil)
+
+        // HEAD was written after one read and before another.
+        #expect(Self.reads.count == 2)
+        #expect(Self.reads.values.allSatisfy { $0.first == false && $0.contains(true) })
+    }
+
+    /// Whether a test's setup inside the include policy ran to its end.
+    final class SetupRan: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = false
+
+        func mark() {
+            lock.lock(); defer { lock.unlock() }
+            value = true
+        }
+
+        var ran: Bool {
+            lock.lock(); defer { lock.unlock() }
+            return value
+        }
+    }
+
+    /// Whether HEAD was there at each config read, by the init's git directory.
+    nonisolated(unsafe) static var reads: [String: [Bool]] = [:]
+    /// Whether `watchRead` starts a writer at an init's first config read
+    /// that rewrites its description once that read is over.
+    nonisolated(unsafe) static var rewriting = false
+    nonisolated(unsafe) static var lateRewrites = 0
+    nonisolated(unsafe) private static var go = DispatchSemaphore(value: 0)
+    nonisolated(unsafe) private static var done = DispatchSemaphore(value: 0)
+
+    /// Runs as an init is about to read config. The writer started at the
+    /// first read writes only when the second is about to begin, and that
+    /// read waits for it: after the first read's check, before the second.
+    static let watchRead: gitkit_created_restore_hook = { gitDir in
+        guard let gitDir else { return }
+        let key = String(cString: gitDir)
+        let dir = URL(fileURLWithPath: key)
+        reads[key, default: []].append(exists(dir.appendingPathComponent("HEAD")))
+        guard rewriting else { return }
+        switch reads[key]?.count {
+        case 1:
+            let (go, done) = (DispatchSemaphore(value: 0), DispatchSemaphore(value: 0))
+            (Self.go, Self.done) = (go, done)
+            Thread.detachNewThread {
+                if go.wait(timeout: .now() + 30) == .success,
+                   (try? Data("theirs\n".utf8).write(to: dir.appendingPathComponent("description"))) != nil {
+                    lateRewrites += 1
+                }
+                done.signal()
+            }
+        case 2:
+            go.signal()
+            _ = done.wait(timeout: .now() + 30)
+        default:
+            break
+        }
+    }
+
+    #if !os(Windows)
+    static func makeHardLink(_ link: URL, to target: URL) throws {
+        try FileManager.default.linkItem(at: target, to: link)
+    }
+    #endif
+}
+
 #endif

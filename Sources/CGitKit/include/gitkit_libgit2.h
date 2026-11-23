@@ -255,16 +255,6 @@ GIT_EXTERN(int) gitkit_config_scope_first_failure(
 GIT_EXTERN(void) gitkit_config_scope_mark_reported(int klass, const char *message);
 
 /*
- * A file's identity: device and inode, and its ctime, which any change to
- * the file or its metadata moves. `present` is 0 when it couldn't be read.
- */
-typedef struct {
-	int present;
-	uint64_t dev, ino;
-	int64_t ctime_sec, ctime_nsec;
-} gitkit_file_id;
-
-/*
  * GitKit addition, implemented in Sources/Clibgit2Patches/worktree_patched.c:
  * git_worktree_add(), which, when it fails after making the worktree's git
  * and working directories, removes them if they still hold exactly the
@@ -288,7 +278,8 @@ GIT_EXTERN(int) gitkit_worktree_add(
  * itself. When the init then fails — its open's config load refusing an
  * include, say — what it made is removed if it holds nothing but what an
  * init writes, and kept otherwise; libgit2's error is left as it was.
- * Windows: git_repository_init(), keeping what it made.
+ * Where identity can't be proven (Windows on FAT, a network share), it is
+ * kept.
  */
 GIT_EXTERN(int) gitkit_repository_init_created(
 	git_repository **out, const char *path, unsigned bare);
@@ -301,6 +292,31 @@ GIT_EXTERN(int) gitkit_repository_init_created(
  */
 typedef void (*gitkit_created_restore_hook)(const char *path);
 GIT_EXTERN(void) gitkit_created_set_restore_hook(gitkit_created_restore_hook hook);
+
+/*
+ * GitKit testing seam, implemented in Sources/Clibgit2Patches/created_dir.c:
+ * on the calling thread, `hook` (NULL clears it) runs with a rolled-back
+ * directory's private path once it has been checked, just before what it
+ * holds is deleted. Windows only; not a stable API.
+ */
+GIT_EXTERN(void) gitkit_created_set_delete_hook(gitkit_created_restore_hook hook);
+
+/*
+ * GitKit testing seam, implemented in Sources/Clibgit2Patches/created_dir.c:
+ * on the calling thread, `hook` (NULL clears it) runs with a GitKit init's
+ * git directory just before each config read of the init records or checks
+ * what it wrote. Not a stable API.
+ */
+GIT_EXTERN(void) gitkit_created_set_notify_hook(gitkit_created_restore_hook hook);
+
+/*
+ * GitKit testing seam, implemented in Sources/Clibgit2Patches/created_dir.c
+ * and created_dir_win32.c: why the identity and rollback checks on the
+ * calling thread failed since the last call (Windows: source line and
+ * Win32 error of each; elsewhere empty), copied to `out` and cleared. Not
+ * a stable API.
+ */
+GIT_EXTERN(void) gitkit_created_trace(char *out, size_t len);
 
 /*
  * GitKit addition, implemented in Sources/Clibgit2Patches/created_dir.c:
