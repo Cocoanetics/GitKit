@@ -378,15 +378,15 @@ struct OperationConfigurationTests {
             .entries([ConfigEntry(name: "t.system", value: "inner")], .system, name: "inner")
         ])
         let emptyGlobal = OperationConfiguration(levels: [.entries([], .global, name: "inner")])
-        try Repository.withOperationConfiguration(outerScope) { () throws -> Void in
-            try Repository.withOperationConfiguration(systemOnly) { () throws -> Void in
+        try Repository.withOperationConfiguration(outerScope) { () throws in
+            try Repository.withOperationConfiguration(systemOnly) { () throws in
                 #expect(try probe("t.host") == "outer")
                 #expect(try probe("t.app") == "outer")
                 #expect(try probe("t.system") == "inner")
                 // The leaf libgit2 opens itself still reads the outer global.
                 #expect(try outer.status().isClean)
             }
-            try Repository.withOperationConfiguration(emptyGlobal) { () throws -> Void in
+            try Repository.withOperationConfiguration(emptyGlobal) { () throws in
                 #expect(try probe("t.host") == nil)
                 #expect(try probe("t.app") == "outer")
                 #expect(try outer.status().entries.map(\.path) == ["middle-sub"])
@@ -416,7 +416,7 @@ struct OperationConfigurationTests {
         let configuration = OperationConfiguration(
             levels: Self.hostIsolated + [.file(global, .global), .file(app, .app)],
             includePolicy: ConfigIncludePolicy { _ in true })
-        try Repository.withOperationConfiguration(configuration) { () throws -> Void in
+        try Repository.withOperationConfiguration(configuration) { () throws in
             let repo = try Repository.open(at: fixture.outer)
             #expect(repo.workdirURL?.resolvingSymlinksInPath().path
                 == fixture.outer.resolvingSymlinksInPath().path)
