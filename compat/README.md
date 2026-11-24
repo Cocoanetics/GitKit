@@ -13,19 +13,20 @@ too (`git fetch --tags`).
 
 Builds each client in `clients/` as an external package that depends on
 GitKit, in the Swift 5 and Swift 6 language modes, against every revision in
-`expectations.txt` (2.17.0, 2.18.0 and the working tree, `HEAD`), and checks
+`expectations.txt` (2.17.0, 2.18.0, 2.19.0 and the working tree, `HEAD`), and checks
 each outcome and the error a failing build reports. Exit 0: every outcome
 matches; 1: one differs; 2: setup error. These builds are the evidence.
 
-| client | 2.17.0 | 2.18.0 | HEAD |
-|---|---|---|---|
-| `ExhaustiveLevel` — `switch` over `Level`, no `default` | pass | **fail** (switch must be exhaustive) | pass |
-| `TolerantLevel` — `switch` with `@unknown default` | pass | pass | pass |
-| `LegacyInitializer` — `init(levels:includePolicy:)`, also as a function value | pass | pass | pass |
-| `ConstructingOnly` — builds levels, runs an operation | pass | pass | pass |
-| `TypedLayers` — `OperationConfiguration.layers`, `init(levels:layers:includePolicy:)` | fail | fail | pass |
-| `ExhaustiveConfigLayer` — `switch` over `ConfigLayer`, `addConfigLayers` | fail | pass | pass |
-| `LevelLayers218` — constructs and matches 2.18's `Level.layers` | fail | pass | **fail** (migrate to `TypedLayers`) |
+| client | 2.17.0 | 2.18.0 | 2.19.0 | HEAD |
+|---|---|---|---|---|
+| `ExhaustiveLevel` — `switch` over `Level`, no `default` | pass | **fail** (switch must be exhaustive) | pass | pass |
+| `TolerantLevel` — `switch` with `@unknown default` | pass | pass | pass | pass |
+| `LegacyInitializer` — `init(levels:includePolicy:)`, also as a function value | pass | pass | pass | pass |
+| `ConstructingOnly` — builds levels, runs an operation | pass | pass | pass | pass |
+| `TypedLayers` — `OperationConfiguration.layers`, `init(levels:layers:includePolicy:)` | fail | fail | pass | pass |
+| `ExhaustiveConfigLayer` — `switch` over `ConfigLayer`, `addConfigLayers` | fail | pass | pass | pass |
+| `LevelLayers218` — constructs and matches 2.18's `Level.layers` | fail | pass | **fail** | **fail** (migrate to `TypedLayers`) |
+| `HostConfigLayers` — `ConfigLayer.install(_:into:repository:)` on a `git_config_new` | fail | fail | fail | pass |
 
 `LevelLayers218` is the cost of restoring 2.17's contract, kept visible on
 purpose: 2.18 code that names `.layers` must migrate.

@@ -20,8 +20,13 @@
 
 #include "../CGitKit/include/gitkit_libgit2.h"
 
-int gitkit_config_replace_levels_from(
-	git_config *live, git_config *staged, git_config_level_t from)
+/*
+ * `never_write` gives every moved level write order -1 before it is sorted
+ * into the writers, so none of them is a write target and the order of the
+ * levels below `from` stays as it was.
+ */
+static int replace_levels(
+	git_config *live, git_config *staged, git_config_level_t from, int never_write)
 {
 	backend_entry *entry;
 	size_t i, needed;
@@ -60,6 +65,8 @@ int gitkit_config_replace_levels_from(
 
 	git_vector_foreach(&staged->readers, i, entry) {
 		entry->instance->backend->cfg = live;
+		if (never_write)
+			entry->write_order = -1;
 		if (git_vector_insert_sorted(&live->readers, entry, &duplicate_level) < 0 ||
 		    git_vector_insert_sorted(&live->writers, entry, NULL) < 0)
 			return -1;	/* unreachable: room was made and the levels are new */
@@ -69,4 +76,16 @@ int gitkit_config_replace_levels_from(
 	git_vector_clear(&staged->readers);
 	git_vector_clear(&staged->writers);
 	return 0;
+}
+
+int gitkit_config_replace_levels_from(
+	git_config *live, git_config *staged, git_config_level_t from)
+{
+	return replace_levels(live, staged, from, 0);
+}
+
+int gitkit_config_replace_levels_readonly_from(
+	git_config *live, git_config *staged, git_config_level_t from)
+{
+	return replace_levels(live, staged, from, 1);
 }

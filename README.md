@@ -178,6 +178,18 @@ Operations are synchronous, `throws` (typed ``Libgit2Error``), and return
   replaces it too), a missing layer file reads as empty and an unreadable one
   is an error; writes keep going to the repository's own file. The host
   resolves the include's path and keeps `include.path` among the entries.
+- **Layers for a config GitKit doesn't own** — `ConfigLayer.install(_:into:repository:)`
+  installs the same layers into a libgit2 `git_config *` the host opened with
+  the re-exported C API: a repository's config from `git_repository_open_ext`,
+  `git_config_open_default` outside any repository, or `git_config_new`. It
+  replaces every level from `APP` up, all or nothing; the layers are never
+  write targets and the config's other write order is kept (the repository's
+  own file, or the global file). The caller keeps both pointers; the optional
+  `git_repository *` is the context of a layer file's includes and must
+  outlive the config, since a changed layer file is re-read with it. Each read
+  asks the include policy in force for it (a C per-handle registration, the
+  thread's operation scope, or the process default). Nothing derived from the
+  config is refreshed: install before the repository uses it.
 - **Operation configuration** — `Repository.withOperationConfiguration(_:_:)`
   gives the same levels (`OperationConfiguration.Level.file` /
   `.entries`) and command-line layers (`OperationConfiguration.layers`,

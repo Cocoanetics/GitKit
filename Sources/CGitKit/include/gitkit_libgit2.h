@@ -227,6 +227,16 @@ GIT_EXTERN(int) gitkit_config_replace_levels_from(
 	git_config *live, git_config *staged, git_config_level_t from);
 
 /*
+ * GitKit addition, implemented in Sources/Clibgit2Patches/config_patched.c:
+ * as gitkit_config_replace_levels_from, but the moved levels are never write
+ * targets (write order -1), and the write order of every other level of
+ * `live` is unchanged — for a config whose order the caller cannot restore,
+ * such as one from git_config_open_default.
+ */
+GIT_EXTERN(int) gitkit_config_replace_levels_readonly_from(
+	git_config *live, git_config *staged, git_config_level_t from);
+
+/*
  * GitKit addition, implemented in Sources/Clibgit2Patches/repository_patched.c:
  * config levels for an operation, which every repository the calling thread
  * opens while the scope is pushed reads as part of its config from the open

@@ -215,6 +215,37 @@ struct ConfigLevelConsumerTests {
         #expect(!FileManager.default.fileExists(atPath: late.path))
     }
 
+    @Test("command-line layers installed into a repository the host opened with the C API")
+    func hostOpenedRepository() throws {
+        defer { cleanUp() }
+        let (source, _) = try makeSource()
+        let inc = try write("[user]\n\tname = Included\n", to: "inc.cfg")
+
+        var repo: OpaquePointer?
+        #expect(git_repository_open_ext(&repo, source.path, 0, nil) == 0)
+        let opened = try #require(repo)
+        defer { git_repository_free(opened) }
+        var config: OpaquePointer?
+        #expect(git_repository_config(&config, opened) == 0)
+        let live = try #require(config)
+        // The config goes before the repository it was installed with.
+        defer { git_config_free(live) }
+
+        try ConfigLayer.install([
+            .entries([ConfigEntry(name: "core.bare", value: "false"),
+                      ConfigEntry(name: "include.path", value: inc.path)]),
+            .file(inc)
+        ], into: live, repository: opened)
+
+        var entry: UnsafeMutablePointer<git_config_entry>?
+        #expect(git_config_get_entry(&entry, live, "user.name") == 0)
+        defer { git_config_entry_free(entry) }
+        let read = try #require(entry).pointee
+        #expect(read.value.map { String(cString: $0) } == "Included")
+        #expect(read.origin_path.map { String(cString: $0) } == inc.path)
+        #expect(read.level.rawValue == GIT_CONFIG_LEVEL_APP.rawValue + 1)
+    }
+
     final class Asked: @unchecked Sendable {
         private let lock = NSLock()
         private var seen: [String] = []
