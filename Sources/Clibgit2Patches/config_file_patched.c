@@ -514,7 +514,7 @@ const char *gitkit_config_backend_path(git_config_backend *backend)
 
 gitkit_condition_context *gitkit_config_backend_context(git_config_backend *backend)
 {
-	GIT_ASSERT(backend->open == condition_backend_open);
+	GIT_ASSERT_WITH_RETVAL(backend->open == condition_backend_open, NULL);
 	return ((gitkit_condition_backend *)backend)->context;
 }
 
