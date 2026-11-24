@@ -27,6 +27,7 @@ matches; 1: one differs; 2: setup error. These builds are the evidence.
 | `ExhaustiveConfigLayer` — `switch` over `ConfigLayer`, `addConfigLayers` | fail | pass | pass | pass |
 | `LevelLayers218` — constructs and matches 2.18's `Level.layers` | fail | pass | **fail** | **fail** (migrate to `TypedLayers`) |
 | `HostConfigLayers` — `ConfigLayer.install(_:into:repository:)` on a `git_config_new` | fail | fail | fail | pass |
+| `ConditionalConfig` — opaque command elements, new required-label initializer, both old initializer function values | fail | fail | fail | pass |
 
 `LevelLayers218` is the cost of restoring 2.17's contract, kept visible on
 purpose: 2.18 code that names `.layers` must migrate.

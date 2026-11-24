@@ -190,6 +190,22 @@ Operations are synchronous, `throws` (typed ``Libgit2Error``), and return
   asks the include policy in force for it (a C per-handle registration, the
   thread's operation scope, or the process default). Nothing derived from the
   config is refreshed: install before the repository uses it.
+- **Conditional command-line includes** — `CommandLineConfig` provides opaque
+  `.entries`, `.include(path:)` and `.includeIf(condition:path:)` elements,
+  without adding cases to existing public enums. Apply one to an already-open
+  repository with `setCommandLineConfig`, to a caller-owned config with
+  `install(into:repository:)`, or to every repository opened in an operation
+  with `OperationConfiguration(commandLine:)`. `gitdir:`, `gitdir/i:` and
+  `onbranch:` use each handle's own context, including internal submodule and
+  linked-worktree opens. `hasconfig:remote.*.url:` works outside a repository
+  too, and sees the complete prospective source set, including later command
+  entries and includes. Its URL pre-scan reads even nonmatching hasconfig
+  targets, subject to the include policy, and forbids remote URLs in every
+  conditional target it follows. False gitdir/onbranch/unknown targets are
+  never authorized or accessed. Git's nonfatal relative-gitdir diagnostic is
+  returned by the live API or delivered after the scoped body through
+  `onDiagnostic`; GitKit prints nothing. Failure is atomic and writes stay
+  local. See [the contract and Git oracle results](docs/conditional-config.md).
 - **Operation configuration** — `Repository.withOperationConfiguration(_:_:)`
   gives the same levels (`OperationConfiguration.Level.file` /
   `.entries`) and command-line layers (`OperationConfiguration.layers`,
