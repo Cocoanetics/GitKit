@@ -57,6 +57,10 @@ public struct ConfigEntry: Sendable, Hashable {
 /// paths) and keeps `include.path` among the entries, where
 /// `git config --list` shows it; GitKit reads the layers it is given and
 /// follows no `include.path` of an entries layer itself.
+///
+/// For a libgit2 config GitKit does not own (a repository the host opened
+/// with `git_repository_open_ext`, `git_config_open_default`), see
+/// ``install(_:into:repository:)``.
 public enum ConfigLayer: Sendable, Hashable {
     /// `entries`, in order, read-only; `name` is the backend type reported
     /// for them (`git_config_entry.backend_type`).
@@ -111,7 +115,7 @@ extension Repository {
     /// its includes.
     public func addConfigFile(at url: URL, level: ConfigLevel) throws {
         try withLiveConfig(level) { config, at in
-            try addFileBackend(url, to: config, at: at)
+            try ConfigBackends.addFile(url, to: config, at: at, repository: repo)
         }
     }
 
@@ -139,7 +143,7 @@ extension Repository {
         let text = try ConfigEntryText.serialize(entries)
         try ConfigEntryText.checkBackendName(name)
         try withLiveConfig(level) { config, at in
-            try addEntriesBackend(text, name: name, to: config, at: at)
+            try ConfigBackends.addEntries(text, name: name, to: config, at: at, repository: repo)
         }
     }
 
@@ -164,75 +168,13 @@ extension Repository {
     /// URL; the error reading a layer's file that exists but cannot be read
     /// or does not parse; or the include policy's refusal of one of its
     /// includes.
+    ///
+    /// See also ``ConfigLayer/install(_:into:repository:)``, for a libgit2
+    /// config GitKit does not own.
     public func addConfigLayers(_ layers: [ConfigLayer]) throws {
-        let staged = try layers.map(StagedLayer.init)
+        let staged = try layers.map(ConfigBackends.StagedLayer.init)
         try withLiveConfig(.app) { config, _ in
-            for (index, layer) in staged.enumerated() {
-                let at = ConfigLayer.level(index)
-                switch layer {
-                case let .entries(text, name):
-                    try addEntriesBackend(text, name: name, to: config, at: at)
-                case let .file(url):
-                    try addFileBackend(url, to: config, at: at)
-                }
-            }
-        }
-    }
-
-    /// A layer whose entries were checked and serialized already.
-    private enum StagedLayer {
-        case entries(String, name: String)
-        case file(URL)
-
-        init(_ layer: ConfigLayer) throws {
-            switch layer {
-            case let .entries(entries, name):
-                let text = try ConfigEntryText.serialize(entries)
-                try ConfigEntryText.checkBackendName(name)
-                self = .entries(text, name: name)
-            case let .file(url):
-                guard url.isFileURL else {
-                    throw ConfigEntryText.invalid("config layer '\(url.absoluteString)' is not a file URL")
-                }
-                self = .file(url)
-            }
-        }
-    }
-
-    private func addFileBackend(_ url: URL, to config: OpaquePointer, at level: git_config_level_t) throws {
-        let path = url.path
-        // libgit2 reads a file it may not read as missing, with no error.
-        try check(gitkit_config_file_check_readable(path))
-        let rc = git_config_add_file_ondisk(config, path, level, repo, 1)
-        if rc == GIT_ENOTFOUND.rawValue {
-            throw Libgit2Error(
-                code: rc, klass: Int32(GIT_ERROR_CONFIG.rawValue),
-                message: "config file '\(path)' could not be read")
-        }
-        try check(rc)
-    }
-
-    private func addEntriesBackend(
-        _ text: String, name: String, to config: OpaquePointer, at level: git_config_level_t
-    ) throws {
-        var backend: UnsafeMutablePointer<git_config_backend>?
-        try text.withCString { cText in
-            try name.withCString { type in
-                var options = git_config_backend_memory_options()
-                options.version = UInt32(GIT_CONFIG_BACKEND_MEMORY_OPTIONS_VERSION)
-                options.backend_type = type
-                try check(git_config_backend_from_string(&backend, cText, text.utf8.count, &options))
-            }
-        }
-        guard let backend else {
-            throw Libgit2Error(code: -1, klass: 0, message: "git_config_backend_from_string returned no backend")
-        }
-        let rc = git_config_add_backend(config, backend, level, repo, 1)
-        if rc < 0 {
-            // Not yet owned by the config, so not freed with it.
-            let error = Libgit2Error.last(code: rc)
-            backend.pointee.free(backend)
-            throw error
+            try ConfigBackends.add(staged, to: config, repository: repo)
         }
     }
 
@@ -255,12 +197,8 @@ extension Repository {
         }
 
         if level == .app {
-            var staged: OpaquePointer?
-            try check(git_config_new(&staged))
+            let staged = try ConfigBackends.newConfig()
             defer { git_config_free(staged) }
-            guard let staged else {
-                throw Libgit2Error(code: -1, klass: 0, message: "git_config_new returned no config")
-            }
             try add(staged, level.libgit2)
             try check(gitkit_config_replace_levels_from(config, staged, level.libgit2))
         } else {
@@ -279,9 +217,177 @@ extension Repository {
 }
 
 extension ConfigLayer {
+
+    /// Replaces the command-line config of a libgit2 config the caller owns
+    /// — every level from `GIT_CONFIG_LEVEL_APP` up — with `layers`, read in
+    /// order as ``Repository/addConfigLayers(_:)`` reads them: layer `i` is
+    /// level `GIT_CONFIG_LEVEL_APP + i`, a later layer wins a single read,
+    /// and no layers leave no command-line config. Levels below the
+    /// command-line config (a repository's local and worktree files, the
+    /// global, XDG and system files) are left as they are.
+    ///
+    /// This is for configs GitKit does not own, which a host opened with the
+    /// libgit2 C API GitKit re-exports: `git_repository_config` of a
+    /// repository from `git_repository_open_ext`, `git_config_open_default`
+    /// outside any repository, or `git_config_new`. For a ``Repository`` use
+    /// ``Repository/addConfigLayers(_:)``, which also refreshes what the
+    /// repository derived from its config.
+    ///
+    /// - Parameters:
+    ///   - layers: The command-line config, in `-c` order.
+    ///   - config: The `git_config *` to change: the live config, not a
+    ///     `git_config_snapshot`. A snapshot taken before the call does not
+    ///     see the layers; one taken after keeps them.
+    ///   - repository: The `git_repository *` that is the context of a layer
+    ///     file's `[include]` and `[includeIf]` (`gitdir:`, `onbranch:`).
+    ///     With `nil`, conditions that need a repository never match, as
+    ///     git behaves outside a repository.
+    ///
+    /// **Ownership and lifetime.** The caller keeps both pointers: GitKit
+    /// retains, wraps, registers and frees neither, and keys no include
+    /// policy by them. libgit2's file backend keeps `repository`, though: a
+    /// later read of `config` re-reads a layer file (or a file it includes)
+    /// that changed on disk, with `repository` as its context. So
+    /// `repository` must outlive every file layer installed with it — free
+    /// `config` before `repository`. Snapshots of `config` keep no
+    /// repository. `config` must not be used on another thread during the
+    /// call.
+    ///
+    /// **Writes.** The layers are never write targets, even a file layer,
+    /// and the write order of the config's other levels is unchanged: a
+    /// repository's config keeps writing to its own file, the default
+    /// config to the global file.
+    ///
+    /// **Include policy.** Every read of a layer file's includes — this
+    /// call's and each later re-read — asks the policy in force for that
+    /// read: one a host registered for `repository` with the C
+    /// `gitkit_config_set_include_policy`, otherwise the reading thread's
+    /// (``Repository/withOperationConfiguration(_:_:)`` with
+    /// ``OperationConfiguration/includePolicy``), otherwise the process
+    /// default (``ConfigIncludePolicy/setDefault(_:)``). A policy that must
+    /// govern later re-reads has to be in force for them too; wrapping only
+    /// this call covers only the reads it does. The layer file itself is not
+    /// offered to the policy.
+    ///
+    /// **Not refreshed.** Nothing derived from the config is refreshed: a
+    /// repository's cached `core.*` values, a loaded index's capabilities,
+    /// diff drivers, the attribute cache. Install the layers before the
+    /// repository uses them.
+    ///
+    /// Entries git reads from the repository's own config only
+    /// (`core.bare`, `core.worktree`, `core.repositoryformatversion`,
+    /// `extensions.*`) are stored and listed, as git lists them for
+    /// `git -c core.bare=false config --list --show-origin`. Layers already
+    /// at those levels are replaced, including those an
+    /// ``OperationConfiguration`` scope added at the open.
+    ///
+    /// Throws, leaving `config` as it was: `GIT_EINVALIDSPEC` for an entry
+    /// that is not a valid config entry or a URL that is not a `file:` URL;
+    /// the error reading a layer's file that exists but cannot be read or
+    /// does not parse; or the include policy's refusal of one of its
+    /// includes. A missing layer file reads as empty.
+    public static func install(
+        _ layers: [ConfigLayer], into config: OpaquePointer, repository: OpaquePointer? = nil
+    ) throws {
+        Libgit2.ensureInitialized()
+        let staged = try layers.map(ConfigBackends.StagedLayer.init)
+        let staging = try ConfigBackends.newConfig()
+        defer { git_config_free(staging) }
+        try ConfigBackends.add(staged, to: staging, repository: repository)
+        try check(gitkit_config_replace_levels_readonly_from(config, staging, GIT_CONFIG_LEVEL_APP))
+    }
+
     /// The libgit2 level of the layer at `index`.
     static func level(_ index: Int) -> git_config_level_t {
         git_config_level_t(rawValue: GIT_CONFIG_LEVEL_APP.rawValue + numericCast(index))
+    }
+}
+
+/// Adds config levels to a libgit2 config, a ``Repository``'s or one a host
+/// owns, with `repository` as the context of a file's includes.
+enum ConfigBackends {
+
+    /// A layer whose entries were checked and serialized already.
+    enum StagedLayer {
+        case entries(String, name: String)
+        case file(URL)
+
+        init(_ layer: ConfigLayer) throws {
+            switch layer {
+            case let .entries(entries, name):
+                let text = try ConfigEntryText.serialize(entries)
+                try ConfigEntryText.checkBackendName(name)
+                self = .entries(text, name: name)
+            case let .file(url):
+                guard url.isFileURL else {
+                    throw ConfigEntryText.invalid("config layer '\(url.absoluteString)' is not a file URL")
+                }
+                self = .file(url)
+            }
+        }
+    }
+
+    /// An empty config, freed by the caller.
+    static func newConfig() throws -> OpaquePointer {
+        var config: OpaquePointer?
+        try check(git_config_new(&config))
+        guard let config else {
+            throw Libgit2Error(code: -1, klass: 0, message: "git_config_new returned no config")
+        }
+        return config
+    }
+
+    /// Adds `staged` to `config`, layer `i` at ``ConfigLayer/level(_:)``.
+    static func add(_ staged: [StagedLayer], to config: OpaquePointer, repository: OpaquePointer?) throws {
+        for (index, layer) in staged.enumerated() {
+            let at = ConfigLayer.level(index)
+            switch layer {
+            case let .entries(text, name):
+                try addEntries(text, name: name, to: config, at: at, repository: repository)
+            case let .file(url):
+                try addFile(url, to: config, at: at, repository: repository)
+            }
+        }
+    }
+
+    static func addFile(
+        _ url: URL, to config: OpaquePointer, at level: git_config_level_t, repository: OpaquePointer?
+    ) throws {
+        let path = url.path
+        // libgit2 reads a file it may not read as missing, with no error.
+        try check(gitkit_config_file_check_readable(path))
+        let rc = git_config_add_file_ondisk(config, path, level, repository, 1)
+        if rc == GIT_ENOTFOUND.rawValue {
+            throw Libgit2Error(
+                code: rc, klass: Int32(GIT_ERROR_CONFIG.rawValue),
+                message: "config file '\(path)' could not be read")
+        }
+        try check(rc)
+    }
+
+    static func addEntries(
+        _ text: String, name: String, to config: OpaquePointer, at level: git_config_level_t,
+        repository: OpaquePointer?
+    ) throws {
+        var backend: UnsafeMutablePointer<git_config_backend>?
+        try text.withCString { cText in
+            try name.withCString { type in
+                var options = git_config_backend_memory_options()
+                options.version = UInt32(GIT_CONFIG_BACKEND_MEMORY_OPTIONS_VERSION)
+                options.backend_type = type
+                try check(git_config_backend_from_string(&backend, cText, text.utf8.count, &options))
+            }
+        }
+        guard let backend else {
+            throw Libgit2Error(code: -1, klass: 0, message: "git_config_backend_from_string returned no backend")
+        }
+        let rc = git_config_add_backend(config, backend, level, repository, 1)
+        if rc < 0 {
+            // Not yet owned by the config, so not freed with it.
+            let error = Libgit2Error.last(code: rc)
+            backend.pointee.free(backend)
+            throw error
+        }
     }
 }
 
