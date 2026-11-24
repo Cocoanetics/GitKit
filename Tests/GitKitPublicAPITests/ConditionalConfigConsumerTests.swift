@@ -147,6 +147,28 @@ struct ConditionalConfigConsumerTests {
         #expect(try get("test.value", config) == "Included")
     }
 
+    @Test("standalone hasconfig rejects URLs in nonmatching targets atomically")
+    func noRepositoryURLGuard() throws {
+        defer { cleanUp() }
+        let included = try write("[remote \"hidden\"]\nurl = https://example.com/hidden\n", "included")
+        let config = try newConfig()
+        defer { git_config_free(config) }
+        try ConfigLayer.install([.entries([ConfigEntry(name: "test.old", value: "kept")])], into: config)
+
+        let error = #expect(throws: Libgit2Error.self) {
+            try CommandLineConfig([
+                .includeIf(condition: "hasconfig:remote.*.url:never", path: included.path),
+                .entries([ConfigEntry(name: "remote.origin.url", value: "https://example.com/later")])
+            ]).install(into: config)
+        }
+
+        #expect(error?.message == "remote URLs cannot be configured in file directly or indirectly "
+            + "included by includeIf.hasconfig:remote.*.url")
+        #expect(try get("test.old", config) == "kept")
+        #expect(try get("remote.origin.url", config) == nil)
+        #expect(try get("remote.hidden.url", config) == nil)
+    }
+
     @Test("false non-hasconfig targets are never offered or accessed")
     func falseTargets() throws {
         defer { cleanUp() }
