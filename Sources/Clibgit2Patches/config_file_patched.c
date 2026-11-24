@@ -458,7 +458,11 @@ static int condition_backend_del_multivar(git_config_backend *backend, const cha
 static int condition_backend_iterator(git_config_iterator **out, git_config_backend *backend)
 { CONDITION_CALL(b->inner->iterator(out, b->inner)); }
 static int condition_backend_snapshot(git_config_backend **out, git_config_backend *backend)
-{ CONDITION_CALL(b->inner->snapshot(out, b->inner)); }
+{
+	/* Snapshot construction defers its read until open(). Keep the wrapped
+	 * backend as its source so that deferred iterator also enters context. */
+	return git_config_backend_snapshot(out, backend);
+}
 static int condition_backend_lock(git_config_backend *backend)
 { CONDITION_CALL(b->inner->lock(b->inner)); }
 static int condition_backend_unlock(git_config_backend *backend, int success)

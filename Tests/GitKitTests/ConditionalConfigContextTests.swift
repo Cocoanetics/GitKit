@@ -93,5 +93,23 @@ struct ConditionalConfigContextTests {
         try repository.setCommandLineConfig(command)
         #expect(try repository.configGet("test.value") == nil)
     }
+
+    @Test("a deferred snapshot refresh retains the file backend's condition context")
+    func snapshotRefresh() throws {
+        defer { fixtures.removeAll() }
+        let included = try write("[test]\nvalue = Included\n", "included")
+        let repository = try Repository.initialize(at: fixtures.url("repo"), initialBranch: "main")
+        let local = fixtures.url("repo/.git/config")
+        try (String(contentsOf: local, encoding: .utf8)
+            + "[includeIf \"gitdir:**/.git\"]\npath = \(included.path)\n")
+            .write(to: local, atomically: true, encoding: .utf8)
+        var snapshot: OpaquePointer?
+        try check(git_repository_config_snapshot(&snapshot, repository.repo))
+        defer { git_config_free(snapshot) }
+        var entry: UnsafeMutablePointer<git_config_entry>?
+        try check(git_config_get_entry(&entry, snapshot, "test.value"))
+        defer { git_config_entry_free(entry) }
+        #expect(entry?.pointee.value.map { String(cString: $0) } == "Included")
+    }
 }
 #endif
