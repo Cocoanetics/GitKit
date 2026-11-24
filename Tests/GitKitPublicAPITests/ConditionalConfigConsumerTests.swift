@@ -28,6 +28,7 @@ struct ConditionalConfigConsumerTests {
     }
 
     private func newConfig() throws -> OpaquePointer {
+        Libgit2.ensureInitialized()
         var config: OpaquePointer?
         #expect(git_config_new(&config) == 0)
         return try #require(config)
