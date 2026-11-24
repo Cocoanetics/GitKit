@@ -183,7 +183,23 @@ extension OperationConfiguration.Level {
 final class OperationConfigurationScope {
     let pointer: OpaquePointer
 
-    init(_ configuration: OperationConfiguration) throws {
+    private init() throws {
+        var scope: OpaquePointer?
+        try check(gitkit_config_scope_new(&scope))
+        guard let scope else {
+            throw Libgit2Error(code: -1, klass: 0, message: "gitkit_config_scope_new returned no scope")
+        }
+        pointer = scope
+    }
+
+    /// Direct installs store all valid entries. Repository-opening restrictions
+    /// belong to the operation configuration initializer alone.
+    convenience init(commandLine: CommandLineConfig) throws {
+        try self.init()
+        try commandLine.add(to: pointer)
+    }
+
+    convenience init(_ configuration: OperationConfiguration) throws {
         // Layers are the whole .app level: both would leave one unread.
         if configuration.layers != nil && configuration.commandLine != nil {
             throw ConfigEntryText.invalid("an operation configuration has both layers and commandLine")
@@ -193,12 +209,7 @@ final class OperationConfigurationScope {
             throw ConfigEntryText.invalid("an operation configuration has both command-line layers and an .app level")
         }
 
-        var scope: OpaquePointer?
-        try check(gitkit_config_scope_new(&scope))
-        guard let scope else {
-            throw Libgit2Error(code: -1, klass: 0, message: "gitkit_config_scope_new returned no scope")
-        }
-        pointer = scope
+        try self.init()
 
         for item in configuration.levels {
             switch item {

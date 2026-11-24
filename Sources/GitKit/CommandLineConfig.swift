@@ -41,6 +41,8 @@ public struct CommandLineConfig: Sendable, Hashable {
     /// Lower files are re-read against the complete prospective source list,
     /// so file-level hasconfig can see later command-line URLs. Their write
     /// order is preserved; command elements are never write targets.
+    /// All valid entries remain stored, including repository-layout settings;
+    /// operation scopes alone reject those before opening repositories.
     ///
     /// The handles are borrowed. As with ``ConfigLayer/install(_:into:repository:)``,
     /// the repository must outlive the config and all its file backends, and the
@@ -55,7 +57,7 @@ public struct CommandLineConfig: Sendable, Hashable {
     @discardableResult
     public func install(into config: OpaquePointer, repository: OpaquePointer? = nil) throws -> [ConfigDiagnostic] {
         Libgit2.ensureInitialized()
-        let scope = try OperationConfigurationScope(OperationConfiguration(commandLine: self))
+        let scope = try OperationConfigurationScope(commandLine: self)
         try check(gitkit_config_scope_install(scope.pointer, config, repository))
         return scope.diagnostics()
     }

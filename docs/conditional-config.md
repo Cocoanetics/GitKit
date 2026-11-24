@@ -29,6 +29,9 @@ in place. Element `i` keeps level `APP+i`, including a false condition; nested
 file entries keep their origin, backend type and include depth. Supply paths
 after invocation-specific interpolation. File patterns retain libgit2's `~/`
 handling; `~user` and `%(prefix)` inside files remain outside this change.
+Direct/live installation retains all valid entries, including repository-layout
+settings. The repository-opening restriction on those entries applies only to
+operation scopes; installing entries into an existing handle does not reopen it.
 
 ## Repository context and diagnostics
 
@@ -79,6 +82,12 @@ leaves the live config untouched. With no hasconfig, lower file backends are
 cloned from cached values without extra reads; their new manifest is retained
 for subsequent refresh. Backends own their manifests beyond the scope lifetime;
 command includes refresh with that same context. Snapshots keep old values.
+URL collection also retains the file stamps and authorization origins of every
+source it reads, including missing and nonmatching hasconfig targets. Before a
+backend read, changed sources invalidate the shared URL set and advance a shared
+generation. Each backend then reparses atomically against that generation, even
+if its own file has not changed or its condition previously included nothing.
+This works regardless of lookup order and does not recursively reopen config.
 Lower write order is preserved and command elements never become writers;
 typed repository writes retain LOCAL as their target. Internal-open failures
 continue to use the scope's existing swallowed-error reporting and rollback.
