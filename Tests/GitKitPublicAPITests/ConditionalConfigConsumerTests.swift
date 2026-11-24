@@ -103,6 +103,54 @@ struct ConditionalConfigConsumerTests {
         #expect(records.diagnostics.first?.count == 1)
     }
 
+    @Test("inherited command diagnostics reach their owning outer scope")
+    func inheritedDiagnostics() throws {
+        defer { cleanUp() }
+        let included = try write("[test]\nvalue = Included\n", "included")
+        let directory = root.appendingPathComponent("repo")
+        try Repository.initialize(at: directory, initialBranch: "main")
+        let outer = Records(), inner = Records()
+        let command = CommandLineConfig([.includeIf(condition: "gitdir:./x/", path: included.path)])
+        try Repository.withOperationConfiguration(OperationConfiguration(
+            commandLine: command, onDiagnostic: { outer.diagnose($0) })) {
+            try Repository.withOperationConfiguration(OperationConfiguration(
+                levels: [.entries([], .global)], commandLine: nil, onDiagnostic: { inner.diagnose($0) })) {
+                let opened = try Repository.open(at: directory)
+                #expect(try opened.configGet("test.value") == "Included")
+            }
+        }
+        #expect(outer.diagnostics.flatMap { $0 }.map(\.condition) == ["gitdir:./x/"])
+        #expect(inner.diagnostics.isEmpty)
+    }
+
+    @Test("refresh diagnostics never leak into a later unrelated scope", arguments: [false, true])
+    func expiredDiagnostics(direct: Bool) throws {
+        defer { cleanUp() }
+        let included = try write("[test]\nvalue = Before\n", "included")
+        let directory = root.appendingPathComponent("repo")
+        let original = try Repository.initialize(at: directory, initialBranch: "main")
+        let owner = Records(), unrelated = Records()
+        let command = CommandLineConfig([.includeIf(condition: "gitdir:./x/", path: included.path)])
+        let opened: Repository
+        if direct {
+            owner.diagnose(try original.setCommandLineConfig(command))
+            opened = original
+        } else {
+            opened = try Repository.withOperationConfiguration(OperationConfiguration(
+                commandLine: command, onDiagnostic: { owner.diagnose($0) })) {
+                try Repository.open(at: directory)
+            }
+        }
+        #expect(owner.diagnostics.flatMap { $0 }.count == 1)
+        try Data("[test]\nvalue = After\n".utf8).write(to: included, options: .atomic)
+        try Repository.withOperationConfiguration(OperationConfiguration(
+            levels: [], commandLine: nil, onDiagnostic: { unrelated.diagnose($0) })) { () throws in
+            #expect(try opened.configGet("test.value") == "After")
+        }
+        #expect(owner.diagnostics.flatMap { $0 }.count == 1)
+        #expect(unrelated.diagnostics.isEmpty)
+    }
+
     @Test("conditions match per handle, including unborn branches",
           arguments: ["onbranch:main", "gitdir:**/.git", "gitdir/i:**/.GIT"])
     func supportedConditions(_ condition: String) throws {
