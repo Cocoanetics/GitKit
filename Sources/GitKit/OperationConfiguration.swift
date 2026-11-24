@@ -58,6 +58,18 @@ public struct OperationConfiguration: Sendable {
     /// refused before the operation runs.
     public var layers: [ConfigLayer]?
 
+    /// Conditional command-line elements, evaluated per opened repository.
+    /// Mutually exclusive with `layers` and an `.app` level. A nil value
+    /// inherits the outer operation's command-line set.
+    public var commandLine: CommandLineConfig?
+
+    /// Ordered nonfatal diagnostics from all opens, including internal ones.
+    /// Delivered once after the body returns or throws, on its calling thread.
+    /// Diagnostics for an inherited command-line set go to the scope that
+    /// supplied it, even inside a nested scope with its own handler. Refreshes
+    /// after the owning scope ends never report into a later unrelated scope.
+    public var onDiagnostic: (@Sendable ([ConfigDiagnostic]) -> Void)?
+
     /// The policy for the include files read by repositories opened during
     /// the operation that have no policy of their own — every one libgit2
     /// opens internally. `nil` keeps the calling thread's (a policy an outer
@@ -76,6 +88,17 @@ public struct OperationConfiguration: Sendable {
         self.levels = levels
         self.layers = layers
         self.includePolicy = includePolicy
+    }
+
+    /// A required-label overload preserves both existing initializer signatures.
+    public init(
+        levels: [Level] = [], commandLine: CommandLineConfig?, includePolicy: ConfigIncludePolicy? = nil,
+        onDiagnostic: (@Sendable ([ConfigDiagnostic]) -> Void)? = nil
+    ) {
+        self.levels = levels
+        self.commandLine = commandLine
+        self.includePolicy = includePolicy
+        self.onDiagnostic = onDiagnostic
     }
 }
 
@@ -137,6 +160,10 @@ extension Repository {
         defer { restoreThreadPolicy?() }
 
         try check(gitkit_config_scope_push(scope.pointer))
+        defer {
+            let diagnostics = scope.diagnostics()
+            if !diagnostics.isEmpty { configuration.onDiagnostic?(diagnostics) }
+        }
         let result: T
         do {
             defer { scope.pop() }
@@ -159,18 +186,33 @@ extension OperationConfiguration.Level {
 final class OperationConfigurationScope {
     let pointer: OpaquePointer
 
-    init(_ configuration: OperationConfiguration) throws {
-        // Layers are the whole .app level: both would leave one unread.
-        if configuration.layers != nil, configuration.levels.contains(where: { $0.configLevel == .app }) {
-            throw ConfigEntryText.invalid("an operation configuration has both command-line layers and an .app level")
-        }
-
+    private init() throws {
         var scope: OpaquePointer?
         try check(gitkit_config_scope_new(&scope))
         guard let scope else {
             throw Libgit2Error(code: -1, klass: 0, message: "gitkit_config_scope_new returned no scope")
         }
         pointer = scope
+    }
+
+    /// Direct installs store all valid entries. Repository-opening restrictions
+    /// belong to the operation configuration initializer alone.
+    convenience init(commandLine: CommandLineConfig) throws {
+        try self.init()
+        try commandLine.add(to: pointer)
+    }
+
+    convenience init(_ configuration: OperationConfiguration) throws {
+        // Layers are the whole .app level: both would leave one unread.
+        if configuration.layers != nil && configuration.commandLine != nil {
+            throw ConfigEntryText.invalid("an operation configuration has both layers and commandLine")
+        }
+        if configuration.layers != nil || configuration.commandLine != nil,
+           configuration.levels.contains(where: { $0.configLevel == .app }) {
+            throw ConfigEntryText.invalid("an operation configuration has both command-line layers and an .app level")
+        }
+
+        try self.init()
 
         for item in configuration.levels {
             switch item {
@@ -183,6 +225,14 @@ final class OperationConfigurationScope {
             }
         }
 
+        if let commandLine = configuration.commandLine {
+            // Reuse the operation's existing repository-only entry checks.
+            for element in commandLine.elements {
+                if case let .entries(entries, _) = element.storage { try Self.rejectRepositoryOnly(entries) }
+            }
+            try commandLine.add(to: pointer)
+            return
+        }
         guard let layers = configuration.layers else { return }
         try check(gitkit_config_scope_reset_layers(pointer))
         for layer in layers {
@@ -223,6 +273,18 @@ final class OperationConfigurationScope {
         var message: UnsafePointer<CChar>?
         guard gitkit_config_scope_first_failure(pointer, &code, &klass, &message) == 1 else { return nil }
         return Libgit2Error(code: code, klass: klass, message: message.map { String(cString: $0) } ?? "unknown error")
+    }
+
+    func diagnostics() -> [ConfigDiagnostic] {
+        (0..<gitkit_config_scope_diagnostic_count(pointer)).map { index in
+            var condition: UnsafePointer<CChar>?
+            var gitdir: UnsafePointer<CChar>?
+            gitkit_config_scope_diagnostic(pointer, index, &condition, &gitdir)
+            return ConfigDiagnostic(
+                message: "relative config include conditionals must come from files",
+                condition: condition.map { String(cString: $0) } ?? "",
+                gitDirectory: gitdir.map { URL(fileURLWithPath: String(cString: $0), isDirectory: true) })
+        }
     }
 
     /// A GitKit call throwing `error` hands back the failure the calling

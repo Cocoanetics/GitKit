@@ -36,3 +36,7 @@ HostConfigLayers         2.17.0    fail     cannot find type 'ConfigLayer'
 HostConfigLayers         2.18.0    fail     has no member 'install
 HostConfigLayers         2.19.0    fail     has no member 'install
 HostConfigLayers         HEAD      pass
+ConditionalConfig        2.17.0    fail     cannot find 'CommandLineConfig'
+ConditionalConfig        2.18.0    fail     cannot find 'CommandLineConfig'
+ConditionalConfig        2.19.0    fail     cannot find 'CommandLineConfig'
+ConditionalConfig        HEAD      pass

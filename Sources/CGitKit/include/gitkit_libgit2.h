@@ -275,6 +275,14 @@ GIT_EXTERN(int) gitkit_config_scope_reset_layers(gitkit_config_scope *scope);
 GIT_EXTERN(int) gitkit_config_scope_add_layer_file(gitkit_config_scope *scope, const char *path);
 GIT_EXTERN(int) gitkit_config_scope_add_layer_entries(
 	gitkit_config_scope *scope, const char *text, size_t len, const char *backend_type);
+/* Conditional command elements, copied and evaluated per opened handle.
+ * _install stages the complete prospective config and swaps it atomically,
+ * preserving lower-level write order; it borrows cfg/repo for the call. */
+GIT_EXTERN(int) gitkit_config_scope_add_layer_command(gitkit_config_scope *scope, const char *text, size_t len);
+GIT_EXTERN(int) gitkit_config_scope_install(gitkit_config_scope *scope, git_config *cfg, git_repository *repo);
+GIT_EXTERN(size_t) gitkit_config_scope_diagnostic_count(const gitkit_config_scope *scope);
+GIT_EXTERN(void) gitkit_config_scope_diagnostic(const gitkit_config_scope *scope, size_t index,
+	const char **condition, const char **gitdir);
 GIT_EXTERN(int) gitkit_config_file_check_readable(const char *path);
 GIT_EXTERN(int) gitkit_config_scope_push(gitkit_config_scope *scope);
 GIT_EXTERN(int) gitkit_config_scope_pop(gitkit_config_scope *scope);

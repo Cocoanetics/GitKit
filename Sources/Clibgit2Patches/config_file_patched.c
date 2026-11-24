@@ -60,6 +60,14 @@
 #include "git2/sys/config.h"
 #include "../CGitKit/include/gitkit_libgit2.h"
 #include "gitkit_created_dir.h"
+#include "gitkit_config_condition.h"
+#include "config_parse.h"
+
+static int gitkit_file_parse(git_config_parser *, git_config_parser_section_cb,
+	git_config_parser_variable_cb, git_config_parser_comment_cb, git_config_parser_eof_cb, void *);
+int gitkit_fs_path_set_error(int errno_value, const char *path, const char *action);
+
+static int gitkit_real_stat(const char *path, struct stat *st) { return p_stat(path, st); }
 
 /* One per thread: the include a refusal came from, and who named each depth. */
 #if defined(_MSC_VER)
@@ -140,6 +148,18 @@ static void gitkit_policy_done(const gitkit_include_policy *policy)
 {
 	if (policy->release)
 		policy->release(policy->payload);
+}
+
+int gitkit_config_authorize(const git_repository *repo, const char *path, const char *from, int depth)
+{
+	gitkit_include_policy policy = gitkit_policy_for(repo);
+	int refused = policy.cb && policy.cb(path, from, depth, policy.payload) != 0;
+	gitkit_policy_done(&policy);
+	if (!refused)
+		return 0;
+	git_error_set(GIT_ERROR_CONFIG, "include of '%s' is not authorised", path);
+	gitkit_config_scope__record(-1);
+	return -1;
 }
 
 int gitkit_config_set_include_policy(
@@ -268,7 +288,9 @@ static int gitkit_include_stat(
 #define git_fs_path_set_error gitkit_fs_path_set_error
 #define git_config_backend_from_file gitkit_config_backend_from_file_unwrapped
 #define git_filebuf_commit(file) gitkit_created_watch_commit(file)
+#define git_config_parse gitkit_file_parse
 #include "config_file.c"
+#undef git_config_parse
 #undef git_filebuf_commit
 #undef git_config_backend_from_file
 #undef git_fs_path_set_error
@@ -277,20 +299,395 @@ static int gitkit_include_stat(
 
 extern int git_fs_path_set_error(int errno_value, const char *path, const char *action);
 
-static int gitkit_config_file_get(
-	git_config_backend *cfg, const char *key, git_config_backend_entry **out)
+/* The wrapper lends its owned manifest only while its backend is parsing or
+ * refreshing. A repository scope can end before the backend is freed. */
+typedef struct {
+	git_config_backend parent;
+	git_config_backend *inner;
+	gitkit_condition_context *context;
+	char *command_text;
+	size_t command_len, generation;
+	int refresh_failed;
+} gitkit_condition_backend;
+
+static int condition_backend_parse(gitkit_condition_backend *backend, git_config_level_t level, const git_repository *repo);
+static int command_refresh(gitkit_condition_backend *backend);
+static int condition_backend_refresh(gitkit_condition_backend *backend);
+
+static int gitkit_read_variable(git_config_parser *, const char *, const char *,
+	const char *, const char *, size_t, void *);
+
+static int gitkit_read_include(config_file_parse_data *data, const char *target)
+{
+	git_str path = GIT_STR_INIT, content = GIT_STR_INIT;
+	git_config_parser reader = GIT_CONFIG_PARSER_INIT;
+	config_file_parse_data child = *data;
+	config_file *file;
+	struct stat st;
+	int error;
+	if ((error = gitkit_condition_path(&path, target, data->file->path)) < 0)
+		goto done;
+	child.depth++;
+	if ((error = gitkit_config_authorize(data->repo, path.ptr, data->file->path, child.depth)) < 0)
+		goto done;
+	file = git_array_alloc(data->file->includes);
+	if (!file) { error = -1; goto done; }
+	memset(file, 0, sizeof(*file));
+	file->path = git_str_detach(&path);
+	child.file = file;
+	/* Authorisation precedes the first stat, even for a missing target. */
+	if (gitkit_real_stat(file->path, &st) < 0) {
+		if (errno == ENOENT || errno == ENOTDIR) { error = 0; goto done; }
+		error = git_fs_path_set_error(errno, file->path, "stat");
+		goto done;
+	}
+	if (child.depth > 10) {
+		git_error_set(GIT_ERROR_CONFIG, "maximum config include depth reached");
+		error = -1;
+		goto done;
+	}
+	if ((error = git_futils_readbuffer(&content, file->path)) < 0)
+		goto done;
+	git_futils_filestamp_set_from_stat(&file->stamp, &st);
+	if ((error = git_hash_buf(file->checksum, content.ptr, content.size, GIT_HASH_ALGORITHM_SHA256)) < 0 ||
+	    (error = git_config_parser_init(&reader, file->path, content.ptr, content.size)) < 0)
+		goto done;
+	error = git_config_parse(&reader, NULL, gitkit_read_variable, NULL, NULL, &child);
+done:
+	git_config_parser_dispose(&reader);
+	git_str_dispose(&path);
+	git_str_dispose(&content);
+	return error;
+}
+
+static int gitkit_read_variable(git_config_parser *parser, const char *section, const char *variable,
+	const char *value, const char *line, size_t line_len, void *payload)
+{
+	config_file_parse_data *data = payload;
+	git_config_entry entry = {0};
+	git_str name = GIT_STR_INIT;
+	const char *c;
+	int error, matches;
+	GIT_UNUSED(parser); GIT_UNUSED(line); GIT_UNUSED(line_len);
+	if (section && (git_str_puts(&name, section) < 0 || git_str_putc(&name, '.') < 0))
+		return -1;
+	for (c = variable; *c; c++) git_str_putc(&name, git__tolower(*c));
+	if (git_str_oom(&name)) { git_str_dispose(&name); return -1; }
+	entry.name = name.ptr;
+	entry.value = value;
+	entry.backend_type = data->file->path ? "file" : "command line";
+	entry.origin_path = data->file->path;
+	entry.level = data->level;
+	entry.include_depth = data->depth;
+	error = git_config_list_dup_entry(data->config_list, &entry);
+	if (error < 0)
+		goto done;
+	if (!strcmp(entry.name, "include.path")) {
+		error = gitkit_read_include(data, value);
+	} else if (section && !git__prefixcmp(section, "includeif.") && !git__strcasecmp(variable, "path")) {
+		error = gitkit_condition_match(&matches, gitkit_condition_current(), section + 10, data->file->path);
+		if (!error && matches) error = gitkit_read_include(data, value);
+	}
+done:
+	git_str_dispose(&name);
+	return error;
+}
+
+static int gitkit_file_parse(git_config_parser *parser, git_config_parser_section_cb section,
+	git_config_parser_variable_cb variable, git_config_parser_comment_cb comment,
+	git_config_parser_eof_cb eof, void *payload)
+{
+	config_file_parse_data *data = NULL;
+	int error;
+	if (variable == read_on_variable) {
+		data = payload;
+		if (!data->depth) gitkit_condition_invalidate(gitkit_condition_current());
+		variable = gitkit_read_variable;
+	}
+	error = git_config_parse(parser, section, variable, comment, eof, payload);
+	if (error < 0 && data && !data->depth) {
+		/* A refused include can fail before it has a child filestamp. Leave
+		 * the root dirty so lifting a refusal retries the complete read. */
+		memset(&data->file->stamp, 0, sizeof(data->file->stamp));
+		memset(data->file->checksum, 0, sizeof(data->file->checksum));
+	}
+	return error;
+}
+
+static int condition_backend_open(git_config_backend *backend, git_config_level_t level, const git_repository *repo)
+{
+	gitkit_condition_backend *b = (gitkit_condition_backend *)backend;
+	gitkit_condition_context *previous;
+	int error;
+	if (!b->context) {
+		b->context = gitkit_condition_new(repo);
+		if (!b->context || gitkit_condition_source_add(b->context,
+		    ((config_file_backend *)b->inner)->file.path, NULL, 0, level, 0, 0) < 0)
+			return -1;
+	}
+	previous = gitkit_condition_enter(b->context);
+	b->inner->cfg = backend->cfg;
+	/* A cached clone has a complete list already; its next refresh still
+	 * parses with the newly installed prospective manifest. */
+	error = b->command_text ? condition_backend_parse(b, level, repo) :
+		(((config_file_backend *)b->inner)->config_list ? 0 : b->inner->open(b->inner, level, repo));
+	if (!error) b->generation = b->context->generation;
+	gitkit_condition_enter(previous);
+	return error;
+}
+
+#define CONDITION_CALL(expression) \
+	gitkit_condition_backend *b = (gitkit_condition_backend *)backend; \
+	gitkit_condition_context *previous = gitkit_condition_enter(b->context); \
+	int error = condition_backend_refresh(b); \
+	if (!error) error = (expression); \
+	if (!error || error == GIT_ENOTFOUND) b->generation = b->context->generation; \
+	gitkit_condition_enter(previous); \
+	return error
+
+static int condition_backend_get(git_config_backend *backend, const char *key, git_config_backend_entry **out)
 {
 	*out = NULL;
-	return config_file_get(cfg, key, out);
+	CONDITION_CALL(b->inner->get(b->inner, key, out));
+}
+static int condition_backend_set(git_config_backend *backend, const char *key, const char *value)
+{ CONDITION_CALL(b->inner->set(b->inner, key, value)); }
+static int condition_backend_del(git_config_backend *backend, const char *key)
+{ CONDITION_CALL(b->inner->del(b->inner, key)); }
+static int condition_backend_set_multivar(git_config_backend *backend, const char *key, const char *regexp, const char *value)
+{ CONDITION_CALL(b->inner->set_multivar(b->inner, key, regexp, value)); }
+static int condition_backend_del_multivar(git_config_backend *backend, const char *key, const char *regexp)
+{ CONDITION_CALL(b->inner->del_multivar(b->inner, key, regexp)); }
+static int condition_backend_iterator(git_config_iterator **out, git_config_backend *backend)
+{ CONDITION_CALL(b->inner->iterator(out, b->inner)); }
+static int condition_backend_snapshot(git_config_backend **out, git_config_backend *backend)
+{
+	/* Snapshot construction defers its read until open(). Keep the wrapped
+	 * backend as its source so that deferred iterator also enters context. */
+	return git_config_backend_snapshot(out, backend);
+}
+static int condition_backend_lock(git_config_backend *backend)
+{ CONDITION_CALL(b->inner->lock(b->inner)); }
+static int condition_backend_unlock(git_config_backend *backend, int success)
+{ CONDITION_CALL(b->inner->unlock(b->inner, success)); }
+#undef CONDITION_CALL
+
+static void condition_backend_free(git_config_backend *backend)
+{
+	gitkit_condition_backend *b = (gitkit_condition_backend *)backend;
+	b->inner->free(b->inner);
+	gitkit_condition_free(b->context);
+	git__free(b->command_text);
+	git__free(b);
 }
 
 int git_config_backend_from_file(git_config_backend **out, const char *path)
 {
-	int error = gitkit_config_backend_from_file_unwrapped(out, path);
+	gitkit_condition_backend *b = git__calloc(1, sizeof(*b));
+	int error;
+	GIT_ERROR_CHECK_ALLOC(b);
+	if ((error = gitkit_config_backend_from_file_unwrapped(&b->inner, path)) < 0) { git__free(b); return error; }
+	b->context = gitkit_condition_current();
+	gitkit_condition_retain(b->context);
+	b->parent.version = GIT_CONFIG_BACKEND_VERSION;
+	b->parent.open = condition_backend_open;
+	b->parent.get = condition_backend_get;
+	b->parent.set = condition_backend_set;
+	b->parent.del = condition_backend_del;
+	b->parent.set_multivar = condition_backend_set_multivar;
+	b->parent.del_multivar = condition_backend_del_multivar;
+	b->parent.iterator = condition_backend_iterator;
+	b->parent.snapshot = condition_backend_snapshot;
+	b->parent.lock = condition_backend_lock;
+	b->parent.unlock = condition_backend_unlock;
+	b->parent.free = condition_backend_free;
+	*out = &b->parent;
+	return 0;
+}
 
-	if (!error)
-		(*out)->get = gitkit_config_file_get;
+const char *gitkit_config_backend_path(git_config_backend *backend)
+{
+	if (backend->open != condition_backend_open)
+		return NULL;
+	return ((config_file_backend *)((gitkit_condition_backend *)backend)->inner)->file.path;
+}
+
+gitkit_condition_context *gitkit_config_backend_context(git_config_backend *backend)
+{
+	GIT_ASSERT_WITH_RETVAL(backend->open == condition_backend_open, NULL);
+	return ((gitkit_condition_backend *)backend)->context;
+}
+
+int gitkit_config_backend_hasconfig(git_config_backend *backend)
+{
+	gitkit_condition_backend *b = (gitkit_condition_backend *)backend;
+	return backend->open == condition_backend_open && b->context && b->context->hasconfig;
+}
+
+static int clone_file(config_file *out, const config_file *source)
+{
+	config_file *include, *copy;
+	uint32_t i;
+	*out = *source;
+	out->path = git__strdup(source->path);
+	git_array_init(out->includes);
+	GIT_ERROR_CHECK_ALLOC(out->path);
+	git_array_foreach(source->includes, i, include) {
+		copy = git_array_alloc(out->includes);
+		GIT_ERROR_CHECK_ALLOC(copy);
+		if (clone_file(copy, include) < 0)
+			return -1;
+	}
+	return 0;
+}
+
+int gitkit_config_backend_clone(git_config_backend **out, git_config_backend *backend)
+{
+	gitkit_condition_backend *source = (gitkit_condition_backend *)backend, *copy;
+	config_file_backend *from = (config_file_backend *)source->inner, *to;
+	int error;
+	if ((error = git_config_backend_from_file(out, from->file.path)) < 0)
+		return error;
+	copy = (gitkit_condition_backend *)*out;
+	to = (config_file_backend *)copy->inner;
+	config_file_clear(&to->file);
+	memset(&to->file, 0, sizeof(to->file));
+	if ((error = clone_file(&to->file, &from->file)) < 0) {
+		copy->parent.free(*out);
+		*out = NULL;
+		return error;
+	}
+	to->config_list = from->config_list;
+	git_config_list_incref(to->config_list);
+	to->repo = from->repo;
+	to->level = from->level;
+	to->parent.readonly = from->parent.readonly;
+	copy->parent.readonly = backend->readonly;
+	return 0;
+}
+
+/* Reparse into a temporary list and include tree. A URL-source generation
+ * change uses this for ordinary files too, even if their own file is unchanged. */
+static int condition_backend_parse(gitkit_condition_backend *backend, git_config_level_t level, const git_repository *repo)
+{
+	config_file_backend *b = (config_file_backend *)backend->inner;
+	git_config_list *list = NULL, *old;
+	config_file file = {0};
+	git_str content = GIT_STR_INIT;
+	git_config_parser parser = GIT_CONFIG_PARSER_INIT;
+	config_file_parse_data data = {0};
+	struct stat st;
+	const char *text = backend->command_text;
+	size_t len = backend->command_len;
+	int error;
+	data.repo = repo;
+	data.file = &file;
+	data.level = level;
+	gitkit_condition_invalidate(backend->context);
+	if ((error = git_config_list_new(&list)) < 0)
+		goto done;
+	if (!backend->command_text) {
+		file.path = git__strdup(b->file.path);
+		if (!file.path) { error = -1; goto done; }
+		if (gitkit_real_stat(file.path, &st) < 0) {
+			if (errno != ENOENT && errno != ENOTDIR) {
+				error = git_fs_path_set_error(errno, file.path, "stat");
+				goto done;
+			}
+			text = "";
+			len = 0;
+		} else {
+			if ((error = git_futils_readbuffer(&content, file.path)) < 0)
+				goto done;
+			git_futils_filestamp_set_from_stat(&file.stamp, &st);
+			if ((error = git_hash_buf(file.checksum, content.ptr, content.size, GIT_HASH_ALGORITHM_SHA256)) < 0)
+				goto done;
+			text = content.ptr;
+			len = content.size;
+		}
+	}
+	if ((error = git_config_parser_init(&parser, file.path, text, len)) < 0)
+		goto done;
+	data.config_list = list;
+	if ((error = git_config_parse(&parser, NULL, gitkit_read_variable, NULL, NULL, &data)) < 0 ||
+	    (error = git_mutex_lock(&b->values_mutex)) < 0)
+		goto done;
+	old = b->config_list;
+	b->config_list = list;
+	list = NULL;
+	git_mutex_unlock(&b->values_mutex);
+	git_config_list_free(old);
+	config_file_clear(&b->file);
+	b->file = file;
+	memset(&file, 0, sizeof(file));
+	b->repo = repo;
+	b->level = level;
+	backend->generation = backend->context->generation;
+done:
+	git_config_parser_dispose(&parser);
+	git_str_dispose(&content);
+	git_config_list_free(list);
+	config_file_clear(&file);
+	backend->refresh_failed = error < 0;
 	return error;
+}
+
+static int command_refresh(gitkit_condition_backend *backend)
+{
+	config_file_backend *b = (config_file_backend *)backend->inner;
+	config_file *include;
+	uint32_t i;
+	int error, modified;
+	if (!backend->command_text)
+		return 0;
+	if (backend->refresh_failed)
+		return condition_backend_parse(backend, b->level, b->repo);
+	git_array_foreach(b->file.includes, i, include) {
+		error = config_file_is_modified(&modified, include);
+		if (error == GIT_ENOTFOUND) { git_error_clear(); continue; }
+		if (error < 0) return error;
+		if (modified) return condition_backend_parse(backend, b->level, b->repo);
+	}
+	return 0;
+}
+
+static int condition_backend_refresh(gitkit_condition_backend *backend)
+{
+	gitkit_condition_context *ctx = backend->context;
+	config_file_backend *inner = (config_file_backend *)backend->inner;
+	int error;
+	if (ctx->building || ctx->collecting || ctx->refreshing)
+		return 0;
+	if ((error = gitkit_condition_check(ctx)) < 0)
+		return error;
+	if (ctx->hasconfig && backend->generation != ctx->generation) {
+		/* Re-evaluating a dependent does not itself change the URL sources:
+		 * otherwise dependent backends would invalidate one another forever. */
+		ctx->refreshing++;
+		error = condition_backend_parse(backend, inner->level, inner->repo);
+		ctx->refreshing--;
+		return error;
+	}
+	return command_refresh(backend);
+}
+
+int gitkit_config_backend_command(git_config_backend **out, const char *text, size_t len, git_config_level_t level)
+{
+	gitkit_condition_backend *backend;
+	config_file_backend *inner;
+	int error;
+	GIT_UNUSED(level);
+	if ((error = git_config_backend_from_file(out, "")) < 0)
+		return error;
+	backend = (gitkit_condition_backend *)*out;
+	inner = (config_file_backend *)backend->inner;
+	git__free(inner->file.path);
+	inner->file.path = NULL;
+	inner->parent.readonly = backend->parent.readonly = 1;
+	backend->command_text = git__substrdup(text, len);
+	backend->command_len = len;
+	if (!backend->command_text) { backend->parent.free(*out); *out = NULL; return -1; }
+	return 0;
 }
 
 int gitkit_fs_path_set_error(int errno_value, const char *path, const char *action)
