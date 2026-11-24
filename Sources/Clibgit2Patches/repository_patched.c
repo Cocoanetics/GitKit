@@ -100,6 +100,7 @@
 #include "path.h"
 #include "../CGitKit/include/gitkit_libgit2.h"
 #include "gitkit_created_dir.h"
+#include "gitkit_config_condition.h"
 
 #if defined(_MSC_VER)
 #  define GITKIT_THREAD_LOCAL __declspec(thread)
@@ -115,6 +116,7 @@ typedef struct {
 	char *text;		/* entries: their config text */
 	size_t text_len;
 	char *backend_type;
+	int command;
 } gitkit_config_scope_source;
 
 /* One source, or for APP the command-line layers in order (maybe none). */
@@ -131,6 +133,10 @@ typedef struct {
 	int reported;		/* handed back by the call that failed */
 } gitkit_config_scope_failure;
 
+typedef struct {
+	char *condition, *gitdir;
+} gitkit_config_diagnostic;
+
 struct gitkit_config_scope {
 	gitkit_config_scope_level levels[GITKIT_SCOPE_LEVELS];
 	size_t levels_len;
@@ -141,9 +147,44 @@ struct gitkit_config_scope {
 	gitkit_config_scope_failure *failures;
 	size_t failures_len;
 	int failure_lost;	/* one could not be recorded */
+	gitkit_config_diagnostic *diagnostics;
+	size_t diagnostics_len;
 };
 
 static GITKIT_THREAD_LOCAL gitkit_config_scope *gitkit_current_scope;
+static GITKIT_THREAD_LOCAL gitkit_config_scope *gitkit_diagnostic_scope;
+
+void gitkit_config_scope__diagnostic(const char *condition, const char *gitdir)
+{
+	gitkit_config_scope *scope = gitkit_diagnostic_scope ? gitkit_diagnostic_scope : gitkit_current_scope;
+	gitkit_config_diagnostic *grown;
+	char *condition_copy, *gitdir_copy;
+	if (!scope)
+		return;
+	condition_copy = git__strdup(condition);
+	gitdir_copy = gitdir ? git__strdup(gitdir) : NULL;
+	if (!condition_copy || (gitdir && !gitdir_copy))
+		goto fail;
+	grown = git__reallocarray(scope->diagnostics, scope->diagnostics_len + 1, sizeof(*grown));
+	if (!grown)
+		goto fail;
+	scope->diagnostics = grown;
+	grown[scope->diagnostics_len].condition = condition_copy;
+	grown[scope->diagnostics_len++].gitdir = gitdir_copy;
+	return;
+fail:
+	git__free(condition_copy);
+	git__free(gitdir_copy);
+	scope->failure_lost = 1;
+}
+
+size_t gitkit_config_scope_diagnostic_count(const gitkit_config_scope *scope) { return scope->diagnostics_len; }
+void gitkit_config_scope_diagnostic(const gitkit_config_scope *scope, size_t index,
+	const char **condition, const char **gitdir)
+{
+	*condition = scope->diagnostics[index].condition;
+	*gitdir = scope->diagnostics[index].gitdir;
+}
 
 int gitkit_config_scope_new(gitkit_config_scope **out)
 {
@@ -180,6 +221,11 @@ void gitkit_config_scope_free(gitkit_config_scope *scope)
 	for (i = 0; i < scope->failures_len; i++)
 		git__free(scope->failures[i].message);
 	git__free(scope->failures);
+	for (i = 0; i < scope->diagnostics_len; i++) {
+		git__free(scope->diagnostics[i].condition);
+		git__free(scope->diagnostics[i].gitdir);
+	}
+	git__free(scope->diagnostics);
 	git__free(scope);
 }
 
@@ -364,6 +410,17 @@ int gitkit_config_scope_add_layer_entries(
 	if ((slot = gitkit_scope_slot(scope, GIT_CONFIG_LEVEL_APP, 0)) == NULL)
 		return -1;
 	return gitkit_scope_source_set_entries(slot, text, len, backend_type);
+}
+
+int gitkit_config_scope_add_layer_command(gitkit_config_scope *scope, const char *text, size_t len)
+{
+	gitkit_config_scope_level *slot = gitkit_scope_slot(scope, GIT_CONFIG_LEVEL_APP, 0);
+	int error;
+	if (!slot)
+		return -1;
+	error = gitkit_scope_source_set_entries(slot, text, len, "command line");
+	if (!error) slot->sources[slot->sources_len - 1].command = 1;
+	return error;
 }
 
 int gitkit_config_scope_push(gitkit_config_scope *scope)
@@ -712,9 +769,20 @@ static int gitkit_scope_backend_wrap(git_config_backend **out, git_config_backen
 	return 0;
 }
 
+git_config_backend *gitkit_config_backend_unwrap(git_config_backend *backend, int *filtered)
+{
+	*filtered = backend->open == gitkit_scope_backend_open;
+	return *filtered ? GITKIT_INNER(backend) : backend;
+}
+
+int gitkit_config_backend_filter(git_config_backend **out, git_config_backend *inner)
+{
+	return gitkit_scope_backend_wrap(out, inner);
+}
+
 static int gitkit_scope_add_source(
 	git_config *cfg, const gitkit_config_scope_source *level,
-	git_config_level_t at, git_repository *repo)
+	git_config_level_t at, git_repository *repo, int filter)
 {
 	git_config_backend_memory_options options = GIT_CONFIG_BACKEND_MEMORY_OPTIONS_INIT;
 	git_config_backend *inner = NULL, *backend = NULL;
@@ -725,12 +793,17 @@ static int gitkit_scope_add_source(
 		if (gitkit_scope_file_readable(level->path) < 0)
 			return -1;
 		error = git_config_backend_from_file(&inner, level->path);
+	} else if (level->command) {
+		error = gitkit_config_backend_command(&inner, level->text, level->text_len, at);
 	} else {
 		options.backend_type = level->backend_type;
 		error = git_config_backend_from_string(&inner, level->text, level->text_len, &options);
 	}
-	if (error < 0 || (error = gitkit_scope_backend_wrap(&backend, inner)) < 0)
+	if (error < 0)
 		return error;
+	if (filter) {
+		if ((error = gitkit_scope_backend_wrap(&backend, inner)) < 0) return error;
+	} else backend = inner;
 
 	if ((error = git_config_add_backend(cfg, backend, at, repo, 1)) < 0)
 		backend->free(backend);	/* not owned by the config yet */
@@ -749,7 +822,7 @@ static int gitkit_scope_add_source(
 	return error;
 }
 
-static int gitkit_repository_finish_config(
+static int gitkit_repository_finish_config_inner(
 	git_config *cfg, git_config_level_t *write_order, size_t len,
 	git_repository *repo)
 {
@@ -770,7 +843,7 @@ static int gitkit_repository_finish_config(
 		for (j = 0; j < level->sources_len; j++) {
 			at = (git_config_level_t)((int)level->level + (int)j);
 			recorded = gitkit_scope_recorded();
-			if ((error = gitkit_scope_add_source(cfg, &level->sources[j], at, repo)) < 0) {
+			if ((error = gitkit_scope_add_source(cfg, &level->sources[j], at, repo, 1)) < 0) {
 				if (gitkit_scope_recorded() == recorded)
 					gitkit_config_scope__record(error);
 				return error;
@@ -780,6 +853,108 @@ static int gitkit_repository_finish_config(
 
 	/* Adding a level makes it the write target; the open's order wins. */
 	return git_config_set_writeorder(cfg, write_order, len);
+}
+
+static int gitkit_repository_finish_config(git_config *cfg, git_config_level_t *order, size_t len, git_repository *repo)
+{
+	int error = gitkit_repository_finish_config_inner(cfg, order, len, repo);
+	gitkit_condition_build_end(cfg);
+	return error;
+}
+
+static int manifest_level(gitkit_condition_context *ctx, const gitkit_config_scope_level *level)
+{
+	size_t i;
+	int error;
+	for (i = 0; i < level->sources_len; i++) {
+		const gitkit_config_scope_source *source = &level->sources[i];
+		if ((error = gitkit_condition_source_add(ctx, source->path, source->text, source->text_len,
+		    (git_config_level_t)(level->level + i), source->command, 0)) < 0)
+			return error;
+	}
+	return 0;
+}
+
+int gitkit_scope_manifest(gitkit_condition_context *ctx)
+{
+	const gitkit_config_scope_level *level = gitkit_scope_effective_level(GIT_CONFIG_LEVEL_APP);
+	return level ? manifest_level(ctx, level) : 0;
+}
+
+static int gitkit_repository_config_new(git_config **out, git_repository *repo,
+	const char *global, const char *xdg, const char *system, const char *programdata)
+{
+	const char *paths[] = { programdata, system, xdg, global };
+	git_config_level_t levels[] = { GIT_CONFIG_LEVEL_PROGRAMDATA, GIT_CONFIG_LEVEL_SYSTEM,
+		GIT_CONFIG_LEVEL_XDG, GIT_CONFIG_LEVEL_GLOBAL };
+	gitkit_condition_context *ctx = gitkit_condition_new(repo);
+	const gitkit_config_scope_level *level;
+	git_str path = GIT_STR_INIT;
+	size_t i;
+	int error = -1;
+	if (!ctx)
+		return -1;
+	for (i = 0; i < ARRAY_SIZE(paths); i++) {
+		level = gitkit_scope_effective_level(levels[i]);
+		if (level) error = manifest_level(ctx, level);
+		else error = paths[i] ? gitkit_condition_source_add(ctx, paths[i], NULL, 0, levels[i], 0, 0) : 0;
+		if (error < 0) goto done;
+	}
+	if (repo) {
+		if ((error = git_repository__item_path(&path, repo, GIT_REPOSITORY_ITEM_CONFIG)) < 0 ||
+		    (error = gitkit_condition_source_add(ctx, path.ptr, NULL, 0, GIT_CONFIG_LEVEL_LOCAL, 0, 0)) < 0 ||
+		    (error = git_repository__item_path(&path, repo, GIT_REPOSITORY_ITEM_WORKTREE_CONFIG)) < 0 ||
+		    (error = gitkit_condition_source_add(ctx, path.ptr, NULL, 0, GIT_CONFIG_LEVEL_WORKTREE, 0, 1)) < 0)
+			goto done;
+	}
+	if ((error = gitkit_scope_manifest(ctx)) < 0 || (error = git_config_new(out)) < 0)
+		goto done;
+	if ((error = gitkit_condition_build_begin(*out, ctx)) < 0) {
+		git_config_free(*out);
+		*out = NULL;
+	}
+done:
+	git_str_dispose(&path);
+	gitkit_condition_free(ctx);
+	return error;
+}
+
+/* An explicitly supplied command-line set on a live or repository-less cfg.
+ * The manifest includes every lower file and entry before any is re-read. */
+int gitkit_config_scope_install(gitkit_config_scope *scope, git_config *cfg, git_repository *repo)
+{
+	gitkit_condition_context *ctx = gitkit_condition_new(repo), *previous;
+	gitkit_config_scope *previous_diagnostics = gitkit_diagnostic_scope;
+	const gitkit_config_scope_level *level = NULL;
+	git_config *staged = NULL;
+	size_t i;
+	int error = -1;
+	if (!ctx)
+		return -1;
+	for (i = 0; i < scope->levels_len; i++)
+		if (scope->levels[i].level == GIT_CONFIG_LEVEL_APP) level = &scope->levels[i];
+	if ((error = gitkit_config_manifest_existing(ctx, cfg)) < 0 ||
+	    (level && (error = manifest_level(ctx, level)) < 0) ||
+	    (error = git_config_new(&staged)) < 0)
+		goto done;
+	gitkit_diagnostic_scope = scope;
+	previous = gitkit_condition_enter(ctx);
+	ctx->building++;
+	if (level) {
+		for (i = 0; i < level->sources_len; i++) {
+			error = gitkit_scope_add_source(staged, &level->sources[i],
+				(git_config_level_t)(GIT_CONFIG_LEVEL_APP + i), repo, 0);
+			if (error < 0) break;
+		}
+	}
+	if (!error) error = gitkit_config_rebuild(cfg, staged, ctx);
+	ctx->building--;
+	gitkit_condition_enter(previous);
+	gitkit_diagnostic_scope = previous_diagnostics;
+done:
+	git_config_free(staged);
+	gitkit_condition_free(ctx);
+	return error;
 }
 
 /* An init's own config reads (`init.defaultBranch`) reach the include
@@ -800,7 +975,9 @@ static int gitkit_repository_config_open_default(git_config **out)
 #define git_config_set_writeorder(cfg, order, len) \
 	gitkit_repository_finish_config(cfg, order, len, repo)
 #define git_filebuf_commit(file) gitkit_created_watch_commit(file)
+#define git_config_new(out) gitkit_repository_config_new(out, repo, global_config_path, xdg_config_path, system_config_path, programdata_path)
 #include "repository.c"
+#undef git_config_new
 #undef git_filebuf_commit
 #undef git_config_open_default
 #undef git_config_set_writeorder

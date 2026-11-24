@@ -57,6 +57,9 @@ public struct ConfigEntry: Sendable, Hashable {
 /// paths) and keeps `include.path` among the entries, where
 /// `git config --list` shows it; GitKit reads the layers it is given and
 /// follows no `include.path` of an entries layer itself.
+/// Use ``CommandLineConfig`` for command-line conditional includes. File
+/// layers support `hasconfig:remote.*.url:` against the complete prospective
+/// configuration, including later layers; entries layers remain inert.
 ///
 /// For a libgit2 config GitKit does not own (a repository the host opened
 /// with `git_repository_open_ext`, `git_config_open_default`), see
@@ -173,8 +176,8 @@ extension Repository {
     /// config GitKit does not own.
     public func addConfigLayers(_ layers: [ConfigLayer]) throws {
         let staged = try layers.map(ConfigBackends.StagedLayer.init)
-        try withLiveConfig(.app) { config, _ in
-            try ConfigBackends.add(staged, to: config, repository: repo)
+        try withLiveConfig(.app, prospective: true) { config, _ in
+            try ConfigBackends.install(staged, into: config, repository: repo)
         }
     }
 
@@ -187,7 +190,7 @@ extension Repository {
     /// up only once all of it was read. Another level is added to the live
     /// config directly, replacing that level alone.
     private func withLiveConfig(
-        _ level: ConfigLevel, _ add: (OpaquePointer, git_config_level_t) throws -> Void
+        _ level: ConfigLevel, prospective: Bool = false, _ add: (OpaquePointer, git_config_level_t) throws -> Void
     ) throws {
         var config: OpaquePointer?
         try check(git_repository_config(&config, repo))
@@ -196,7 +199,7 @@ extension Repository {
             throw Libgit2Error(code: -1, klass: 0, message: "git_repository_config returned no config")
         }
 
-        if level == .app {
+        if level == .app && !prospective {
             let staged = try ConfigBackends.newConfig()
             defer { git_config_free(staged) }
             try add(staged, level.libgit2)
@@ -291,10 +294,7 @@ extension ConfigLayer {
     ) throws {
         Libgit2.ensureInitialized()
         let staged = try layers.map(ConfigBackends.StagedLayer.init)
-        let staging = try ConfigBackends.newConfig()
-        defer { git_config_free(staging) }
-        try ConfigBackends.add(staged, to: staging, repository: repository)
-        try check(gitkit_config_replace_levels_readonly_from(config, staging, GIT_CONFIG_LEVEL_APP))
+        try ConfigBackends.install(staged, into: config, repository: repository)
     }
 
     /// The libgit2 level of the layer at `index`.
@@ -306,6 +306,23 @@ extension ConfigLayer {
 /// Adds config levels to a libgit2 config, a ``Repository``'s or one a host
 /// owns, with `repository` as the context of a file's includes.
 enum ConfigBackends {
+
+    static func install(_ layers: [StagedLayer], into config: OpaquePointer, repository: OpaquePointer?) throws {
+        var scope: OpaquePointer?
+        try check(gitkit_config_scope_new(&scope))
+        guard let scope else { throw ConfigEntryText.invalid("no config scope") }
+        defer { gitkit_config_scope_free(scope) }
+        try check(gitkit_config_scope_reset_layers(scope))
+        for layer in layers {
+            switch layer {
+            case let .entries(text, name):
+                try check(gitkit_config_scope_add_layer_entries(scope, text, text.utf8.count, name))
+            case let .file(url):
+                try check(gitkit_config_scope_add_layer_file(scope, url.path))
+            }
+        }
+        try check(gitkit_config_scope_install(scope, config, repository))
+    }
 
     /// A layer whose entries were checked and serialized already.
     enum StagedLayer {

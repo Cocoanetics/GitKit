@@ -23,6 +23,10 @@ public struct ConfigInclude: Sendable, Hashable {
 /// operation, or from ``Repository/open(at:includePolicy:)`` when the include
 /// is read while opening — naming the refused path. The policy is asked again
 /// whenever the config is read again, e.g. after it changed on disk.
+/// `hasconfig:remote.*.url:` has one exception to matching-only access: its
+/// prospective URL pre-scan follows even nonmatching hasconfig targets (and
+/// rejects remote URLs in conditional targets). Those reads also go through
+/// this policy before access; refusal fails the whole config build.
 ///
 /// Policies are per repository, so several sandboxes can run in one process
 /// with different rules: pass one to ``Repository/open(at:includePolicy:)``

@@ -10,6 +10,54 @@ import Testing
 /// `-c a -c include.path=<file> -c b` for every repository opened in scope.
 extension OperationConfigurationTests {
 
+    @Test("conditional layers use internal submodule handles' own gitdir and HEAD")
+    func conditionalInternalHandles() throws {
+        defer { fixtures.removeAll() }
+        let fixture = try makeFixture()
+        let included = try write("[core]\n\tautocrlf = true\n[t]\nchild = yes\n", to: "conditional.cfg")
+        let before = try configBytes(fixture, plus: [included])
+        let outer = try Repository.open(at: fixture.outer)
+        let gitdir = "gitdir:**/modules/middle-sub/modules/inner-sub"
+        let branch = "onbranch:main"
+        // Submodule checkouts are detached. Make only the leaf's HEAD symbolic,
+        // without changing its tree, so onbranch can distinguish it from its host.
+        let leaf = try Repository.open(at: fixture.inner)
+        try check(git_repository_set_head(leaf.repo, "refs/heads/main"))
+        for condition in [gitdir, branch] {
+            let command = CommandLineConfig([.includeIf(condition: condition, path: included.path)])
+            let configuration = OperationConfiguration(commandLine: command)
+            #expect(try outer.status().entries.map(\.path) == ["middle-sub"])
+            let report = try Repository.withOperationConfiguration(configuration) {
+                try (outer.status(), outer.diff(.workdirVsIndex, format: .nameOnly))
+            }
+            #expect(report.0.isClean)
+            #expect(report.1.isEmpty)
+            #expect(try outer.configGet("t.child") == nil)
+        }
+        #expect(try configBytes(fixture, plus: [included]) == before)
+    }
+
+    @Test("a denied conditional internal include is surfaced after libgit2 swallows it")
+    func conditionalInternalDenial() throws {
+        defer { fixtures.removeAll() }
+        let fixture = try makeFixture()
+        let included = try write("[core]\nautocrlf = true\n", to: "conditional.cfg")
+        let outer = try Repository.open(at: fixture.outer)
+        let configuration = OperationConfiguration(
+            commandLine: CommandLineConfig([
+                .includeIf(condition: "gitdir:**/modules/middle-sub/modules/inner-sub", path: included.path)
+            ]), includePolicy: ConfigIncludePolicy { $0.path != included.path })
+        var returned = false
+        let error = #expect(throws: Libgit2Error.self) {
+            try Repository.withOperationConfiguration(configuration) {
+                _ = try outer.status()
+                returned = true
+            }
+        }
+        #expect(returned)
+        #expect(error?.message == "include of '\(included.path)' is not authorised")
+    }
+
     @Test("a submodule libgit2 opens itself reads the command-line layers in order")
     func hiddenSubmoduleHandlesReadLayers() throws {
         defer { fixtures.removeAll() }
