@@ -16,6 +16,7 @@
  * are dependencies of every backend evaluated with this prospective view. */
 typedef struct {
 	char *path, *from;
+	const git_repository *repo;
 	git_futils_filestamp stamp;
 	int depth, present;
 } gitkit_condition_file;
@@ -97,6 +98,50 @@ fail:
 
 void gitkit_condition_retain(gitkit_condition_context *ctx) { if (ctx) ctx->refs++; }
 
+/* A direct install's new layers may have no repository, while the lower
+ * files still belong to their original handles. Give those files the same
+ * complete prospective sources without replacing their evaluation context. */
+static gitkit_condition_context *copy_repository(gitkit_condition_context *original)
+{
+	gitkit_condition_context *ctx = gitkit_condition_new(NULL);
+	if (!ctx)
+		return NULL;
+	ctx->repo = original->repo;
+	if ((original->gitdir && !(ctx->gitdir = git__strdup(original->gitdir))) ||
+	    (original->branch && !(ctx->branch = git__strdup(original->branch)))) {
+		gitkit_condition_free(ctx);
+		return NULL;
+	}
+	return ctx;
+}
+
+int gitkit_condition_source_repository(gitkit_condition_context *manifest, gitkit_condition_context *original)
+{
+	gitkit_condition_source *source = git_vector_last(&manifest->sources);
+	source->context = copy_repository(original);
+	return source->context ? 0 : -1;
+}
+
+gitkit_condition_context *gitkit_condition_for_repository(gitkit_condition_context *manifest, gitkit_condition_context *original)
+{
+	gitkit_condition_context *ctx;
+	gitkit_condition_source *source, *copy;
+	size_t i;
+	if (!(ctx = copy_repository(original)))
+		return NULL;
+	git_vector_foreach(&manifest->sources, i, source) {
+		if (gitkit_condition_source_add(ctx, source->path, source->text,
+		    source->text_len, source->level, source->command, source->worktree) < 0) {
+			gitkit_condition_free(ctx);
+			return NULL;
+		}
+		copy = git_vector_last(&ctx->sources);
+		copy->context = source->context;
+		gitkit_condition_retain(copy->context);
+	}
+	return ctx;
+}
+
 void gitkit_condition_invalidate(gitkit_condition_context *ctx)
 {
 	char *url;
@@ -120,7 +165,7 @@ int gitkit_condition_check(gitkit_condition_context *ctx)
 		return 0;
 	ctx->checking = 1;
 	git_vector_foreach(&ctx->files, i, file) {
-		if (file->depth && (error = gitkit_config_authorize(ctx->repo,
+		if (file->depth && (error = gitkit_config_authorize(file->repo,
 		    file->path, file->from, file->depth)) < 0)
 			break;
 		/* Checking must not accept a new stamp until a successful collection. */
@@ -153,6 +198,7 @@ void gitkit_condition_free(gitkit_condition_context *ctx)
 	git_vector_foreach(&ctx->sources, i, source) {
 		git__free(source->path);
 		git__free(source->text);
+		gitkit_condition_free(source->context);
 		git__free(source);
 	}
 	git_vector_foreach(&ctx->urls, i, url) git__free(url);
@@ -294,6 +340,7 @@ done:
 
 typedef struct {
 	gitkit_condition_context *ctx;
+	gitkit_condition_context *evaluation;
 	const char *path;
 	int depth, forbid, active;
 	git_config_level_t level;
@@ -336,7 +383,7 @@ static int scan_variable(git_config_parser *parser, const char *section, const c
 	if (!git__prefixcmp(condition, "hasconfig:remote.*.url:"))
 		matches = 1;
 	else
-		error = gitkit_condition_match(&matches, scan->ctx, condition, scan->path);
+		error = gitkit_condition_match(&matches, scan->evaluation, condition, scan->path);
 	if (!error && matches)
 		error = scan_file(scan, value, 1);
 	return error;
@@ -361,6 +408,7 @@ static int condition_read(url_scan *scan, const char *from, git_str *content)
 	if (!file)
 		return -1;
 	file->depth = scan->depth;
+	file->repo = scan->evaluation->repo;
 	file->path = git__strdup(scan->path);
 	file->from = from ? git__strdup(from) : NULL;
 	if (!file->path || (from && !file->from))
@@ -393,7 +441,7 @@ static int scan_file(url_scan *parent, const char *target, int conditional)
 	scan.path = path.ptr;
 	scan.active = 1;
 	scan.forbid |= conditional;
-	if ((error = gitkit_config_authorize(scan.ctx->repo, path.ptr, parent->path, scan.depth)) < 0)
+	if ((error = gitkit_config_authorize(scan.evaluation->repo, path.ptr, parent->path, scan.depth)) < 0)
 		goto done;
 	error = condition_read(&scan, parent->path, &content);
 	if (error == GIT_ENOTFOUND) { git_error_clear(); error = 0; }
@@ -421,7 +469,8 @@ static int collect_urls(gitkit_condition_context *ctx)
 	git_vector_clear(&ctx->urls);
 	ctx->collecting = 1;
 	git_vector_foreach(&ctx->sources, i, source) {
-		url_scan scan = { ctx, source->path, 0, 0, source->path != NULL || source->command, source->level };
+		url_scan scan = { ctx, source->context ? source->context : ctx, source->path,
+			0, 0, source->path != NULL || source->command, source->level };
 		if (source->worktree && !ctx->worktree)
 			continue;
 		if (source->path) {

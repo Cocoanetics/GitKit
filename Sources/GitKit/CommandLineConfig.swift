@@ -47,7 +47,9 @@ public struct CommandLineConfig: Sendable, Hashable {
     /// The handles are borrowed. As with ``ConfigLayer/install(_:into:repository:)``,
     /// the repository must outlive the config and all its file backends, and the
     /// caller serializes reads, writes and installation. A nil repository makes
-    /// gitdir/onbranch false; hasconfig still evaluates. Repository caches are
+    /// gitdir/onbranch false in the new command elements; hasconfig still evaluates.
+    /// Lower file backends keep their own repository context and include policy,
+    /// including during URL collection and later refreshes. Repository caches are
     /// the host's responsibility. For a typed handle use
     /// ``Repository/setCommandLineConfig(_:)``.
     ///

@@ -112,6 +112,8 @@ int gitkit_config_manifest_existing(gitkit_condition_context *ctx, git_config *c
 		error = path ? gitkit_condition_source_add(ctx, path, NULL, 0, entry->level, 0, 0) : manifest_memory(ctx, entry);
 		if (error < 0)
 			return error;
+		if (path && (error = gitkit_condition_source_repository(ctx, gitkit_config_backend_context(inner))) < 0)
+			return error;
 	}
 	return 0;
 }
@@ -186,11 +188,37 @@ int gitkit_config_replace_levels_readonly_from(
 	return replace_levels(live, staged, from, 1);
 }
 
+static int rebuild_file(git_config *rebuilt, git_config_backend *inner,
+	git_config_level_t level, int filtered, gitkit_condition_context *manifest)
+{
+	gitkit_condition_context *original = gitkit_config_backend_context(inner);
+	gitkit_condition_context *ctx = gitkit_condition_for_repository(manifest, original), *previous;
+	git_config_backend *backend = NULL;
+	int error;
+	if (!ctx)
+		return -1;
+	previous = gitkit_condition_enter(ctx);
+	ctx->building++;
+	/* Keep the original lower file's repository for both matching and
+	 * authorization. The install's repository applies only to new layers. */
+	error = manifest->hasconfig || gitkit_config_backend_hasconfig(inner) ?
+		git_config_backend_from_file(&backend, gitkit_config_backend_path(inner)) :
+		gitkit_config_backend_clone(&backend, inner);
+	if (!error && filtered)
+		error = gitkit_config_backend_filter(&backend, backend);
+	if (!error && (error = git_config_add_backend(rebuilt, backend, level, original->repo, 0)) < 0)
+		backend->free(backend);
+	ctx->building--;
+	gitkit_condition_enter(previous);
+	gitkit_condition_free(ctx);
+	return error;
+}
+
 int gitkit_config_rebuild(git_config *live, git_config *commands, gitkit_condition_context *ctx)
 {
 	git_config *rebuilt = NULL;
 	backend_entry *entry, *copy;
-	git_config_backend *backend, *inner;
+	git_config_backend *inner;
 	git_vector readers, writers;
 	const char *path;
 	size_t i;
@@ -206,14 +234,8 @@ int gitkit_config_rebuild(git_config *live, git_config *commands, gitkit_conditi
 		if (path) {
 			/* No hasconfig: keep cached values without extra file reads, but
 			 * attach the new manifest for any later on-disk refresh. */
-			error = ctx->hasconfig || gitkit_config_backend_hasconfig(inner) ?
-				git_config_backend_from_file(&backend, path) : gitkit_config_backend_clone(&backend, inner);
-			if (error < 0)
+			if ((error = rebuild_file(rebuilt, inner, entry->level, filtered, ctx)) < 0)
 				goto done;
-			if (filtered && (error = gitkit_config_backend_filter(&backend, backend)) < 0)
-				goto done;
-			error = git_config_add_backend(rebuilt, backend, entry->level, ctx->repo, 0);
-			if (error < 0) { backend->free(backend); goto done; }
 			/* Insertion is sorted; locate this level rather than assume last. */
 			{
 				size_t j;

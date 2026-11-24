@@ -512,6 +512,12 @@ const char *gitkit_config_backend_path(git_config_backend *backend)
 	return ((config_file_backend *)((gitkit_condition_backend *)backend)->inner)->file.path;
 }
 
+gitkit_condition_context *gitkit_config_backend_context(git_config_backend *backend)
+{
+	GIT_ASSERT(backend->open == condition_backend_open);
+	return ((gitkit_condition_backend *)backend)->context;
+}
+
 int gitkit_config_backend_hasconfig(git_config_backend *backend)
 {
 	gitkit_condition_backend *b = (gitkit_condition_backend *)backend;

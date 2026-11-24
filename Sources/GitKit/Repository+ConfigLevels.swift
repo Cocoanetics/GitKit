@@ -243,8 +243,10 @@ extension ConfigLayer {
     ///     see the layers; one taken after keeps them.
     ///   - repository: The `git_repository *` that is the context of a layer
     ///     file's `[include]` and `[includeIf]` (`gitdir:`, `onbranch:`).
-    ///     With `nil`, conditions that need a repository never match, as
-    ///     git behaves outside a repository.
+    ///     With `nil`, conditions in the new layers that need a repository
+    ///     never match, as git behaves outside a repository. Lower file
+    ///     backends keep their original repository context and include policy,
+    ///     during prospective URL collection and later refreshes too.
     ///
     /// **Ownership and lifetime.** The caller keeps both pointers: GitKit
     /// retains, wraps, registers and frees neither, and keys no include

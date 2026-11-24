@@ -6,7 +6,7 @@ import GitKit
 @Suite("Direct config installs preserve lower repository context")
 struct ConditionalConfigInstallContextConsumerTests {
     private final class Policy: @unchecked Sendable {
-        var allowed = true
+        var deniedPath: String?
         var paths: [String] = []
     }
 
@@ -19,9 +19,13 @@ struct ConditionalConfigInstallContextConsumerTests {
         try Repository.initialize(at: directory, initialBranch: "main")
         let target = root.appendingPathComponent("included")
         try Data("[test]\nvalue = Included\n".utf8).write(to: target)
+        let unconditional = root.appendingPathComponent("unconditional")
+        try Data("[test]\nalways = yes\n".utf8).write(to: unconditional)
         let local = directory.appendingPathComponent(".git/config")
         let original = try String(contentsOf: local, encoding: .utf8)
         let text = original + """
+            [include]
+            path = \(unconditional.path)
             [includeIf "gitdir:**/.git"]
             path = \(target.path)
             [includeIf "onbranch:main"]
@@ -36,8 +40,9 @@ struct ConditionalConfigInstallContextConsumerTests {
         let policy = Policy()
         #expect(gitkit_config_set_include_policy(repo, { path, _, _, payload in
             let policy = Unmanaged<Policy>.fromOpaque(payload!).takeUnretainedValue()
-            policy.paths.append(String(cString: path!))
-            return policy.allowed ? 0 : -1
+            let path = String(cString: path!)
+            policy.paths.append(path)
+            return policy.deniedPath == path ? -1 : 0
         }, Unmanaged.passUnretained(policy).toOpaque(), nil, nil) == 0)
         defer { _ = gitkit_config_set_include_policy(repo, nil, nil, nil, nil) }
         var pointer: OpaquePointer?
@@ -66,13 +71,27 @@ struct ConditionalConfigInstallContextConsumerTests {
         #expect(try value() == "Included")
         policy.paths = []
         try Data((text + "[test]\nchanged = yes\n").utf8).write(to: local, options: .atomic)
-        policy.allowed = false
+        policy.deniedPath = target.path
         var entry: UnsafeMutablePointer<git_config_entry>?
         #expect(git_config_get_entry(&entry, config, "test.value") < 0)
         git_config_entry_free(entry)
         #expect(policy.paths.contains(target.path))
-        policy.allowed = true
+        policy.deniedPath = nil
         #expect(try value() == "Included")
+
+        // A hasconfig pre-scan must authorize lower includes using their own
+        // repository, even though newly installed layers have no repository.
+        // Malformed content proves a refusal happens before any parse.
+        policy.paths = []
+        policy.deniedPath = unconditional.path
+        try Data("not valid config\n".utf8).write(to: unconditional, options: .atomic)
+        let error = #expect(throws: Libgit2Error.self) {
+            try CommandLineConfig([
+                .includeIf(condition: "hasconfig:remote.*.url:never", path: target.path)
+            ]).install(into: config)
+        }
+        #expect(error?.message == "include of '\(unconditional.path)' is not authorised")
+        #expect(policy.paths.first == unconditional.path)
     }
 }
 #endif

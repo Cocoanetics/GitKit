@@ -12,6 +12,7 @@ typedef struct {
 	size_t text_len;
 	git_config_level_t level;
 	int command, worktree;
+	struct gitkit_condition_context *context; /* copied lower-source repository context */
 } gitkit_condition_source;
 
 typedef struct gitkit_condition_context {
@@ -24,6 +25,8 @@ typedef struct gitkit_condition_context {
 } gitkit_condition_context;
 
 gitkit_condition_context *gitkit_condition_new(const git_repository *repo);
+gitkit_condition_context *gitkit_condition_for_repository(gitkit_condition_context *manifest, gitkit_condition_context *original);
+int gitkit_condition_source_repository(gitkit_condition_context *manifest, gitkit_condition_context *original);
 void gitkit_condition_retain(gitkit_condition_context *ctx);
 void gitkit_condition_free(gitkit_condition_context *ctx);
 int gitkit_condition_source_add(gitkit_condition_context *ctx, const char *path,
@@ -41,6 +44,7 @@ void gitkit_condition_build_end(git_config *cfg);
 
 /* File backend helpers, also for a live config's atomic re-read. */
 const char *gitkit_config_backend_path(git_config_backend *backend);
+gitkit_condition_context *gitkit_config_backend_context(git_config_backend *backend);
 int gitkit_config_backend_hasconfig(git_config_backend *backend);
 int gitkit_config_backend_clone(git_config_backend **out, git_config_backend *backend);
 git_config_backend *gitkit_config_backend_unwrap(git_config_backend *backend, int *filtered);
