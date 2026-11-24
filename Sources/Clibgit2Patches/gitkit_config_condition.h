@@ -18,8 +18,9 @@ typedef struct gitkit_condition_context {
 	size_t refs;
 	const git_repository *repo;
 	char *gitdir, *branch;
-	git_vector sources, urls;
-	int collecting, collected, building, worktree, hasconfig;
+	git_vector sources, urls, files;
+	size_t generation;
+	int collecting, collected, building, worktree, hasconfig, refreshing, checking;
 } gitkit_condition_context;
 
 gitkit_condition_context *gitkit_condition_new(const git_repository *repo);
@@ -30,6 +31,7 @@ int gitkit_condition_source_add(gitkit_condition_context *ctx, const char *path,
 gitkit_condition_context *gitkit_condition_current(void);
 gitkit_condition_context *gitkit_condition_enter(gitkit_condition_context *ctx);
 void gitkit_condition_invalidate(gitkit_condition_context *ctx);
+int gitkit_condition_check(gitkit_condition_context *ctx);
 int gitkit_condition_match(int *matches, gitkit_condition_context *ctx,
 	const char *condition, const char *file);
 int gitkit_condition_path(git_str *out, const char *path, const char *from);

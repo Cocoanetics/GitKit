@@ -306,12 +306,13 @@ typedef struct {
 	git_config_backend *inner;
 	gitkit_condition_context *context;
 	char *command_text;
-	size_t command_len;
+	size_t command_len, generation;
 	int refresh_failed;
 } gitkit_condition_backend;
 
-static int command_parse(gitkit_condition_backend *backend, git_config_level_t level, const git_repository *repo);
+static int condition_backend_parse(gitkit_condition_backend *backend, git_config_level_t level, const git_repository *repo);
 static int command_refresh(gitkit_condition_backend *backend);
+static int condition_backend_refresh(gitkit_condition_backend *backend);
 
 static int gitkit_read_variable(git_config_parser *, const char *, const char *,
 	const char *, const char *, size_t, void *);
@@ -428,8 +429,9 @@ static int condition_backend_open(git_config_backend *backend, git_config_level_
 	b->inner->cfg = backend->cfg;
 	/* A cached clone has a complete list already; its next refresh still
 	 * parses with the newly installed prospective manifest. */
-	error = b->command_text ? command_parse(b, level, repo) :
+	error = b->command_text ? condition_backend_parse(b, level, repo) :
 		(((config_file_backend *)b->inner)->config_list ? 0 : b->inner->open(b->inner, level, repo));
+	if (!error) b->generation = b->context->generation;
 	gitkit_condition_enter(previous);
 	return error;
 }
@@ -437,8 +439,9 @@ static int condition_backend_open(git_config_backend *backend, git_config_level_
 #define CONDITION_CALL(expression) \
 	gitkit_condition_backend *b = (gitkit_condition_backend *)backend; \
 	gitkit_condition_context *previous = gitkit_condition_enter(b->context); \
-	int error = command_refresh(b); \
+	int error = condition_backend_refresh(b); \
 	if (!error) error = (expression); \
+	if (!error || error == GIT_ENOTFOUND) b->generation = b->context->generation; \
 	gitkit_condition_enter(previous); \
 	return error
 
@@ -557,22 +560,47 @@ int gitkit_config_backend_clone(git_config_backend **out, git_config_backend *ba
 	return 0;
 }
 
-/* A command element uses the file parser with no file origin. Included file
- * changes refresh it with the retained prospective manifest and context. */
-static int command_parse(gitkit_condition_backend *backend, git_config_level_t level, const git_repository *repo)
+/* Reparse into a temporary list and include tree. A URL-source generation
+ * change uses this for ordinary files too, even if their own file is unchanged. */
+static int condition_backend_parse(gitkit_condition_backend *backend, git_config_level_t level, const git_repository *repo)
 {
 	config_file_backend *b = (config_file_backend *)backend->inner;
 	git_config_list *list = NULL, *old;
 	config_file file = {0};
+	git_str content = GIT_STR_INIT;
 	git_config_parser parser = GIT_CONFIG_PARSER_INIT;
 	config_file_parse_data data = {0};
+	struct stat st;
+	const char *text = backend->command_text;
+	size_t len = backend->command_len;
 	int error;
 	data.repo = repo;
 	data.file = &file;
 	data.level = level;
 	gitkit_condition_invalidate(backend->context);
-	if ((error = git_config_list_new(&list)) < 0 ||
-	    (error = git_config_parser_init(&parser, NULL, backend->command_text, backend->command_len)) < 0)
+	if ((error = git_config_list_new(&list)) < 0)
+		goto done;
+	if (!backend->command_text) {
+		file.path = git__strdup(b->file.path);
+		if (!file.path) { error = -1; goto done; }
+		if (gitkit_real_stat(file.path, &st) < 0) {
+			if (errno != ENOENT && errno != ENOTDIR) {
+				error = git_fs_path_set_error(errno, file.path, "stat");
+				goto done;
+			}
+			text = "";
+			len = 0;
+		} else {
+			if ((error = git_futils_readbuffer(&content, file.path)) < 0)
+				goto done;
+			git_futils_filestamp_set_from_stat(&file.stamp, &st);
+			if ((error = git_hash_buf(file.checksum, content.ptr, content.size, GIT_HASH_ALGORITHM_SHA256)) < 0)
+				goto done;
+			text = content.ptr;
+			len = content.size;
+		}
+	}
+	if ((error = git_config_parser_init(&parser, file.path, text, len)) < 0)
 		goto done;
 	data.config_list = list;
 	if ((error = git_config_parse(&parser, NULL, gitkit_read_variable, NULL, NULL, &data)) < 0 ||
@@ -588,8 +616,10 @@ static int command_parse(gitkit_condition_backend *backend, git_config_level_t l
 	memset(&file, 0, sizeof(file));
 	b->repo = repo;
 	b->level = level;
+	backend->generation = backend->context->generation;
 done:
 	git_config_parser_dispose(&parser);
+	git_str_dispose(&content);
 	git_config_list_free(list);
 	config_file_clear(&file);
 	backend->refresh_failed = error < 0;
@@ -605,14 +635,34 @@ static int command_refresh(gitkit_condition_backend *backend)
 	if (!backend->command_text)
 		return 0;
 	if (backend->refresh_failed)
-		return command_parse(backend, b->level, b->repo);
+		return condition_backend_parse(backend, b->level, b->repo);
 	git_array_foreach(b->file.includes, i, include) {
 		error = config_file_is_modified(&modified, include);
 		if (error == GIT_ENOTFOUND) { git_error_clear(); continue; }
 		if (error < 0) return error;
-		if (modified) return command_parse(backend, b->level, b->repo);
+		if (modified) return condition_backend_parse(backend, b->level, b->repo);
 	}
 	return 0;
+}
+
+static int condition_backend_refresh(gitkit_condition_backend *backend)
+{
+	gitkit_condition_context *ctx = backend->context;
+	config_file_backend *inner = (config_file_backend *)backend->inner;
+	int error;
+	if (ctx->building || ctx->collecting || ctx->refreshing)
+		return 0;
+	if ((error = gitkit_condition_check(ctx)) < 0)
+		return error;
+	if (ctx->hasconfig && backend->generation != ctx->generation) {
+		/* Re-evaluating a dependent does not itself change the URL sources:
+		 * otherwise dependent backends would invalidate one another forever. */
+		ctx->refreshing++;
+		error = condition_backend_parse(backend, inner->level, inner->repo);
+		ctx->refreshing--;
+		return error;
+	}
+	return command_refresh(backend);
 }
 
 int gitkit_config_backend_command(git_config_backend **out, const char *text, size_t len, git_config_level_t level)

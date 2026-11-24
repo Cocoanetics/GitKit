@@ -10,6 +10,27 @@
 #include "repository.h"
 #include "sysdir.h"
 #include "wildmatch.h"
+#include "posix.h"
+
+/* Every file consulted by URL collection, including absent targets. These
+ * are dependencies of every backend evaluated with this prospective view. */
+typedef struct {
+	char *path, *from;
+	git_futils_filestamp stamp;
+	int depth, present;
+} gitkit_condition_file;
+
+static void condition_files_clear(git_vector *files)
+{
+	gitkit_condition_file *file;
+	size_t i;
+	git_vector_foreach(files, i, file) {
+		git__free(file->path);
+		git__free(file->from);
+		git__free(file);
+	}
+	git_vector_clear(files);
+}
 
 #if defined(_MSC_VER)
 # define GITKIT_TLS __declspec(thread)
@@ -42,7 +63,8 @@ gitkit_condition_context *gitkit_condition_new(const git_repository *repo)
 		return NULL;
 	ctx->refs = 1;
 	ctx->repo = repo;
-	if (git_vector_init(&ctx->sources, 8, NULL) < 0 || git_vector_init(&ctx->urls, 8, NULL) < 0)
+	if (git_vector_init(&ctx->sources, 8, NULL) < 0 || git_vector_init(&ctx->urls, 8, NULL) < 0 ||
+	    git_vector_init(&ctx->files, 8, NULL) < 0)
 		goto fail;
 	if (repo) {
 		ctx->gitdir = git__strdup(git_repository_path(repo));
@@ -79,11 +101,46 @@ void gitkit_condition_invalidate(gitkit_condition_context *ctx)
 {
 	char *url;
 	size_t i;
-	if (!ctx || ctx->building || ctx->collecting)
+	if (!ctx || ctx->building || ctx->collecting || ctx->refreshing)
 		return;
 	git_vector_foreach(&ctx->urls, i, url) git__free(url);
 	git_vector_clear(&ctx->urls);
 	ctx->collected = ctx->worktree = 0;
+	ctx->generation++;
+}
+
+int gitkit_condition_check(gitkit_condition_context *ctx)
+{
+	gitkit_condition_file *file;
+	git_futils_filestamp stamp;
+	size_t i;
+	int error = 0, changed;
+	if (!ctx || !ctx->hasconfig || !ctx->collected || ctx->building ||
+	    ctx->collecting || ctx->refreshing || ctx->checking)
+		return 0;
+	ctx->checking = 1;
+	git_vector_foreach(&ctx->files, i, file) {
+		if (file->depth && (error = gitkit_config_authorize(ctx->repo,
+		    file->path, file->from, file->depth)) < 0)
+			break;
+		/* Checking must not accept a new stamp until a successful collection. */
+		stamp = file->stamp;
+		changed = git_futils_filestamp_check(&stamp, file->path);
+		if (changed == GIT_ENOTFOUND) {
+			if (errno != ENOENT && errno != ENOTDIR) {
+				git_error_set(GIT_ERROR_OS, "failed to stat config file '%s'", file->path);
+				error = -1;
+				break;
+			}
+			changed = file->present;
+		} else if (!file->present) changed = 1;
+		if (changed) {
+			gitkit_condition_invalidate(ctx);
+			break;
+		}
+	}
+	ctx->checking = 0;
+	return error;
 }
 
 void gitkit_condition_free(gitkit_condition_context *ctx)
@@ -101,6 +158,8 @@ void gitkit_condition_free(gitkit_condition_context *ctx)
 	git_vector_foreach(&ctx->urls, i, url) git__free(url);
 	git_vector_dispose(&ctx->sources);
 	git_vector_dispose(&ctx->urls);
+	condition_files_clear(&ctx->files);
+	git_vector_dispose(&ctx->files);
 	git__free(ctx->gitdir);
 	git__free(ctx->branch);
 	git__free(ctx);
@@ -294,6 +353,35 @@ static int scan_text(url_scan *scan, const char *text, size_t len)
 	return error;
 }
 
+static int condition_read(url_scan *scan, const char *from, git_str *content)
+{
+	gitkit_condition_file *file = git__calloc(1, sizeof(*file));
+	struct stat st;
+	int error = -1;
+	if (!file)
+		return -1;
+	file->depth = scan->depth;
+	file->path = git__strdup(scan->path);
+	file->from = from ? git__strdup(from) : NULL;
+	if (!file->path || (from && !file->from))
+		goto fail;
+	if (p_stat(scan->path, &st) == 0) {
+		file->present = 1;
+		git_futils_filestamp_set_from_stat(&file->stamp, &st);
+	} else if (errno != ENOENT && errno != ENOTDIR) {
+		git_error_set(GIT_ERROR_OS, "failed to stat config file '%s'", scan->path);
+		goto fail;
+	}
+	if (git_vector_insert(&scan->ctx->files, file) < 0)
+		goto fail;
+	return file->present ? git_futils_readbuffer(content, scan->path) : GIT_ENOTFOUND;
+fail:
+	git__free(file->path);
+	git__free(file->from);
+	git__free(file);
+	return error;
+}
+
 static int scan_file(url_scan *parent, const char *target, int conditional)
 {
 	git_str path = GIT_STR_INIT, content = GIT_STR_INIT;
@@ -307,7 +395,7 @@ static int scan_file(url_scan *parent, const char *target, int conditional)
 	scan.forbid |= conditional;
 	if ((error = gitkit_config_authorize(scan.ctx->repo, path.ptr, parent->path, scan.depth)) < 0)
 		goto done;
-	error = git_futils_readbuffer(&content, path.ptr);
+	error = condition_read(&scan, parent->path, &content);
 	if (error == GIT_ENOTFOUND) { git_error_clear(); error = 0; }
 	else if (!error) {
 		if (scan.depth > 10) {
@@ -327,13 +415,17 @@ static int collect_urls(gitkit_condition_context *ctx)
 	git_str text = GIT_STR_INIT;
 	size_t i;
 	int error = 0;
+	char *url;
+	condition_files_clear(&ctx->files);
+	git_vector_foreach(&ctx->urls, i, url) git__free(url);
+	git_vector_clear(&ctx->urls);
 	ctx->collecting = 1;
 	git_vector_foreach(&ctx->sources, i, source) {
 		url_scan scan = { ctx, source->path, 0, 0, source->path != NULL || source->command, source->level };
 		if (source->worktree && !ctx->worktree)
 			continue;
 		if (source->path) {
-			error = git_futils_readbuffer(&text, source->path);
+			error = condition_read(&scan, NULL, &text);
 			if (error == GIT_ENOTFOUND) { git_error_clear(); error = 0; continue; }
 			if (!error) error = scan_text(&scan, text.ptr, text.size);
 		} else {
