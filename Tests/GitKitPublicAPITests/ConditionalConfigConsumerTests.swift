@@ -297,6 +297,13 @@ struct ConditionalConfigConsumerTests {
             try repository.setCommandLineConfig(CommandLineConfig([.include(path: extra.path)]))
         }
         #expect(try repository.configGet("test.value") == "deepest")
+        // Git checks existence before counting depth: a missing eleventh
+        // target is empty, not a depth failure, also during URL collection.
+        try Data("[test]\nvalue = deepest\n[include]\npath = absent\n".utf8)
+            .write(to: root.appendingPathComponent("depth-10"))
+        #expect(try repository.configGet("test.value") == "deepest")
+        try repository.setCommandLineConfig(CommandLineConfig([
+            .includeIf(condition: "hasconfig:remote.*.url:never", path: included.path)]))
     }
 
     @Test("nested scopes replace only the command-line set and leave no state behind")

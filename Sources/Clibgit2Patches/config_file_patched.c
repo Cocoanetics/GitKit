@@ -329,11 +329,6 @@ static int gitkit_read_include(config_file_parse_data *data, const char *target)
 	child.depth++;
 	if ((error = gitkit_config_authorize(data->repo, path.ptr, data->file->path, child.depth)) < 0)
 		goto done;
-	if (child.depth > 10) {
-		git_error_set(GIT_ERROR_CONFIG, "maximum config include depth reached");
-		error = -1;
-		goto done;
-	}
 	file = git_array_alloc(data->file->includes);
 	if (!file) { error = -1; goto done; }
 	memset(file, 0, sizeof(*file));
@@ -343,6 +338,11 @@ static int gitkit_read_include(config_file_parse_data *data, const char *target)
 	if (gitkit_real_stat(file->path, &st) < 0) {
 		if (errno == ENOENT || errno == ENOTDIR) { error = 0; goto done; }
 		error = git_fs_path_set_error(errno, file->path, "stat");
+		goto done;
+	}
+	if (child.depth > 10) {
+		git_error_set(GIT_ERROR_CONFIG, "maximum config include depth reached");
+		error = -1;
 		goto done;
 	}
 	if ((error = git_futils_readbuffer(&content, file->path)) < 0)

@@ -307,14 +307,14 @@ static int scan_file(url_scan *parent, const char *target, int conditional)
 	scan.forbid |= conditional;
 	if ((error = gitkit_config_authorize(scan.ctx->repo, path.ptr, parent->path, scan.depth)) < 0)
 		goto done;
-	if (scan.depth > 10) {
-		git_error_set(GIT_ERROR_CONFIG, "maximum config include depth reached");
-		error = -1;
-		goto done;
-	}
 	error = git_futils_readbuffer(&content, path.ptr);
 	if (error == GIT_ENOTFOUND) { git_error_clear(); error = 0; }
-	else if (!error) error = scan_text(&scan, content.ptr, content.size);
+	else if (!error) {
+		if (scan.depth > 10) {
+			git_error_set(GIT_ERROR_CONFIG, "maximum config include depth reached");
+			error = -1;
+		} else error = scan_text(&scan, content.ptr, content.size);
+	}
 done:
 	git_str_dispose(&path);
 	git_str_dispose(&content);
