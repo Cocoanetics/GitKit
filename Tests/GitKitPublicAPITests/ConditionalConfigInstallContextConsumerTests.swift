@@ -4,7 +4,7 @@ import Testing
 import GitKit
 
 @Suite("Direct config installs preserve lower repository context")
-struct ConditionalConfigInstallContextConsumerTests {
+struct ConfigInstallContextConsumerTests {
     private final class Policy: @unchecked Sendable {
         var deniedPath: String?
         var paths: [String] = []
@@ -19,6 +19,8 @@ struct ConditionalConfigInstallContextConsumerTests {
         try Repository.initialize(at: directory, initialBranch: "main")
         let target = root.appendingPathComponent("included")
         try Data("[test]\nvalue = Included\n".utf8).write(to: target)
+        let branchTarget = root.appendingPathComponent("branch")
+        try Data("[test]\nbranch = Main\n".utf8).write(to: branchTarget)
         let unconditional = root.appendingPathComponent("unconditional")
         try Data("[test]\nalways = yes\n".utf8).write(to: unconditional)
         let local = directory.appendingPathComponent(".git/config")
@@ -29,9 +31,9 @@ struct ConditionalConfigInstallContextConsumerTests {
             [includeIf "gitdir:**/.git"]
             path = \(target.path)
             [includeIf "onbranch:main"]
-            path = \(target.path)
+            path = \(branchTarget.path)
 
-            """
+            """ + (hasconfig ? "[includeIf \"hasconfig:remote.*.url:https://future.example/**\"]\npath = \(target.path)\n" : "")
         try Data(text.utf8).write(to: local, options: .atomic)
         var repository: OpaquePointer?
         #expect(git_repository_open_ext(&repository, directory.path, 0, nil) == 0)
@@ -50,18 +52,25 @@ struct ConditionalConfigInstallContextConsumerTests {
         let config = try #require(pointer)
         defer { git_config_free(config) }
         let conditional = root.appendingPathComponent("conditional")
+        let commandURLs = root.appendingPathComponent("command-urls")
+        try Data("[remote \"future\"]\nurl = https://future.example/repo\n".utf8).write(to: commandURLs)
         try Data((hasconfig ? "[includeIf \"hasconfig:remote.*.url:never\"]\npath = \(target.path)\n" : "").utf8)
             .write(to: conditional)
         func install() throws {
             if command {
-                try CommandLineConfig([.include(path: conditional.path)]).install(into: config)
+                // New elements still have the explicitly requested nil context:
+                // lower hasconfig must not follow this repository-only target.
+                try CommandLineConfig([
+                    .include(path: conditional.path),
+                    .includeIf(condition: "onbranch:main", path: commandURLs.path)
+                ]).install(into: config)
             } else {
                 try ConfigLayer.install([.file(conditional)], into: config)
             }
         }
-        func value() throws -> String? {
+        func value(_ name: String = "test.value") throws -> String? {
             var entry: UnsafeMutablePointer<git_config_entry>?
-            let result = git_config_get_entry(&entry, config, "test.value")
+            let result = git_config_get_entry(&entry, config, name)
             if result == GIT_ENOTFOUND.rawValue { return nil }
             #expect(result == 0)
             defer { git_config_entry_free(entry) }
@@ -69,6 +78,7 @@ struct ConditionalConfigInstallContextConsumerTests {
         }
         try install()
         #expect(try value() == "Included")
+        #expect(try value("test.branch") == "Main")
         policy.paths = []
         try Data((text + "[test]\nchanged = yes\n").utf8).write(to: local, options: .atomic)
         policy.deniedPath = target.path
@@ -78,6 +88,7 @@ struct ConditionalConfigInstallContextConsumerTests {
         #expect(policy.paths.contains(target.path))
         policy.deniedPath = nil
         #expect(try value() == "Included")
+        #expect(try value("test.branch") == "Main")
 
         // A hasconfig pre-scan must authorize lower includes using their own
         // repository, even though newly installed layers have no repository.

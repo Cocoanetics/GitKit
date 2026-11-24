@@ -138,6 +138,7 @@ typedef struct {
 } gitkit_config_diagnostic;
 
 struct gitkit_config_scope {
+	size_t refs;
 	gitkit_config_scope_level levels[GITKIT_SCOPE_LEVELS];
 	size_t levels_len;
 
@@ -152,14 +153,29 @@ struct gitkit_config_scope {
 };
 
 static GITKIT_THREAD_LOCAL gitkit_config_scope *gitkit_current_scope;
-static GITKIT_THREAD_LOCAL gitkit_config_scope *gitkit_diagnostic_scope;
 
-void gitkit_config_scope__diagnostic(const char *condition, const char *gitdir)
+/* Contexts retain their owner, not whatever scope happens to be current
+ * during a later refresh. Popped owners stay inert until the last context
+ * releases them, so neither a dangling pointer nor cross-scope delivery is
+ * possible when a config outlives its operation. */
+void gitkit_config_scope__retain(gitkit_config_scope *scope) { if (scope) scope->refs++; }
+
+gitkit_config_scope *gitkit_config_scope__diagnostic_owner(void)
 {
-	gitkit_config_scope *scope = gitkit_diagnostic_scope ? gitkit_diagnostic_scope : gitkit_current_scope;
+	gitkit_config_scope *scope;
+	size_t i;
+	for (scope = gitkit_current_scope; scope; scope = scope->previous)
+		for (i = 0; i < scope->levels_len; i++)
+			if (scope->levels[i].level == GIT_CONFIG_LEVEL_APP)
+				return scope;
+	return gitkit_current_scope;
+}
+
+void gitkit_config_scope__diagnostic(gitkit_config_scope *scope, const char *condition, const char *gitdir)
+{
 	gitkit_config_diagnostic *grown;
 	char *condition_copy, *gitdir_copy;
-	if (!scope)
+	if (!scope || scope->state == GITKIT_SCOPE_POPPED)
 		return;
 	condition_copy = git__strdup(condition);
 	gitdir_copy = gitdir ? git__strdup(gitdir) : NULL;
@@ -192,6 +208,7 @@ int gitkit_config_scope_new(gitkit_config_scope **out)
 
 	*out = git__calloc(1, sizeof(gitkit_config_scope));
 	GIT_ERROR_CHECK_ALLOC(*out);
+	(*out)->refs = 1;
 	return 0;
 }
 
@@ -208,12 +225,11 @@ static void gitkit_scope_level_dispose(gitkit_config_scope_level *level)
 	memset(level, 0, sizeof(*level));
 }
 
-void gitkit_config_scope_free(gitkit_config_scope *scope)
+void gitkit_config_scope__release(gitkit_config_scope *scope)
 {
 	size_t i;
 
-	/* Freeing a scope still in force would leave the thread pointing at it. */
-	if (!scope || scope->state == GITKIT_SCOPE_PUSHED)
+	if (!scope || --scope->refs)
 		return;
 
 	for (i = 0; i < scope->levels_len; i++)
@@ -227,6 +243,15 @@ void gitkit_config_scope_free(gitkit_config_scope *scope)
 	}
 	git__free(scope->diagnostics);
 	git__free(scope);
+}
+
+void gitkit_config_scope_free(gitkit_config_scope *scope)
+{
+	/* Freeing a scope still in force would leave the thread pointing at it. */
+	if (!scope || scope->state == GITKIT_SCOPE_PUSHED)
+		return;
+	scope->state = GITKIT_SCOPE_POPPED;
+	gitkit_config_scope__release(scope);
 }
 
 /*
@@ -924,20 +949,19 @@ done:
 int gitkit_config_scope_install(gitkit_config_scope *scope, git_config *cfg, git_repository *repo)
 {
 	gitkit_condition_context *ctx = gitkit_condition_new(repo), *previous;
-	gitkit_config_scope *previous_diagnostics = gitkit_diagnostic_scope;
 	const gitkit_config_scope_level *level = NULL;
 	git_config *staged = NULL;
 	size_t i;
 	int error = -1;
 	if (!ctx)
 		return -1;
+	gitkit_condition_diagnostics(ctx, scope);
 	for (i = 0; i < scope->levels_len; i++)
 		if (scope->levels[i].level == GIT_CONFIG_LEVEL_APP) level = &scope->levels[i];
 	if ((error = gitkit_config_manifest_existing(ctx, cfg)) < 0 ||
 	    (level && (error = manifest_level(ctx, level)) < 0) ||
 	    (error = git_config_new(&staged)) < 0)
 		goto done;
-	gitkit_diagnostic_scope = scope;
 	previous = gitkit_condition_enter(ctx);
 	ctx->building++;
 	if (level) {
@@ -950,7 +974,6 @@ int gitkit_config_scope_install(gitkit_config_scope *scope, git_config *cfg, git
 	if (!error) error = gitkit_config_rebuild(cfg, staged, ctx);
 	ctx->building--;
 	gitkit_condition_enter(previous);
-	gitkit_diagnostic_scope = previous_diagnostics;
 done:
 	git_config_free(staged);
 	gitkit_condition_free(ctx);

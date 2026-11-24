@@ -18,6 +18,7 @@ typedef struct {
 typedef struct gitkit_condition_context {
 	size_t refs;
 	const git_repository *repo;
+	struct gitkit_config_scope *diagnostic_scope;
 	char *gitdir, *branch;
 	git_vector sources, urls, files;
 	size_t generation;
@@ -29,6 +30,7 @@ gitkit_condition_context *gitkit_condition_for_repository(gitkit_condition_conte
 int gitkit_condition_source_repository(gitkit_condition_context *manifest, gitkit_condition_context *original);
 void gitkit_condition_retain(gitkit_condition_context *ctx);
 void gitkit_condition_free(gitkit_condition_context *ctx);
+void gitkit_condition_diagnostics(gitkit_condition_context *ctx, struct gitkit_config_scope *scope);
 int gitkit_condition_source_add(gitkit_condition_context *ctx, const char *path,
 	const char *text, size_t len, git_config_level_t level, int command, int worktree);
 gitkit_condition_context *gitkit_condition_current(void);
@@ -53,7 +55,10 @@ int gitkit_config_backend_command(git_config_backend **out, const char *text, si
 int gitkit_config_manifest_existing(gitkit_condition_context *ctx, git_config *cfg);
 int gitkit_config_rebuild(git_config *cfg, git_config *commands, gitkit_condition_context *ctx);
 int gitkit_scope_manifest(gitkit_condition_context *ctx);
-void gitkit_config_scope__diagnostic(const char *condition, const char *gitdir);
+struct gitkit_config_scope *gitkit_config_scope__diagnostic_owner(void);
+void gitkit_config_scope__retain(struct gitkit_config_scope *scope);
+void gitkit_config_scope__release(struct gitkit_config_scope *scope);
+void gitkit_config_scope__diagnostic(struct gitkit_config_scope *scope, const char *condition, const char *gitdir);
 void gitkit_config_scope__record(int code);
 
 #endif

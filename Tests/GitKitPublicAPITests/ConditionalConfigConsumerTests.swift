@@ -103,18 +103,21 @@ struct ConditionalConfigConsumerTests {
         #expect(records.diagnostics.first?.count == 1)
     }
 
-    @Test("inherited command diagnostics reach their owning outer scope")
-    func inheritedDiagnostics() throws {
+    @Test("inherited command diagnostics reach their owning outer scope", arguments: [false, true])
+    func inheritedDiagnostics(innerHandler: Bool) throws {
         defer { cleanUp() }
         let included = try write("[test]\nvalue = Included\n", "included")
         let directory = root.appendingPathComponent("repo")
         try Repository.initialize(at: directory, initialBranch: "main")
         let outer = Records(), inner = Records()
         let command = CommandLineConfig([.includeIf(condition: "gitdir:./x/", path: included.path)])
+        let handler: (@Sendable ([ConfigDiagnostic]) -> Void)?
+        if innerHandler { handler = { inner.diagnose($0) } } else { handler = nil }
         try Repository.withOperationConfiguration(OperationConfiguration(
             commandLine: command, onDiagnostic: { outer.diagnose($0) })) {
             try Repository.withOperationConfiguration(OperationConfiguration(
-                levels: [.entries([], .global)], commandLine: nil, onDiagnostic: { inner.diagnose($0) })) {
+                levels: [.entries([], .global)], commandLine: nil,
+                onDiagnostic: handler)) {
                 let opened = try Repository.open(at: directory)
                 #expect(try opened.configGet("test.value") == "Included")
             }

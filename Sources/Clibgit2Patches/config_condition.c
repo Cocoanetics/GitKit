@@ -64,6 +64,7 @@ gitkit_condition_context *gitkit_condition_new(const git_repository *repo)
 		return NULL;
 	ctx->refs = 1;
 	ctx->repo = repo;
+	gitkit_condition_diagnostics(ctx, gitkit_config_scope__diagnostic_owner());
 	if (git_vector_init(&ctx->sources, 8, NULL) < 0 || git_vector_init(&ctx->urls, 8, NULL) < 0 ||
 	    git_vector_init(&ctx->files, 8, NULL) < 0)
 		goto fail;
@@ -98,6 +99,13 @@ fail:
 
 void gitkit_condition_retain(gitkit_condition_context *ctx) { if (ctx) ctx->refs++; }
 
+void gitkit_condition_diagnostics(gitkit_condition_context *ctx, struct gitkit_config_scope *scope)
+{
+	gitkit_config_scope__retain(scope);
+	gitkit_config_scope__release(ctx->diagnostic_scope);
+	ctx->diagnostic_scope = scope;
+}
+
 /* A direct install's new layers may have no repository, while the lower
  * files still belong to their original handles. Give those files the same
  * complete prospective sources without replacing their evaluation context. */
@@ -107,6 +115,7 @@ static gitkit_condition_context *copy_repository(gitkit_condition_context *origi
 	if (!ctx)
 		return NULL;
 	ctx->repo = original->repo;
+	gitkit_condition_diagnostics(ctx, original->diagnostic_scope);
 	if ((original->gitdir && !(ctx->gitdir = git__strdup(original->gitdir))) ||
 	    (original->branch && !(ctx->branch = git__strdup(original->branch)))) {
 		gitkit_condition_free(ctx);
@@ -129,6 +138,7 @@ gitkit_condition_context *gitkit_condition_for_repository(gitkit_condition_conte
 	size_t i;
 	if (!(ctx = copy_repository(original)))
 		return NULL;
+	gitkit_condition_diagnostics(ctx, manifest->diagnostic_scope);
 	git_vector_foreach(&manifest->sources, i, source) {
 		if (gitkit_condition_source_add(ctx, source->path, source->text,
 		    source->text_len, source->level, source->command, source->worktree) < 0) {
@@ -136,8 +146,13 @@ gitkit_condition_context *gitkit_condition_for_repository(gitkit_condition_conte
 			return NULL;
 		}
 		copy = git_vector_last(&ctx->sources);
-		copy->context = source->context;
-		gitkit_condition_retain(copy->context);
+		if (source->context) {
+			copy->context = source->context;
+			gitkit_condition_retain(copy->context);
+		} else if (!(copy->context = copy_repository(manifest))) {
+			gitkit_condition_free(ctx);
+			return NULL;
+		}
 	}
 	return ctx;
 }
@@ -208,6 +223,7 @@ void gitkit_condition_free(gitkit_condition_context *ctx)
 	git_vector_dispose(&ctx->files);
 	git__free(ctx->gitdir);
 	git__free(ctx->branch);
+	gitkit_config_scope__release(ctx->diagnostic_scope);
 	git__free(ctx);
 }
 
@@ -297,7 +313,7 @@ static int match_gitdir(int *matches, gitkit_condition_context *ctx, const char 
 		return 0;
 	if (value[0] == '.' && git_fs_path_is_dirsep(value[1])) {
 		if (!file) {
-			gitkit_config_scope__diagnostic(condition, ctx->gitdir);
+			gitkit_config_scope__diagnostic(ctx->diagnostic_scope, condition, ctx->gitdir);
 			*matches = 1; /* Git's negative diagnostic return is truthy. */
 			return 0;
 		}

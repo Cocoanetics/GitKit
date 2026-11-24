@@ -65,6 +65,9 @@ public struct OperationConfiguration: Sendable {
 
     /// Ordered nonfatal diagnostics from all opens, including internal ones.
     /// Delivered once after the body returns or throws, on its calling thread.
+    /// Diagnostics for an inherited command-line set go to the scope that
+    /// supplied it, even inside a nested scope with its own handler. Refreshes
+    /// after the owning scope ends never report into a later unrelated scope.
     public var onDiagnostic: (@Sendable ([ConfigDiagnostic]) -> Void)?
 
     /// The policy for the include files read by repositories opened during
