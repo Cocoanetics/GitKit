@@ -284,7 +284,8 @@ struct ConfigLayerInstallTests {
         let layer = try write("[t]\n\tlayer = 1\n", to: "layer.cfg")
         var config: OpaquePointer?
         try check(git_repository_config(&config, repo))
-        try ConfigLayer.install([.file(layer), Self.entries([("t.after", "1")])], into: #require(config), repository: repo)
+        try ConfigLayer.install(
+            [.file(layer), Self.entries([("t.after", "1")])], into: #require(config), repository: repo)
         var snapshot: OpaquePointer?
         try check(git_config_snapshot(&snapshot, config))
         defer { git_config_free(snapshot) }
