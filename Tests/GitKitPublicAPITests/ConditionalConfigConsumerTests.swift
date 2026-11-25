@@ -360,17 +360,31 @@ struct ConditionalConfigConsumerTests {
     func includeDepth() throws {
         defer { cleanUp() }
         let repository = try Repository.initialize(at: root.appendingPathComponent("repo"), initialBranch: "main")
-        var included = try write("[test]\nvalue = deepest\n", "depth-10")
+        let deepest = try write("[test]\nvalue = deepest\n", "depth-10")
+        var included = deepest
         for depth in (1...9).reversed() {
             included = try write("[include]\npath = \(included.path)\n", "depth-\(depth)")
         }
         try repository.setCommandLineConfig(CommandLineConfig([.include(path: included.path)]))
         #expect(try repository.configGet("test.value") == "deepest")
         let extra = try write("[include]\npath = \(included.path)\n", "depth-0")
-        #expect(throws: Libgit2Error.self) {
+        // Git names the eleventh file and the tenth, which includes it.
+        let expected = ConfigIncludeDepthError(
+            limit: 10, includedPath: deepest.path,
+            includingPath: root.appendingPathComponent("depth-9").path)
+        #expect(throws: expected) {
             try repository.setCommandLineConfig(CommandLineConfig([.include(path: extra.path)]))
         }
         #expect(try repository.configGet("test.value") == "deepest")
+        // The hasconfig URL pre-scan reads even a nonmatching target's chain.
+        #expect(throws: expected) {
+            try repository.setCommandLineConfig(CommandLineConfig([
+                .includeIf(condition: "hasconfig:remote.*.url:never", path: extra.path)]))
+        }
+        #expect(try repository.configGet("test.value") == "deepest")
+        #expect(expected.localizedDescription == "exceeded maximum include depth (10) while including\n\t"
+            + "\(deepest.path)\nfrom\n\t\(root.appendingPathComponent("depth-9").path)\n"
+            + "This might be due to circular includes.")
         // Git checks existence before counting depth: a missing eleventh
         // target is empty, not a depth failure, also during URL collection.
         try Data("[test]\nvalue = deepest\n[include]\npath = absent\n".utf8)

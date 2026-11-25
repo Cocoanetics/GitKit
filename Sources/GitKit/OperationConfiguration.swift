@@ -169,7 +169,9 @@ extension Repository {
             defer { scope.pop() }
             result = try body()
         }
-        if let failure = scope.firstFailure() { throw failure }
+        if let failure = scope.firstFailure() {
+            throw ConfigIncludeDepthError.take(matching: failure) ?? failure
+        }
         return result
     }
 }

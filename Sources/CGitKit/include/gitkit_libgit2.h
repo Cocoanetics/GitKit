@@ -293,6 +293,19 @@ GIT_EXTERN(int) gitkit_config_scope_first_failure(
 GIT_EXTERN(void) gitkit_config_scope_mark_reported(int klass, const char *message);
 
 /*
+ * GitKit addition, implemented in Sources/Clibgit2Patches/config_condition.c:
+ * the calling thread's newest "exceeded maximum include depth" failure (a
+ * GIT_ERROR_CONFIG error). Returns 1 and the depth limit, the resolved path
+ * of the file being included, the path of the file including it ("the
+ * command line" for a command-line include) and the libgit2 message it set,
+ * or 0 when there is none. The strings live until the next such failure on
+ * the thread or _clear. Used by GitKit's Swift layer; not a stable API.
+ */
+GIT_EXTERN(int) gitkit_config_include_depth_last(int *limit, const char **included,
+	const char **including, const char **message);
+GIT_EXTERN(void) gitkit_config_include_depth_clear(void);
+
+/*
  * GitKit addition, implemented in Sources/Clibgit2Patches/worktree_patched.c:
  * git_worktree_add(), which, when it fails after making the worktree's git
  * and working directories, removes them if they still hold exactly the
