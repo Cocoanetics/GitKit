@@ -205,7 +205,9 @@ Operations are synchronous, `throws` (typed ``Libgit2Error``), and return
   never authorized or accessed. Git's nonfatal relative-gitdir diagnostic is
   returned by the live API or delivered after the scoped body through
   `onDiagnostic`; GitKit prints nothing. Failure is atomic and writes stay
-  local. See [the contract and Git oracle results](docs/conditional-config.md).
+  local. An include chain deeper than git's ten levels throws
+  `ConfigIncludeDepthError` (`limit`, `includedPath`, `includingPath`), from
+  which a host can print git's `exceeded maximum include depth` message. See [the contract and Git oracle results](docs/conditional-config.md).
 - **Operation configuration** — `Repository.withOperationConfiguration(_:_:)`
   gives the same levels (`OperationConfiguration.Level.file` /
   `.entries`) and command-line layers (`OperationConfiguration.layers`,
