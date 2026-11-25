@@ -526,6 +526,43 @@ struct OperationConfigurationTests {
 }
 
 /// Collects what callbacks on other threads saw.
+extension OperationConfigurationTests {
+    @Test("a swallowed include-depth failure keeps its paths after later depth failures")
+    func hiddenIncludeDepthFailureIsTyped() throws {
+        defer { fixtures.removeAll() }
+        let fixture = try makeFixture()
+        /// Eleven nested files; returns the first, the tenth and the eleventh.
+        func chain(_ tag: String) throws -> (first: URL, tenth: URL, eleventh: URL) {
+            var file = try write("[t]\n\tdeepest = yes\n", to: "\(tag)-11")
+            let eleventh = file
+            for depth in (1...10).reversed() {
+                file = try write("[include]\n\tpath = \(file.path)\n", to: "\(tag)-\(depth)")
+            }
+            return (file, fixtures.url("\(tag)-10"), eleventh)
+        }
+        let hidden = try chain("hidden")
+        let later = try chain("later")
+        try git(["config", "include.path", hidden.first.path], in: fixture.middle)
+        try git(["config", "include.path", later.first.path], in: fixture.inner)
+        let outer = try Repository.open(at: fixture.outer)
+
+        let error = #expect(throws: ConfigIncludeDepthError.self) {
+            try Repository.withOperationConfiguration(OperationConfiguration(levels: [Self.autocrlf])) {
+                // libgit2 swallows middle-sub's failed open: status returns.
+                _ = try outer.status()
+                // A later depth failure, thrown to the body, replaces the
+                // thread's newest record.
+                #expect(throws: ConfigIncludeDepthError(
+                    limit: 10, includedPath: later.eleventh.path, includingPath: later.tenth.path)) {
+                    try Repository.open(at: fixture.inner)
+                }
+            }
+        }
+        #expect(error == ConfigIncludeDepthError(
+            limit: 10, includedPath: hidden.eleventh.path, includingPath: hidden.tenth.path))
+    }
+}
+
 private final class Recorded: @unchecked Sendable {
     private let lock = NSLock()
     private var _includes: [ConfigInclude] = []

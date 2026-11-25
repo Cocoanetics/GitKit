@@ -290,6 +290,10 @@ GIT_EXTERN(void) gitkit_config_scope_free(gitkit_config_scope *scope);
 GIT_EXTERN(int) gitkit_config_scope_has_level(git_config_level_t level);
 GIT_EXTERN(int) gitkit_config_scope_first_failure(
 	const gitkit_config_scope *scope, int *code, int *klass, const char **message);
+/* For the failure _first_failure returns: 1 and its paths when it is an
+ * include-depth failure (see gitkit_config_include_depth_last), else 0. */
+GIT_EXTERN(int) gitkit_config_scope_first_failure_include_depth(
+	const gitkit_config_scope *scope, int *limit, const char **included, const char **including);
 GIT_EXTERN(void) gitkit_config_scope_mark_reported(int klass, const char *message);
 
 /*
