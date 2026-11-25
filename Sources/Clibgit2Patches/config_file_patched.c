@@ -367,9 +367,12 @@ static int gitkit_read_variable(git_config_parser *parser, const char *section, 
 	git_config_entry entry = {0};
 	git_str name = GIT_STR_INIT;
 	const char *c;
-	int error, matches;
+	int error, matches, unexpanded;
 	GIT_UNUSED(parser); GIT_UNUSED(line); GIT_UNUSED(line_len);
-	if (section && (git_str_puts(&name, section) < 0 || git_str_putc(&name, '.') < 0))
+	/* A command element's marker is stored under Git's name, `path`. */
+	if ((unexpanded = !data->file->path && !git__strcasecmp(variable, GITKIT_UNEXPANDED_PATH)))
+		variable = "path";
+	if (section &&(git_str_puts(&name, section) < 0 || git_str_putc(&name, '.') < 0))
 		return -1;
 	for (c = variable; *c; c++) git_str_putc(&name, git__tolower(*c));
 	if (git_str_oom(&name)) { git_str_dispose(&name); return -1; }
@@ -383,10 +386,11 @@ static int gitkit_read_variable(git_config_parser *parser, const char *section, 
 	if (error < 0)
 		goto done;
 	if (!strcmp(entry.name, "include.path")) {
-		error = gitkit_read_include(data, value);
+		error = unexpanded ? gitkit_condition_unexpanded(value) : gitkit_read_include(data, value);
 	} else if (section && !git__prefixcmp(section, "includeif.") && !git__strcasecmp(variable, "path")) {
 		error = gitkit_condition_match(&matches, gitkit_condition_current(), section + 10, data->file->path);
-		if (!error && matches) error = gitkit_read_include(data, value);
+		if (!error && matches)
+			error = unexpanded ? gitkit_condition_unexpanded(value) : gitkit_read_include(data, value);
 	}
 done:
 	git_str_dispose(&name);

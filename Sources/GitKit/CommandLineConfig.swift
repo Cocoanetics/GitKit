@@ -6,7 +6,11 @@ import CGitKit
 /// `hasconfig:remote.*.url:` strings. Unknown conditions never match.
 ///
 /// Supply paths after invocation-specific interpolation (`~user`, `%(prefix)`).
-/// A relative include target fails only when its condition matches. A relative
+/// A target the host could not interpolate is passed raw as `unexpandedPath`,
+/// and a valueless one as a nil `path`. Like a relative target, each fails only
+/// when its condition matches, with Git's "could not expand include path" or
+/// "missing value for 'include.path'"; the plain `include` forms always fail.
+/// When the condition does not match, the element is inert. A relative
 /// `gitdir:./` command condition matches in a repository and produces a nonfatal
 /// diagnostic, as Git does; outside a repository it is false without a diagnostic.
 public struct CommandLineConfig: Sendable, Hashable {
@@ -20,17 +24,53 @@ public struct CommandLineConfig: Sendable, Hashable {
             Self(storage: .entries(entries, name))
         }
 
-        public static func include(path: String) -> Self { Self(storage: .include(path)) }
+        public static func include(path: String) -> Self { Self(storage: .include(.path(path))) }
+
+        /// A nil path is a valueless `include.path`.
+        public static func include(path: String?) -> Self { Self(storage: .include(Target(path))) }
+
+        /// A target whose interpolation failed, kept raw for Git's error.
+        public static func include(unexpandedPath: String) -> Self {
+            Self(storage: .include(.unexpanded(unexpandedPath)))
+        }
 
         public static func includeIf(condition: String, path: String) -> Self {
-            Self(storage: .includeIf(condition, path))
+            Self(storage: .includeIf(condition, .path(path)))
+        }
+
+        /// A nil path is a valueless `includeIf.<condition>.path`.
+        public static func includeIf(condition: String, path: String?) -> Self {
+            Self(storage: .includeIf(condition, Target(path)))
+        }
+
+        /// A target whose interpolation failed, kept raw for Git's error.
+        public static func includeIf(condition: String, unexpandedPath: String) -> Self {
+            Self(storage: .includeIf(condition, .unexpanded(unexpandedPath)))
         }
     }
 
     enum Storage: Sendable, Hashable {
         case entries([ConfigEntry], String)
-        case include(String)
-        case includeIf(String, String)
+        case include(Target)
+        case includeIf(String, Target)
+    }
+
+    enum Target: Sendable, Hashable {
+        case path(String)
+        case missing
+        case unexpanded(String)
+
+        init(_ path: String?) { self = path.map(Target.path) ?? .missing }
+
+        /// The shim reads this variable as `path` that fails expansion
+        /// (GITKIT_UNEXPANDED_PATH in gitkit_config_condition.h).
+        func entry(section: String) -> ConfigEntry {
+            switch self {
+            case let .path(path): ConfigEntry(name: section + ".path", value: path)
+            case .missing: ConfigEntry(name: section + ".path", value: nil)
+            case let .unexpanded(path): ConfigEntry(name: section + ".gitkit-unexpanded-path", value: path)
+            }
+        }
     }
 
     public var elements: [Element]
@@ -72,10 +112,10 @@ public struct CommandLineConfig: Sendable, Hashable {
                 let text = try ConfigEntryText.serialize(entries)
                 try ConfigEntryText.checkBackendName(name)
                 try check(gitkit_config_scope_add_layer_entries(scope, text, text.utf8.count, name))
-            case let .include(path):
-                try Self.addDirective(ConfigEntry(name: "include.path", value: path), to: scope)
-            case let .includeIf(condition, path):
-                try Self.addDirective(ConfigEntry(name: "includeif.\(condition).path", value: path), to: scope)
+            case let .include(target):
+                try Self.addDirective(target.entry(section: "include"), to: scope)
+            case let .includeIf(condition, target):
+                try Self.addDirective(target.entry(section: "includeif.\(condition)"), to: scope)
             }
         }
     }
