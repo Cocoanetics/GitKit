@@ -165,6 +165,39 @@ struct ConditionalConfigContextTests {
         }
     }
 
+    @Test("an includeIf target that is a directory fails with its path and reason; a missing one is ignored")
+    func directoryTargets() throws {
+        defer { fixtures.removeAll() }
+        let repository = try Repository.initialize(at: fixtures.url("repo"), initialBranch: "main")
+        let directory = fixtures.url("directory")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let kept = CommandLineConfig([.entries([ConfigEntry(name: "test.value", value: "kept")])])
+        let message = "failed to read config file '\(directory.path)': Is a directory"
+        // The hasconfig pre-scan reads every conditional target, matching or not.
+        for condition in ["onbranch:main", "hasconfig:remote.*.url:x"] {
+            let command = CommandLineConfig([.includeIf(condition: condition, path: directory.path)])
+            try repository.setCommandLineConfig(kept)
+            #expect {
+                try repository.setCommandLineConfig(command)
+            } throws: { error in
+                (error as? Libgit2Error)?.message == message
+            }
+            #expect(try repository.configGet("test.value") == "kept")
+            #expect {
+                try Repository.withOperationConfiguration(OperationConfiguration(commandLine: command)) {
+                    try Repository.open(at: fixtures.url("repo")).configGet("user.name")
+                }
+            } throws: { error in
+                (error as? Libgit2Error)?.message == message
+            }
+
+            let missing = CommandLineConfig([.entries([ConfigEntry(name: "test.value", value: "missing")]),
+                                             .includeIf(condition: condition, path: fixtures.url("missing").path)])
+            try repository.setCommandLineConfig(missing)
+            #expect(try repository.configGet("test.value") == "missing")
+        }
+    }
+
     @Test("a deferred snapshot refresh retains the file backend's condition context")
     func snapshotRefresh() throws {
         defer { fixtures.removeAll() }

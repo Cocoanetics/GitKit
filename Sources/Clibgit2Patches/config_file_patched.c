@@ -345,6 +345,10 @@ static int gitkit_read_include(config_file_parse_data *data, const char *target)
 		error = gitkit_condition_depth_exceeded(file->path, data->file->path);
 		goto done;
 	}
+	if (S_ISDIR(st.st_mode)) {
+		error = gitkit_condition_directory(file->path);
+		goto done;
+	}
 	if ((error = git_futils_readbuffer(&content, file->path)) < 0)
 		goto done;
 	git_futils_filestamp_set_from_stat(&file->stamp, &st);
