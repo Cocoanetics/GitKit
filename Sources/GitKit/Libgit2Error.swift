@@ -40,7 +40,8 @@ public struct Libgit2Error: Error, LocalizedError, Sendable {
     }
 }
 
-/// Throws ``Libgit2Error`` (or a pending ``GitFilterError``) if `rc < 0`. Returns `rc` otherwise so the
+/// Throws ``Libgit2Error`` (or a pending ``GitFilterError`` or the
+/// ``ConfigIncludeDepthError`` it reports) if `rc < 0`. Returns `rc` otherwise so the
 /// caller can use it (some libgit2 APIs return the count on success).
 @discardableResult
 func check(_ rc: Int32) throws -> Int32 {
@@ -48,6 +49,7 @@ func check(_ rc: Int32) throws -> Int32 {
         let error = Libgit2Error.last(code: rc)
         OperationConfigurationScope.markReported(error)
         if let filterError = PendingFilterError.take(matching: error) { throw filterError }
+        if let depthError = ConfigIncludeDepthError.take(matching: error) { throw depthError }
         throw error
     }
     return rc

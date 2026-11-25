@@ -45,6 +45,11 @@ int gitkit_condition_path(git_str *out, const char *path, const char *from);
  * fails as Git's expansion does. GitKit's Swift layer writes the same name. */
 #define GITKIT_UNEXPANDED_PATH "gitkit-unexpanded-path"
 int gitkit_condition_unexpanded(const char *path);
+/* Git's MAX_INCLUDE_DEPTH. Raises the failure for an include past it, with
+ * the resolved target and the including file (NULL: the command line), and
+ * records both for gitkit_config_include_depth_last. Returns -1. */
+#define GITKIT_MAX_INCLUDE_DEPTH 10
+int gitkit_condition_depth_exceeded(const char *included, const char *including);
 int gitkit_config_authorize(const git_repository *repo, const char *path, const char *from, int depth);
 int gitkit_condition_build_begin(git_config *cfg, gitkit_condition_context *ctx);
 void gitkit_condition_build_end(git_config *cfg);

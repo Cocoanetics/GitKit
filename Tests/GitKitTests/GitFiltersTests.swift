@@ -47,6 +47,10 @@ struct GitFiltersTests {
         return (dir, try Repository.open(at: dir))
     }
 
+    private static func real(_ url: URL) -> String {
+        url.resolvingSymlinksInPath().standardizedFileURL.path
+    }
+
     private func requireDriver(in dir: URL) throws {
         try git(["config", "filter.\(name).required", "true"], in: dir)
     }
@@ -292,8 +296,14 @@ struct GitFiltersTests {
         try git(["rm", ".gitattributes"], in: dir)
         let driver = name
         let registeredName = name + "-registration"
+        let gitDirectory = Self.real(dir.appendingPathComponent(".git"))
+        let observations = Observations()
+        // `filter=*` matches every filtered file in the process, so a concurrent
+        // suite's checkout can reach this callback; pass its files through.
         try GitFilters.register(name: registeredName, attributes: "filter=*", smudge: { source, input in
+            guard Self.real(source.gitDirectory) == gitDirectory else { return nil }
             #expect(source.driver == driver)
+            observations.record(input.count)
             return input
         })
         defer { try? GitFilters.unregister(name: registeredName) }
@@ -306,6 +316,7 @@ struct GitFiltersTests {
         defer { git_buf_dispose(&result) }
         try check(git_filter_list_apply_to_buffer(&result, filters, "hello\n", 6))
         #expect(result.size == 6)
+        #expect(observations.chunks == [6])
     }
 
     @Test("The guard rejects missing required drivers, but permits optional ones")

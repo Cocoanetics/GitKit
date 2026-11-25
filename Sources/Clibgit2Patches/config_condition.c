@@ -309,6 +309,52 @@ int gitkit_condition_unexpanded(const char *path)
 	return -1;
 }
 
+/* The calling thread's newest include-depth failure, for the Swift layer to
+ * raise as a typed error when the libgit2 error it returns is this one. */
+typedef struct {
+	char *included, *including, *message;
+} gitkit_include_depth_record;
+static GITKIT_TLS gitkit_include_depth_record depth_record;
+
+void gitkit_config_include_depth_clear(void)
+{
+	git__free(depth_record.included);
+	git__free(depth_record.including);
+	git__free(depth_record.message);
+	memset(&depth_record, 0, sizeof(depth_record));
+}
+
+int gitkit_condition_depth_exceeded(const char *included, const char *including)
+{
+	const git_error *last;
+	/* Git names a command-line includer "the command line". */
+	if (!including)
+		including = "the command line";
+	git_error_set(GIT_ERROR_CONFIG, "exceeded maximum include depth (%d) while including '%s' from '%s'",
+		GITKIT_MAX_INCLUDE_DEPTH, included, including);
+	gitkit_config_include_depth_clear();
+	if ((last = git_error_last()) != NULL && last->message) {
+		depth_record.included = git__strdup(included);
+		depth_record.including = git__strdup(including);
+		depth_record.message = git__strdup(last->message);
+		if (!depth_record.included || !depth_record.including || !depth_record.message)
+			gitkit_config_include_depth_clear();
+	}
+	return -1;
+}
+
+int gitkit_config_include_depth_last(int *limit, const char **included,
+	const char **including, const char **message)
+{
+	if (!depth_record.message)
+		return 0;
+	*limit = GITKIT_MAX_INCLUDE_DEPTH;
+	*included = depth_record.included;
+	*including = depth_record.including;
+	*message = depth_record.message;
+	return 1;
+}
+
 static int match_gitdir(int *matches, gitkit_condition_context *ctx, const char *condition,
 	const char *file, const char *value, int insensitive)
 {
@@ -471,10 +517,9 @@ static int scan_file(url_scan *parent, const char *target, int conditional)
 	error = condition_read(&scan, parent->path, &content);
 	if (error == GIT_ENOTFOUND) { git_error_clear(); error = 0; }
 	else if (!error) {
-		if (scan.depth > 10) {
-			git_error_set(GIT_ERROR_CONFIG, "maximum config include depth reached");
-			error = -1;
-		} else error = scan_text(&scan, content.ptr, content.size);
+		if (scan.depth > GITKIT_MAX_INCLUDE_DEPTH)
+			error = gitkit_condition_depth_exceeded(path.ptr, parent->path);
+		else error = scan_text(&scan, content.ptr, content.size);
 	}
 done:
 	git_str_dispose(&path);

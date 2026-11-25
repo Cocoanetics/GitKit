@@ -267,11 +267,22 @@ final class OperationConfigurationScope {
         precondition(rc == 0, "operation configuration scope popped out of order")
     }
 
-    func firstFailure() -> Libgit2Error? {
+    /// The first failure not handed back, typed when it is an include-depth
+    /// failure: the scope keeps each one's paths, as later ones replace the
+    /// thread's record.
+    func firstFailure() -> Error? {
         var code: Int32 = 0
         var klass: Int32 = 0
         var message: UnsafePointer<CChar>?
         guard gitkit_config_scope_first_failure(pointer, &code, &klass, &message) == 1 else { return nil }
+        var limit: Int32 = 0
+        var included: UnsafePointer<CChar>?
+        var including: UnsafePointer<CChar>?
+        if gitkit_config_scope_first_failure_include_depth(pointer, &limit, &included, &including) == 1,
+           let included, let including {
+            return ConfigIncludeDepthError(limit: Int(limit), includedPath: String(cString: included),
+                                           includingPath: String(cString: including))
+        }
         return Libgit2Error(code: code, klass: klass, message: message.map { String(cString: $0) } ?? "unknown error")
     }
 

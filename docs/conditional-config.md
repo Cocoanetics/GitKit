@@ -125,7 +125,11 @@ platform launcher warnings were absent in these runs.
 Primary references: [Git 2.54 config.c](https://github.com/git/git/blob/v2.54.0/config.c#L186-L418)
 and [t1305-config-include.sh](https://github.com/git/git/blob/v2.54.0/t/t1305-config-include.sh).
 GitKit returns values, diagnostics and errors; the host owns CLI exit-code
-mapping. Public-consumer tests reproduce the old hasconfig failures and cover
+mapping. An eleventh include level, read for the config or during the
+hasconfig URL pre-scan, throws `ConfigIncludeDepthError` with the limit (10),
+the resolved path of the file being included and the path of the file that
+includes it, so a host can print Git's `exceeded maximum include depth (10)
+while including … from …` message. Public-consumer tests reproduce the old hasconfig failures and cover
 the corrected no-repository behavior, policy, metadata, ordering and atomicity.
 Native integration tests exercise internal submodule status/diff and linked
 worktrees, alongside the existing scope, write and creation-rollback suites.

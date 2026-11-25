@@ -341,9 +341,8 @@ static int gitkit_read_include(config_file_parse_data *data, const char *target)
 		error = git_fs_path_set_error(errno, file->path, "stat");
 		goto done;
 	}
-	if (child.depth > 10) {
-		git_error_set(GIT_ERROR_CONFIG, "maximum config include depth reached");
-		error = -1;
+	if (child.depth > GITKIT_MAX_INCLUDE_DEPTH) {
+		error = gitkit_condition_depth_exceeded(file->path, data->file->path);
 		goto done;
 	}
 	if ((error = git_futils_readbuffer(&content, file->path)) < 0)

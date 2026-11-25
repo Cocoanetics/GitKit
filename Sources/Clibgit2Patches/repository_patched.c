@@ -131,6 +131,7 @@ typedef struct {
 	int klass;
 	char *message;
 	int reported;		/* handed back by the call that failed */
+	char *included, *including;	/* an include-depth failure's paths */
 } gitkit_config_scope_failure;
 
 typedef struct {
@@ -234,8 +235,11 @@ void gitkit_config_scope__release(gitkit_config_scope *scope)
 
 	for (i = 0; i < scope->levels_len; i++)
 		gitkit_scope_level_dispose(&scope->levels[i]);
-	for (i = 0; i < scope->failures_len; i++)
+	for (i = 0; i < scope->failures_len; i++) {
 		git__free(scope->failures[i].message);
+		git__free(scope->failures[i].included);
+		git__free(scope->failures[i].including);
+	}
 	git__free(scope->failures);
 	for (i = 0; i < scope->diagnostics_len; i++) {
 		git__free(scope->diagnostics[i].condition);
@@ -533,6 +537,28 @@ int gitkit_config_scope_first_failure(
 	return 0;
 }
 
+int gitkit_config_scope_first_failure_include_depth(
+	const gitkit_config_scope *scope, int *limit, const char **included, const char **including)
+{
+	size_t i;
+
+	GIT_ASSERT_ARG(scope);
+
+	for (i = 0; i < scope->failures_len; i++) {
+		const gitkit_config_scope_failure *failure = &scope->failures[i];
+
+		if (failure->reported)
+			continue;
+		if (!failure->included || !failure->including)
+			return 0;
+		*limit = GITKIT_MAX_INCLUDE_DEPTH;
+		*included = failure->included;
+		*including = failure->including;
+		return 1;
+	}
+	return 0;
+}
+
 void gitkit_config_scope_mark_reported(int klass, const char *message)
 {
 	gitkit_config_scope *scope = gitkit_current_scope;
@@ -570,6 +596,8 @@ void gitkit_config_scope__record(int code)
 	gitkit_config_scope *scope = gitkit_current_scope;
 	gitkit_config_scope_failure *grown;
 	const git_error *last;
+	const char *depth_message, *included, *including;
+	int limit;
 
 	if (!scope)
 		return;
@@ -590,10 +618,25 @@ void gitkit_config_scope__record(int code)
 	grown->klass = last ? last->klass : 0;
 	grown->message = git__strdup(last && last->message ? last->message : "unknown error");
 	grown->reported = 0;
+	grown->included = grown->including = NULL;
 
 	if (!grown->message) {
 		scope->failure_lost = 1;
 		return;
+	}
+	/* A later depth failure replaces the thread's record: keep its paths. */
+	if (last && last->klass == GIT_ERROR_CONFIG &&
+	    gitkit_config_include_depth_last(&limit, &included, &including, &depth_message) &&
+	    strcmp(depth_message, grown->message) == 0) {
+		grown->included = git__strdup(included);
+		grown->including = git__strdup(including);
+		if (!grown->included || !grown->including) {
+			git__free(grown->included);
+			git__free(grown->including);
+			git__free(grown->message);
+			scope->failure_lost = 1;
+			return;
+		}
 	}
 	scope->failures_len++;
 }
