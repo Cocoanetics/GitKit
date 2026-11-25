@@ -495,9 +495,12 @@ static int condition_read(url_scan *scan, const char *from, git_str *content)
 	if (!file->path || (from && !file->from))
 		goto fail;
 	if (p_stat(scan->path, &st) == 0) {
-		/* An include's directory target fails as following it does. */
+		/* An include's directory target fails as following it does: past
+		 * the depth limit, with the depth failure Git checks first. */
 		if (scan->depth && S_ISDIR(st.st_mode)) {
-			error = gitkit_condition_directory(scan->path);
+			error = scan->depth > GITKIT_MAX_INCLUDE_DEPTH ?
+				gitkit_condition_depth_exceeded(scan->path, from) :
+				gitkit_condition_directory(scan->path);
 			goto fail;
 		}
 		file->present = 1;

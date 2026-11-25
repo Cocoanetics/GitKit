@@ -196,6 +196,20 @@ struct ConditionalConfigContextTests {
             try repository.setCommandLineConfig(missing)
             #expect(try repository.configGet("test.value") == "missing")
         }
+
+        // A directory past the depth limit reports the depth failure, as Git does.
+        var file = directory
+        for depth in (1...10).reversed() {
+            file = try write("[include]\n\tpath = \(file.path)\n", "chain-\(depth)")
+        }
+        let expected = ConfigIncludeDepthError(
+            limit: 10, includedPath: directory.path, includingPath: fixtures.url("chain-10").path)
+        for condition in ["onbranch:main", "hasconfig:remote.*.url:x"] {
+            #expect(throws: expected) {
+                try repository.setCommandLineConfig(
+                    CommandLineConfig([.includeIf(condition: condition, path: file.path)]))
+            }
+        }
     }
 
     @Test("a deferred snapshot refresh retains the file backend's condition context")
