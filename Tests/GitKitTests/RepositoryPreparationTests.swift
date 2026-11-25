@@ -21,13 +21,16 @@ struct RepositoryPreparationTests {
         let id = UUID()
     }
 
-    /// Counts smudges per path, from any thread.
+    /// Counts its own driver's smudges per path, from any thread. Filter
+    /// registration is process-wide, so sources for other drivers are ignored.
     final class SmudgeProbe: @unchecked Sendable {
+        let driver = "probe-\(UUID().uuidString)"
         private let lock = NSLock()
         private var paths: [String: Int] = [:]
         private var workdirs: Set<String> = []
 
         func record(_ source: GitFilterSource) {
+            guard source.driver == driver else { return }
             lock.lock(); defer { lock.unlock() }
             paths[source.path, default: 0] += 1
             if let workdir = source.workingDirectory { workdirs.insert(Self.real(workdir)) }
@@ -130,8 +133,8 @@ struct RepositoryPreparationTests {
     @Test("a prepared clone smudges each file once, in the prepared repository")
     func preparedCloneSmudgesOnce() throws {
         defer { fixtures.removeAll() }
-        let driver = "probe-\(UUID().uuidString)"
         let probe = SmudgeProbe()
+        let driver = probe.driver
         try GitFilters.register(name: driver, smudge: { source, _ in
             probe.record(source)
             return nil
@@ -317,8 +320,8 @@ extension RepositoryPreparationTests {
     @Test("a prepared worktree smudges each file once, in the worktree")
     func preparedWorktreeSmudgesOnce() throws {
         defer { fixtures.removeAll() }
-        let driver = "probe-\(UUID().uuidString)"
         let probe = SmudgeProbe()
+        let driver = probe.driver
         try GitFilters.register(name: driver, smudge: { source, _ in
             probe.record(source)
             return nil
