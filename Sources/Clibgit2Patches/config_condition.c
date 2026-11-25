@@ -68,7 +68,8 @@ gitkit_condition_context *gitkit_condition_new(const git_repository *repo)
 	if (git_vector_init(&ctx->sources, 8, NULL) < 0 || git_vector_init(&ctx->urls, 8, NULL) < 0 ||
 	    git_vector_init(&ctx->files, 8, NULL) < 0)
 		goto fail;
-	if (repo) {
+	/* A repository without a path (git_repository_new) is no repository here. */
+	if (repo && git_repository_path(repo)) {
 		ctx->gitdir = git__strdup(git_repository_path(repo));
 		if (!ctx->gitdir)
 			goto fail;

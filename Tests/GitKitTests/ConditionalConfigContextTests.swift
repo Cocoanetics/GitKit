@@ -50,6 +50,28 @@ struct ConditionalConfigContextTests {
         }
     }
 
+    @Test("a repository without a path reads its config with gitdir and onbranch false")
+    func pathlessRepository() throws {
+        defer { fixtures.removeAll() }
+        let included = try write("[test]\nvalue = Included\n", "included")
+        Libgit2.ensureInitialized()
+        var repo: OpaquePointer?
+        try check(git_repository_new(&repo))
+        defer { git_repository_free(repo) }
+        var config: OpaquePointer?
+        try check(git_repository_config(&config, repo))
+        defer { git_config_free(config) }
+        let command = CommandLineConfig([
+            .includeIf(condition: "gitdir:**", path: included.path),
+            .includeIf(condition: "onbranch:**", path: included.path)
+        ])
+        let diagnostics = try command.install(into: try #require(config), repository: repo)
+        #expect(diagnostics.isEmpty)
+        var entry: UnsafeMutablePointer<git_config_entry>?
+        #expect(git_config_get_entry(&entry, config, "test.value") == GIT_ENOTFOUND.rawValue)
+        git_config_entry_free(entry)
+    }
+
     @Test("installing entries without hasconfig reads no lower includes again")
     func noExtraReads() throws {
         defer { fixtures.removeAll() }
