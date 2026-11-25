@@ -925,7 +925,8 @@ static int gitkit_repository_config_new(git_config **out, git_repository *repo,
 		else error = paths[i] ? gitkit_condition_source_add(ctx, paths[i], NULL, 0, levels[i], 0, 0) : 0;
 		if (error < 0) goto done;
 	}
-	if (repo) {
+	/* git_repository_new() has no files of its own, as load_config finds. */
+	if (repo && git_repository_path(repo)) {
 		if ((error = git_repository__item_path(&path, repo, GIT_REPOSITORY_ITEM_CONFIG)) < 0 ||
 		    (error = gitkit_condition_source_add(ctx, path.ptr, NULL, 0, GIT_CONFIG_LEVEL_LOCAL, 0, 0)) < 0 ||
 		    (error = git_repository__item_path(&path, repo, GIT_REPOSITORY_ITEM_WORKTREE_CONFIG)) < 0 ||
