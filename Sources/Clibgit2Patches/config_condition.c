@@ -284,7 +284,7 @@ int gitkit_condition_path(git_str *out, const char *path, const char *from)
 	git_str directory = GIT_STR_INIT;
 	int error;
 	if (!path) {
-		git_error_set(GIT_ERROR_CONFIG, "missing value for include.path");
+		git_error_set(GIT_ERROR_CONFIG, "missing value for 'include.path'");
 		return -1;
 	}
 	if (path[0] == '~' && git_fs_path_is_dirsep(path[1]))
@@ -300,6 +300,12 @@ int gitkit_condition_path(git_str *out, const char *path, const char *from)
 		error = git_str_joinpath(out, directory.ptr, path);
 	git_str_dispose(&directory);
 	return error;
+}
+
+int gitkit_condition_unexpanded(const char *path)
+{
+	git_error_set(GIT_ERROR_CONFIG, "could not expand include path '%s'", path ? path : "");
+	return -1;
 }
 
 static int match_gitdir(int *matches, gitkit_condition_context *ctx, const char *condition,
@@ -369,7 +375,7 @@ static int scan_variable(git_config_parser *parser, const char *section, const c
 	url_scan *scan = payload;
 	const char *condition;
 	char *url;
-	int matches = 0, error = 0, enabled;
+	int matches = 0, error = 0, enabled, unexpanded;
 	GIT_UNUSED(parser); GIT_UNUSED(line); GIT_UNUSED(line_len);
 	if (!section)
 		return 0;
@@ -388,10 +394,12 @@ static int scan_variable(git_config_parser *parser, const char *section, const c
 	if (scan->level == GIT_CONFIG_LEVEL_LOCAL && !git__strcasecmp(section, "extensions") &&
 	    !git__strcasecmp(variable, "worktreeconfig") && git_config_parse_bool(&enabled, value) == 0)
 		scan->ctx->worktree = enabled;
-	if (!scan->active || git__strcasecmp(variable, "path"))
+	/* Only a command element's own text (no path) carries the marker. */
+	unexpanded = !scan->path && !git__strcasecmp(variable, GITKIT_UNEXPANDED_PATH);
+	if (!scan->active || (git__strcasecmp(variable, "path") && !unexpanded))
 		return 0;
 	if (!git__strcasecmp(section, "include"))
-		return scan_file(scan, value, 0);
+		return unexpanded ? gitkit_condition_unexpanded(value) : scan_file(scan, value, 0);
 	if (git__strncasecmp(section, "includeif.", 10))
 		return 0;
 	condition = section + 10;
@@ -401,7 +409,7 @@ static int scan_variable(git_config_parser *parser, const char *section, const c
 	else
 		error = gitkit_condition_match(&matches, scan->evaluation, condition, scan->path);
 	if (!error && matches)
-		error = scan_file(scan, value, 1);
+		error = unexpanded ? gitkit_condition_unexpanded(value) : scan_file(scan, value, 1);
 	return error;
 }
 

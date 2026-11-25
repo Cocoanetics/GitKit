@@ -94,6 +94,55 @@ struct ConditionalConfigContextTests {
         #expect(try repository.configGet("test.value") == nil)
     }
 
+    @Test("a valueless or unexpandable includeIf target fails only when its condition matches")
+    func unresolvedTargets() throws {
+        defer { fixtures.removeAll() }
+        let repository = try Repository.initialize(at: fixtures.url("repo"), initialBranch: "main")
+        let kept = CommandLineConfig([.entries([ConfigEntry(name: "test.value", value: "kept")])])
+        let cases: [(String?, Bool, String)] = [
+            (nil, false, "missing value for 'include.path'"),
+            ("~nosuchuser/x", true, "could not expand include path '~nosuchuser/x'")
+        ]
+        for (path, unexpanded, message) in cases {
+            func element(_ condition: String) -> CommandLineConfig.Element {
+                unexpanded ? .includeIf(condition: condition, unexpandedPath: path ?? "")
+                    : .includeIf(condition: condition, path: path)
+            }
+            try repository.setCommandLineConfig(kept)
+            #expect {
+                try repository.setCommandLineConfig(CommandLineConfig([element("onbranch:main")]))
+            } throws: { error in
+                (error as? Libgit2Error)?.message == message
+            }
+            // A failed installation leaves the previous config in force.
+            #expect(try repository.configGet("test.value") == "kept")
+            let configuration = OperationConfiguration(commandLine: CommandLineConfig([element("onbranch:main")]))
+            #expect(throws: Libgit2Error.self) {
+                try Repository.withOperationConfiguration(configuration) {
+                    try Repository.open(at: fixtures.url("repo")).configGet("user.name")
+                }
+            }
+
+            // Inert when false; the entry keeps Git's name and the raw value.
+            try repository.setCommandLineConfig(CommandLineConfig([element("onbranch:other")]))
+            #expect(try repository.configGet("test.value") == nil)
+            if unexpanded {
+                #expect(try repository.configGet("includeif.onbranch:other.path") == path)
+                #expect(try repository.configGet("includeif.onbranch:other.gitkit-unexpanded-path") == nil)
+            }
+        }
+        #expect {
+            try repository.setCommandLineConfig(CommandLineConfig([.include(unexpandedPath: "~nosuchuser/x")]))
+        } throws: { error in
+            (error as? Libgit2Error)?.message == "could not expand include path '~nosuchuser/x'"
+        }
+        #expect {
+            try repository.setCommandLineConfig(CommandLineConfig([.include(path: nil)]))
+        } throws: { error in
+            (error as? Libgit2Error)?.message == "missing value for 'include.path'"
+        }
+    }
+
     @Test("a deferred snapshot refresh retains the file backend's condition context")
     func snapshotRefresh() throws {
         defer { fixtures.removeAll() }

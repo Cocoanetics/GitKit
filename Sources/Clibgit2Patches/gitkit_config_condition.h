@@ -40,6 +40,11 @@ int gitkit_condition_check(gitkit_condition_context *ctx);
 int gitkit_condition_match(int *matches, gitkit_condition_context *ctx,
 	const char *condition, const char *file);
 int gitkit_condition_path(git_str *out, const char *path, const char *from);
+/* In a command element's own text, this variable stands for `path` with a
+ * target the host could not interpolate. It is stored as `path`; following it
+ * fails as Git's expansion does. GitKit's Swift layer writes the same name. */
+#define GITKIT_UNEXPANDED_PATH "gitkit-unexpanded-path"
+int gitkit_condition_unexpanded(const char *path);
 int gitkit_config_authorize(const git_repository *repo, const char *path, const char *from, int depth);
 int gitkit_condition_build_begin(git_config *cfg, gitkit_condition_context *ctx);
 void gitkit_condition_build_end(git_config *cfg);
